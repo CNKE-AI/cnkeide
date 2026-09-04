@@ -388,6 +388,12 @@ const MessageBubble: React.FC<{
         <span className="font-medium">CnkeIDE</span>
       </div>
 
+      {msg.modelNotice && (
+        <div className="mb-1.5 text-[11px] text-amber-400/90 bg-amber-400/10 border border-amber-400/30 rounded-md px-2 py-1.5">
+          {msg.modelNotice}
+        </div>
+      )}
+
       {msg.thinking && (
         <div className="mb-1.5">
           <button

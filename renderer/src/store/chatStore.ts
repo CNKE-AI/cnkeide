@@ -24,6 +24,8 @@ export interface ChatMessage {
   images?: string[];
   /** 用户消息的文件附件（元数据 + 截断内容，随消息持久化，供重新回答时复用） */
   files?: UploadedFile[];
+  /** 模型降级提示：请求的模型失败被 fallback 替换时展示（含真实模型名） */
+  modelNotice?: string;
   usage?: {
     prompt_tokens: number;
     completion_tokens: number;
@@ -218,6 +220,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const tc = last.toolCalls || [];
         msgs[msgs.length - 1] = { ...last, toolCalls: [...tc, event.data] };
         set({ messages: msgs });
+      } else if (event.type === 'model_fallback') {
+        // 模型请求失败自动降级：显式告知用户实际使用的模型，避免"切换成功"的错觉
+        msgs[msgs.length - 1] = {
+          ...last,
+          modelNotice: `模型 ${event.data.requestedModel || '?'} 请求失败，已自动切换备用模型：${event.data.actualName || event.data.actualModel || '?'}`,
+        };
+        set({ messages: msgs });
       } else if (event.type === 'done' || event.type === 'error') {
         set({ loading: false, streamingContent: '' });
         if (event.type === 'error') {
@@ -239,7 +248,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
     });
 
     const history = messages.map((m) => ({ role: m.role, content: m.content }));
-    await window.cnke.agent.run({ sessionId: sid, workspaceId, prompt, history, mode, images, files, autoApprove: autoMode });
+    try {
+      await window.cnke.agent.run({ sessionId: sid, workspaceId, prompt, history, mode, images, files, autoApprove: autoMode });
+    } catch (err: any) {
+      // agent.run 抛出（如 IPC 断开 / 主进程崩溃后 invoke reject）：
+      // 兜底重置 loading 并向用户提示，避免输入框永久卡死
+      const msgs = get().messages;
+      const last = msgs[msgs.length - 1];
+      if (last && last.role === 'assistant') {
+        const patched = [...msgs];
+        patched[patched.length - 1] = { ...last, content: last.content || `Error: ${err?.message || '请求失败'}` };
+        set({ messages: patched, loading: false, streamingContent: '' });
+      } else {
+        set({ loading: false, streamingContent: '' });
+      }
+      removeEvent?.();
+    }
   },
 
   rollback: async (workspaceId: string) => {
@@ -302,6 +326,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const tc = last.toolCalls || [];
         msgs[msgs.length - 1] = { ...last, toolCalls: [...tc, event.data] };
         set({ messages: msgs });
+      } else if (event.type === 'model_fallback') {
+        // 模型请求失败自动降级：显式告知用户实际使用的模型，避免"切换成功"的错觉
+        msgs[msgs.length - 1] = {
+          ...last,
+          modelNotice: `模型 ${event.data.requestedModel || '?'} 请求失败，已自动切换备用模型：${event.data.actualName || event.data.actualModel || '?'}`,
+        };
+        set({ messages: msgs });
       } else if (event.type === 'done' || event.type === 'error') {
         set({ loading: false, streamingContent: '' });
         if (event.type === 'error') {
@@ -323,7 +354,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
     });
 
     const historyForRun = history.map((m) => ({ role: m.role, content: m.content }));
-    await window.cnke.agent.run({ sessionId: sid, workspaceId, prompt, history: historyForRun, mode, images, files, autoApprove: autoMode });
+    try {
+      await window.cnke.agent.run({ sessionId: sid, workspaceId, prompt, history: historyForRun, mode, images, files, autoApprove: autoMode });
+    } catch (err: any) {
+      const msgs = get().messages;
+      const last = msgs[msgs.length - 1];
+      if (last && last.role === 'assistant') {
+        const patched = [...msgs];
+        patched[patched.length - 1] = { ...last, content: last.content || `Error: ${err?.message || '请求失败'}` };
+        set({ messages: patched, loading: false, streamingContent: '' });
+      } else {
+        set({ loading: false, streamingContent: '' });
+      }
+      removeEvent?.();
+    }
   },
 
   abort: () => {

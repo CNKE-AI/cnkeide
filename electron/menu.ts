@@ -1,4 +1,7 @@
-import { Menu, BrowserWindow } from 'electron';
+import { Menu, BrowserWindow, shell } from 'electron';
+
+/** CnkeIDE 官网首页地址 */
+const OFFICIAL_WEBSITE_URL = 'https://github.com/CNKE-AI/cnkeide';
 
 export function createMenu(): void {
   const isMac = process.platform === 'darwin';
@@ -66,7 +69,7 @@ export function createMenu(): void {
       label: '帮助',
       submenu: [
         { label: '关于 CnkeIDE', click: () => BrowserWindow.getFocusedWindow()?.webContents.send('menu:about') },
-        { label: '官方文档', click: () => BrowserWindow.getFocusedWindow()?.webContents.send('menu:docs') },
+        { label: '官网首页', click: () => shell.openExternal(OFFICIAL_WEBSITE_URL) },
       ],
     },
   ];

@@ -69,7 +69,7 @@ export interface RunParams {
 }
 
 export interface AgentEvent {
-  type: 'thinking' | 'assistant' | 'tool_call' | 'tool_result' | 'done' | 'error' | 'stream' | 'context_state';
+  type: 'thinking' | 'assistant' | 'tool_call' | 'tool_result' | 'done' | 'error' | 'stream' | 'context_state' | 'model_fallback';
   sessionId: string;
   data: any;
 }
@@ -315,6 +315,10 @@ export class AgentManager {
 
       let turn = 0;
       let currentMessages = messages;
+      // run 级"实际应答配置"缓存：主配置失败被 fallback 替换后，后续 turn 直接沿用，
+      // 避免每轮都对失败的主配置重复重试（每次最多 3 次重试 + 超时）。
+      // 每次新 run（新消息）都会重置，用户切换模型后下一条消息立即生效。
+      let activeRunConfig: any = null;
       const totalUsage: any = {
         prompt_tokens: 0,
         completion_tokens: 0,
@@ -331,7 +335,7 @@ export class AgentManager {
         turn++;
         dbgLog(`[run] turn=${turn} session=${sessionId} msgCount=${currentMessages.length}`);
 
-        const apiConfig = this.resolveApiConfig(turn, prompt, images);
+        const apiConfig = activeRunConfig || this.resolveApiConfig(turn, prompt, images);
         if (!apiConfig) {
           emit({ type: 'error', sessionId, data: { error: '未配置 API，请在设置中添加模型配置' } });
           return { success: false, error: '未配置 API' };
@@ -349,7 +353,7 @@ export class AgentManager {
           },
           // W1：传递 signal + fallback + 重试/超时
           signal: abortController.signal,
-          fallbackConfigs: this.getFallbackConfigs(),
+          fallbackConfigs: this.getFallbackConfigs(apiConfig),
           retry: {
             maxRetries: this.config.get<number>('agentConfig.maxRetries', 3),
             baseDelayMs: this.config.get<number>('agentConfig.retryBaseDelayMs', 1000),
@@ -380,12 +384,31 @@ export class AgentManager {
             totalUsage.completion_tokens_details.reasoning_tokens += cd.reasoning_tokens || 0;
           }
         }
+        // 实际应答配置：LLMProvider 主配置失败时会按 fallback 链自动降级，resolvedConfig 才是
+        // 真正生成回复的配置。静默降级会让用户以为切换模型成功但实际仍用旧模型（且计费估算
+        // 按错误模型计算），因此必须：1) 修正 usage.model 为真实模型；2) 显式通知 UI。
+        const actualConfig = response.resolvedConfig || apiConfig;
+        if (actualConfig && actualConfig.id !== apiConfig.id) {
+          dbgLog(
+            `[run] model fallback: requested=${apiConfig.model || '?'} -> actual=${actualConfig.model || '?'}`
+          );
+          emit({
+            type: 'model_fallback',
+            sessionId,
+            data: {
+              requestedModel: apiConfig.model || '',
+              actualModel: actualConfig.model || '',
+              actualName: actualConfig.name || actualConfig.model || '',
+            },
+          });
+          activeRunConfig = actualConfig;
+        }
         // 记录实际使用的模型名，供前端预估计费金额（官网最新价格）
-        totalUsage.model = apiConfig.model || totalUsage.model;
+        totalUsage.model = actualConfig.model || totalUsage.model;
         // W11：更新 context 追踪并 emit 状态事件
         const contextState = this.contextTracker.update(
           sessionId,
-          apiConfig.model,
+          actualConfig.model,
           currentMessages,
           response.usage
         );
@@ -646,7 +669,16 @@ export class AgentManager {
 
     const enableRouting = this.config.get<boolean>('agentConfig.enableRouting', true);
     if (!enableRouting || turn !== 0) {
-      return configs.find((c: any) => c.id === activeId) || configs[0];
+      const matched = configs.find((c: any) => c.id === activeId);
+      if (!matched) {
+        // activeId 失效（配置被删/被同步清空）：兜底到第一个并留痕，便于排查"为什么用了旧模型"
+        dbgLog(
+          `[resolveApiConfig] activeId=${String(activeId)} not found in configs [${configs
+            .map((c: any) => c.id)
+            .join(', ')}] -> fallback to configs[0] (${configs[0]?.model || '?'})`
+        );
+      }
+      return matched || configs[0];
     }
     try {
       const userRouting = this.config.get<any>('agentConfig.routing') || undefined;
@@ -674,10 +706,11 @@ export class AgentManager {
   /**
    * W1 新增：构建 Fallback 链
    * 优先级：1) 显式 fallbackModelIds 配置 2) 其它已启用的 API 配置
-   * 主配置失败后依次尝试，跳过已禁用或同 model 的配置
+   * 主配置失败后依次尝试，跳过已禁用或同 model 的配置。
+   * primary 必须传【本次实际请求的 apiConfig】（而非 config 里的 active），
+   * 否则 fallback 命中后链路会与实际请求配置脱节（重复项/漏项）。
    */
-  private getFallbackConfigs(): any[] {
-    const primary = this.getActiveApiConfig();
+  private getFallbackConfigs(primary: any): any[] {
     if (!primary) return [];
     const all = this.config.getApiKeyConfigs().filter((c: any) => c && !c.disabled);
     const explicit = this.config.get<string[]>('agentConfig.fallbackModelIds', []) || [];

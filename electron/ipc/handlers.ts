@@ -300,7 +300,9 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
   // 同步官方内置 API 到本地配置（强一致：下线即删除、字段强制刷新；用户自定义配置不动）
   ipcMain.handle('config:syncBuiltins', async () => {
     const res = await backendAdapter.getBuiltins();
-    if (!res.success || !Array.isArray(res.builtins)) {
+    // 空列表视为后端异常，不执行同步（mergeBuiltinApis 内部亦有同款防御），
+    // 防止误删全部官方模型 + 清空 activeApiConfigId 导致切换模型静默失效
+    if (!res.success || !Array.isArray(res.builtins) || res.builtins.length === 0) {
       return { success: false, added: 0, updated: 0, removed: 0, error: res.error || '无内置 API' };
     }
     const stats = config.mergeBuiltinApis(res.builtins);

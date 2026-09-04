@@ -27,6 +27,9 @@ scripts/check_baseurl.py
 scripts/cat_yml.py
 scripts/force_push_latest_yml.py
 scripts/force_update_latest_yml.py
+scripts/upload_*.py
+scripts/_*.bat
+scripts/_*.py
 
 # 调试/临时输出
 scripts/*_out.txt

@@ -5,6 +5,29 @@ import { registerIpcHandlers } from './ipc/handlers';
 import { ConfigAdapter } from './adapter/ConfigAdapter';
 import { createMenu } from './menu';
 
+// 全局未捕获异常守卫：吞掉原生句柄销毁等竞态错误，避免主进程崩溃弹窗
+// 典型场景：关闭应用时子进程 ChildProcess._handle.onexit 触发，前端 BrowserWindow/webContents
+// 已销毁，事件回调里访问 webContents.send 会抛 "Object has been destroyed"，
+// 进一步导致渲染进程 IPC 消息丢失，loading 状态卡死、输入框无法输入。
+process.on('uncaughtException', (err) => {
+  const msg = err?.message || String(err);
+  // 原生句柄销毁 / 已关闭窗口导致的访问错误：可恢复，静默吞掉
+  if (/Object has been destroyed|Object has been released|webContents destroyed/i.test(msg)) {
+    console.warn('[uncaughtException] swallowed:', msg);
+    return;
+  }
+  // 其它未处理异常：打印到日志（Crashpad 会同时上报），不静默
+  console.error('[uncaughtException]', err);
+});
+process.on('unhandledRejection', (reason) => {
+  const msg = (reason as Error)?.message || String(reason);
+  if (/Object has been destroyed|Object has been released|webContents destroyed/i.test(msg)) {
+    console.warn('[unhandledRejection] swallowed:', msg);
+    return;
+  }
+  console.error('[unhandledRejection]', reason);
+});
+
 let mainWindow: BrowserWindow | null = null;
 let appCleanup: { dispose: () => void } | null = null;
 let tray: Tray | null = null;

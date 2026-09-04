@@ -98,18 +98,26 @@ export class TerminalAdapter extends EventEmitter {
       child.stderr?.on('data', (data: Buffer) => this.bufferOutput(pid, decodeOutput(data)));
 
       child.on('exit', (code: number | null) => {
-        this.flushOutput(pid);
-        this.emit('exit', { pid, code: code ?? 0 });
-        this.sessions.delete(pid);
-        this.outputBuffer.delete(pid);
+        try {
+          this.flushOutput(pid);
+          this.emit('exit', { pid, code: code ?? 0 });
+        } finally {
+          this.sessions.delete(pid);
+          this.outputBuffer.delete(pid);
+        }
       });
 
       child.on('error', (err: Error) => {
-        this.bufferOutput(pid, `\r\n[ERROR] ${err.message}\r\n`);
-        this.flushOutput(pid);
-        this.emit('exit', { pid, code: 1 });
-        this.sessions.delete(pid);
-        this.outputBuffer.delete(pid);
+        try {
+          this.bufferOutput(pid, `\r\n[ERROR] ${err.message}\r\n`);
+          this.flushOutput(pid);
+          this.emit('exit', { pid, code: 1 });
+        } catch {
+          /* 关闭竞态下原生句柄可能已销毁，静默忽略 */
+        } finally {
+          this.sessions.delete(pid);
+          this.outputBuffer.delete(pid);
+        }
       });
 
       return { success: true, pid };

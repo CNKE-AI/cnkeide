@@ -208,6 +208,10 @@ export class ConfigAdapter {
   mergeBuiltinApis(builtins: any[]): { added: number; updated: number; removed: number } {
     const empty = { added: 0, updated: 0, removed: 0 };
     if (!Array.isArray(builtins)) return empty;
+    // 空列表防御：后端异常/中间代理故障可能返回 success:true + 空 builtins，
+    // 若照常执行"下线即删除"会误删全部官方模型并清空 activeApiConfigId，
+    // 导致 resolveApiConfig 兜底到 configs[0]（旧模型）——"切换了但实际没换"的根源之一。
+    if (builtins.length === 0) return empty;
 
     const configs = this.getApiKeyConfigs();
     // 官方项本地 id 集合（含本次传入的全部官方项）
@@ -229,6 +233,7 @@ export class ConfigAdapter {
         provider: b.provider || '',
         model: b.model || '',
         baseUrl: b.baseUrl || '',
+        // 后端未下发 key 时保留本地已有值（避免有效 key 被空值覆盖 → 401 → fallback 旧模型）
         apiKey: b.apiKey || '',
         builtin: true,
       };
@@ -236,14 +241,17 @@ export class ConfigAdapter {
       if (idx >= 0) {
         // 强制刷新为官方最新字段（保留 id 与 builtin 标记）
         const prev = configs[idx];
+        // apiKey 降级保护：后端空 key 不覆盖本地非空 key
+        const merged = { ...prev, ...next };
+        if (!next.apiKey && prev.apiKey) merged.apiKey = prev.apiKey;
         if (
           prev.name !== next.name ||
           prev.provider !== next.provider ||
           prev.model !== next.model ||
           prev.baseUrl !== next.baseUrl ||
-          prev.apiKey !== next.apiKey
+          prev.apiKey !== merged.apiKey
         ) {
-          configs[idx] = { ...prev, ...next };
+          configs[idx] = merged;
           updated++;
         }
       } else {

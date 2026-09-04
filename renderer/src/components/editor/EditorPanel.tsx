@@ -114,12 +114,9 @@ const lightTheme = EditorView.theme({
   },
   '&.cm-focused .cm-cursor': {
     borderLeftColor: '#000000',
-  },
-  '.cm-cursor': {
-    borderLeftColor: '#000000',
     borderLeftWidth: '2px',
   },
-  '&.cm-focused .cm-cursor': {
+  '.cm-cursor': {
     borderLeftColor: '#000000',
     borderLeftWidth: '2px',
   },
