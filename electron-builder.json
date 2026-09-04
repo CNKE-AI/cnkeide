@@ -1,0 +1,43 @@
+{
+  "appId": "com.cnke.ide",
+  "productName": "CnkeIDE",
+  "directories": {
+    "output": "release",
+    "buildResources": "build"
+  },
+  "files": ["renderer/dist-electron/**/*", "dist/**/*", "package.json"],
+  "asar": true,
+  "win": {
+    "target": [
+      { "target": "nsis", "arch": ["x64"] }
+    ],
+    "icon": "build/icon.ico",
+    "artifactName": "CnkeIDE Setup ${version}.${ext}"
+  },
+  "mac": {
+    "target": ["dmg", "zip"],
+    "icon": "build/icon.icns",
+    "category": "public.app-category.developer-tools",
+    "artifactName": "CnkeIDE-${version}-${arch}.${ext}"
+  },
+  "linux": {
+    "target": ["AppImage", "deb"],
+    "icon": "build/icon.png",
+    "category": "Development",
+    "artifactName": "CnkeIDE-${version}-${arch}.${ext}"
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "CnkeIDE",
+    "include": "build/installer.nsh"
+  },
+  "publish": [
+    {
+      "provider": "generic",
+      "url": "https://ai.cnkes.cn/cnkeide/updates/"
+    }
+  ]
+}

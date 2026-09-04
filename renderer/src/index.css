@@ -1,0 +1,382 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 240 10% 3.9%;
+    --foreground: 0 0% 98%;
+    --card: 240 8% 6%;
+    --card-foreground: 0 0% 98%;
+    --popover: 240 8% 8%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 263 80% 60%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 240 4% 12%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 240 4% 12%;
+    --muted-foreground: 240 5% 64.9%;
+    --accent: 240 4% 14%;
+    --accent-foreground: 0 0% 98%;
+    --border: 240 4% 16%;
+    --input: 240 4% 16%;
+    --ring: 263 80% 60%;
+    --radius: 0.6rem;
+  }
+
+  /* 白色主题 */
+  .light {
+    --background: 0 0% 100%;
+    --foreground: 240 10% 3.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 240 10% 3.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 240 10% 3.9%;
+    --primary: 263 80% 55%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 240 5% 96%;
+    --secondary-foreground: 240 10% 3.9%;
+    --muted: 240 5% 96%;
+    --muted-foreground: 240 4% 46%;
+    --accent: 240 5% 92%;
+    --accent-foreground: 240 10% 3.9%;
+    --border: 240 6% 82%;
+    --input: 240 6% 82%;
+    --ring: 263 80% 55%;
+  }
+}
+
+* {
+  border-color: hsl(var(--border));
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background-color: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-feature-settings: "rlig" 1, "calt" 1;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
+}
+
+/* ===== 精致滚动条 ===== */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--muted) / 0.6);
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.5);
+  background-clip: padding-box;
+}
+
+@layer components {
+  /* 面板头部统一风格 */
+  .panel-header {
+    @apply flex items-center justify-between px-3 py-2 border-b border-border bg-secondary/20;
+  }
+  .panel-header__title {
+    @apply text-[11px] font-semibold text-muted-foreground uppercase tracking-wider;
+  }
+
+  /* 毛玻璃卡片 */
+  .glass-card {
+    background: hsla(240, 10%, 3.9%, 0.6);
+    backdrop-filter: blur(12px);
+    border: 1px solid hsl(var(--border));
+  }
+  .light .glass-card {
+    background: hsla(0, 0%, 100%, 0.7);
+  }
+
+  /* 品牌渐变文字 */
+  .brand-gradient {
+    @apply bg-gradient-to-r from-cyan-300 via-violet-300 to-fuchsia-300 bg-clip-text text-transparent;
+  }
+
+  /* 顶部炫彩细条 */
+  .brand-bar {
+    background: linear-gradient(
+      90deg,
+      #22d3ee 0%,
+      #818cf8 30%,
+      #a855f7 55%,
+      #ec4899 80%,
+      #f43f5e 100%
+    );
+  }
+
+  /* 主色渐变按钮 */
+  .btn-gradient {
+    @apply bg-gradient-to-r from-violet-500 to-fuchsia-500 text-white;
+    box-shadow: 0 4px 14px -4px rgb(168 85 247 / 0.5);
+  }
+}
+
+@layer utilities {
+  /* 选中态光晕 */
+  .glow-primary {
+    box-shadow: 0 0 0 1px hsl(var(--primary) / 0.4), 0 4px 18px -6px hsl(var(--primary) / 0.4);
+  }
+  /* 通用过渡 */
+  .transition-all-fast {
+    transition: all 0.15s ease;
+  }
+}
+
+/* ===== Markdown 渲染样式 ===== */
+.markdown-body {
+  word-break: break-word;
+}
+
+.markdown-body > *:first-child {
+  margin-top: 0;
+}
+.markdown-body > *:last-child {
+  margin-bottom: 0;
+}
+
+/* 标题 */
+.markdown-body h1 {
+  @apply text-[19px] font-bold mt-3 mb-2 text-foreground;
+}
+.markdown-body h2 {
+  @apply text-[17px] font-bold mt-3 mb-1.5 pb-1 border-b border-border/60 text-foreground;
+}
+.markdown-body h3 {
+  @apply text-[15px] font-bold mt-3 mb-1.5 text-foreground;
+}
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+  @apply text-[14px] font-semibold mt-2 mb-1 text-foreground;
+}
+
+/* 段落 */
+.markdown-body p {
+  @apply my-1.5 leading-relaxed;
+}
+
+/* 列表 */
+.markdown-body ul {
+  @apply list-disc pl-5 my-1.5 space-y-0.5;
+}
+.markdown-body ol {
+  @apply list-decimal pl-5 my-1.5 space-y-0.5;
+}
+.markdown-body li {
+  @apply leading-relaxed;
+}
+.markdown-body li > p {
+  @apply my-0.5;
+}
+
+/* 引用 */
+.markdown-body blockquote {
+  @apply border-l-2 border-primary/60 pl-3 my-2 text-muted-foreground italic bg-primary/5 rounded-r-md py-1;
+}
+.markdown-body blockquote p {
+  @apply my-0.5;
+}
+
+/* 表格 */
+.markdown-body table {
+  @apply w-full my-3 border-collapse text-[12.5px];
+}
+.markdown-body thead {
+  @apply bg-secondary/60;
+}
+.markdown-body th {
+  @apply border border-border px-3 py-1.5 text-left font-semibold text-foreground;
+}
+.markdown-body td {
+  @apply border border-border px-3 py-1.5 align-top;
+}
+.markdown-body tbody tr:nth-child(even) {
+  @apply bg-secondary/20;
+}
+
+/* 分割线 */
+.markdown-body hr {
+  @apply my-3 border-border;
+}
+
+/* 删除线 */
+.markdown-body del {
+  @apply text-muted-foreground;
+}
+
+/* 任务列表 */
+.markdown-body input[type='checkbox'] {
+  @apply accent-[hsl(var(--primary))];
+}
+
+/* 行内代码 */
+.markdown-body :not(pre) > code {
+  @apply bg-secondary/70 rounded-md px-1.5 py-0.5 text-[0.9em] font-mono text-cyan-300;
+}
+
+/* 代码块内 highlight.js 与容器背景协调 */
+.markdown-body pre code.hljs {
+  background: transparent;
+  padding: 0;
+}
+
+/* 代码块容器：深色默认 */
+.code-block-container {
+  background: #0d1117;
+}
+
+/* 代码块容器：白色主题 */
+.light .code-block-container {
+  background: #f6f8fa;
+  border-color: #e1e4e8;
+}
+
+/* ===== 白色主题下 highlight.js 高亮覆盖 ===== */
+.light .markdown-body pre code.hljs {
+  color: #24292f;
+}
+
+.light .hljs-comment,
+.light .hljs-quote {
+  color: #6a737d;
+}
+
+.light .hljs-keyword,
+.light .hljs-selector-tag,
+.light .hljs-subst {
+  color: #d73a49;
+}
+
+.light .hljs-string,
+.light .hljs-doctag,
+.light .hljs-regexp,
+.light .hljs-selector-id,
+.light .hljs-selector-class {
+  color: #032f62;
+}
+
+.light .hljs-number,
+.light .hljs-literal,
+.light .hljs-variable,
+.light .hljs-template-variable,
+.light .hljs-tag .hljs-attr {
+  color: #005cc5;
+}
+
+.light .hljs-title,
+.light .hljs-section,
+.light .hljs-name,
+.light .hljs-selector-pseudo {
+  color: #6f42c1;
+}
+
+.light .hljs-type,
+.light .hljs-class .hljs-title {
+  color: #005cc5;
+}
+
+.light .hljs-attribute,
+.light .hljs-symbol,
+.light .hljs-bullet,
+.light .hljs-meta {
+  color: #e36209;
+}
+
+.light .hljs-built_in,
+.light .hljs-builtin-name {
+  color: #005cc5;
+}
+
+.light .hljs-tag {
+  color: #22863a;
+}
+
+.light .hljs-addition {
+  color: #22863a;
+  background-color: #f0fff4;
+}
+
+.light .hljs-deletion {
+  color: #b31d28;
+  background-color: #ffeef0;
+}
+
+.light .hljs-emphasis {
+  font-style: italic;
+}
+
+.light .hljs-strong {
+  font-weight: bold;
+}
+
+/* 行内代码：白色主题 */
+.light .markdown-body :not(pre) > code {
+  background: #f0f0f0;
+  color: #c7254e;
+}
+
+/* ===== CodeMirror 6 编辑器样式 ===== */
+.cm-editor-container {
+  background: #0a0a0c;
+  height: 100%;
+  width: 100%;
+}
+
+.light .cm-editor-container {
+  background: #ffffff;
+}
+
+.cm-editor {
+  height: 100%;
+  background: #0a0a0c !important;
+  display: flex;
+  flex-direction: column;
+}
+
+.light .cm-editor {
+  background: #ffffff !important;
+}
+
+.cm-editor > .cm-scroller {
+  flex: 1 1 0;
+  overflow: auto;
+  font-family: 'JetBrains Mono', 'Cascadia Code', 'Consolas', monospace;
+}
+
+.cm-editor .cm-scroller::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.cm-editor .cm-scroller::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.cm-editor .cm-scroller::-webkit-scrollbar-thumb {
+  background: rgba(63, 63, 70, 0.6);
+  border-radius: 4px;
+}
+
+.cm-editor .cm-scroller::-webkit-scrollbar-thumb:hover {
+  background: rgba(82, 82, 91, 0.8);
+}
+
+.cm-editor.cm-focused {
+  outline: none !important;
+}

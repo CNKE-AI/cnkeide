@@ -1,0 +1,53 @@
+# 依赖
+node_modules/
+
+# 构建产物
+dist/
+dist-electron/
+out/
+release/
+
+# 日志
+*.log
+agent-debug.log
+dev_run.log
+
+# TypeScript 编译输出
+tsc-errors.txt
+tsc-output.txt
+
+# 敏感信息（服务器凭据、API Key）
+scripts/deploy_*.py
+scripts/server_files/
+scripts/*.ps1
+scripts/ssh_*.py
+scripts/sftp_*.py
+scripts/check_server.py
+scripts/check_baseurl.py
+scripts/cat_yml.py
+scripts/force_push_latest_yml.py
+scripts/force_update_latest_yml.py
+
+# 调试/临时输出
+scripts/*_out.txt
+scripts/out.txt
+scripts/t.py
+scripts/t2.py
+scripts/test_llm_url.py
+scripts/test_decode.js
+scripts/test_encoding.js
+scripts/smoke.js
+scripts/proc_info.ps1
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 环境变量
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
