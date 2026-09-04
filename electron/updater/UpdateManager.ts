@@ -184,6 +184,8 @@ export class UpdateManager {
       this.downloading = false;
       this.pendingInstall = true;
       this.pendingInfo = event;
+      // 保留基准安装包：下次更新走差分下载（仅几 MB），不再全量 ~86MB
+      this.preserveInstallerForDifferential();
       this.log('download', this.status.mode, event.version, 'success', '更新包下载完成');
       this.setStatus({
         phase: 'downloaded',
@@ -242,6 +244,66 @@ export class UpdateManager {
       await autoUpdater.downloadUpdate();
     } catch (e: any) {
       this.handleDownloadError(e instanceof Error ? e : new Error(e?.message || String(e)));
+    }
+  }
+
+  /**
+   * 保留本次下载的安装包到差分基准位置（<updaterCacheDir>/installer.exe）。
+   *
+   * electron-updater 的 NSIS 差分下载要求本地存在"当前已安装版本"的安装包作为
+   * 拼装基准（oldFile 固定为 CURRENT_APP_INSTALLER_FILE_NAME = "installer.exe"），
+   * 但 electron-updater 自身从不写入该文件——若应用不主动保留，每次更新都会因
+   * 缺基准而退化为全量下载（~86MB）。在 update-downloaded（安装前，文件必然
+   * 存在）时复制一份，下次更新即走差分（仅下载差异块，几 MB 级别）。
+   */
+  private preserveInstallerForDifferential(): void {
+    try {
+      const cacheDir = this.getUpdaterCacheDir();
+      if (!cacheDir) return;
+      const pendingDir = path.join(cacheDir, 'pending');
+      if (!fs.existsSync(pendingDir)) return;
+      const exes = fs
+        .readdirSync(pendingDir)
+        .filter((f) => f.toLowerCase().endsWith('.exe'));
+      if (exes.length === 0) return;
+      // 取最新修改的一个（正常情况下 pending 里只有一个刚下载的安装包）
+      let latest = exes[0];
+      let latestMtime = 0;
+      for (const f of exes) {
+        const st = fs.statSync(path.join(pendingDir, f));
+        if (st.mtimeMs > latestMtime) {
+          latestMtime = st.mtimeMs;
+          latest = f;
+        }
+      }
+      const src = path.join(pendingDir, latest);
+      const dest = path.join(cacheDir, 'installer.exe');
+      fs.copyFileSync(src, dest);
+      this.log('download', this.status.mode, undefined, 'success', `已保留差分基准安装包: ${latest}`);
+    } catch (e: any) {
+      // 保留失败不影响正常更新流程（下次仍全量下载）
+      this.log('download', this.status.mode, undefined, 'failed', '保留差分基准安装包失败', e?.message);
+    }
+  }
+
+  /** 解析 electron-updater 缓存目录（Windows: %LOCALAPPDATA%/<updaterCacheDirName>） */
+  private getUpdaterCacheDir(): string | null {
+    try {
+      // updaterCacheDirName 打包于 resources/app-update.yml（electron-builder 生成）
+      const ymlPath = path.join(process.resourcesPath || '', 'app-update.yml');
+      let dirName = 'cnke-claw-updater';
+      if (ymlPath && fs.existsSync(ymlPath)) {
+        const raw = fs.readFileSync(ymlPath, 'utf-8');
+        const m = raw.match(/^updaterCacheDirName:\s*(\S+)/m);
+        if (m) dirName = m[1];
+      }
+      const base =
+        process.env.LOCALAPPDATA ||
+        (process.env.USERPROFILE ? path.join(process.env.USERPROFILE, 'AppData', 'Local') : '');
+      if (!base) return null;
+      return path.join(base, dirName);
+    } catch {
+      return null;
     }
   }
 
