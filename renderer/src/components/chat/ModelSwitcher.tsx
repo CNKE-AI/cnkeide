@@ -17,7 +17,14 @@ const ModelSwitcher: React.FC = () => {
   useEffect(() => {
     if (!open) return;
     const onDocDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      const t = e.target as Node;
+      // 注意：下拉面板通过 createPortal 渲染到 document.body，不在 ref.current 的
+      // DOM 子树内。若只判断 ref，点击选项时 mousedown 会先关闭面板 → React 卸载
+      // 面板 → click 派发时按钮已被移除 → onClick 永不触发（表现为"点了没反应"）。
+      // 因此必须把面板 DOM 一并纳入"内部"判断。
+      const panel = document.getElementById('model-switcher-panel');
+      const inside = (ref.current && ref.current.contains(t)) || (panel != null && panel.contains(t));
+      if (!inside) setOpen(false);
     };
     document.addEventListener('mousedown', onDocDown);
     return () => document.removeEventListener('mousedown', onDocDown);
@@ -64,6 +71,7 @@ const ModelSwitcher: React.FC = () => {
         pos &&
         createPortal(
           <div
+            id="model-switcher-panel"
             style={{
               position: 'fixed',
               left: pos.left,

@@ -164,8 +164,14 @@ export const useUiStore = create<UiState>((set, get) => ({
   },
 
   switchModel: async (id) => {
-    await window.cnke.config.set('activeApiConfigId', id);
-    set({ activeModelId: id });
+    // onClick 中未 await：异常必须在此捕获，否则成为静默 unhandled rejection，
+    // 表现为"点了没反应"且控制台无提示
+    try {
+      await window.cnke.config.set('activeApiConfigId', id);
+      set({ activeModelId: id });
+    } catch (e) {
+      console.error('[switchModel] 切换模型失败:', e);
+    }
   },
 
   refreshContext: async (sessionId) => {
