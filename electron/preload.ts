@@ -182,6 +182,12 @@ const backendApi = {
   getDeviceId: () => ipcRenderer.invoke('backend:getDeviceId'),
   getBuiltins: () => ipcRenderer.invoke('backend:getBuiltins'),
   getAnnouncements: () => ipcRenderer.invoke('backend:getAnnouncements'),
+  subscribeAnnouncements: () => ipcRenderer.invoke('backend:subscribeAnnouncements'),
+  onAnnouncement: (cb: (payload: { type: string; announcements?: any[]; serverTime?: number }) => void) => {
+    const listener = (_e: any, payload: any) => cb(payload);
+    ipcRenderer.on('backend:announcement-event', listener);
+    return () => ipcRenderer.removeListener('backend:announcement-event', listener);
+  },
   submitFeedback: (msg: string, contact?: string) => ipcRenderer.invoke('backend:submitFeedback', msg, contact),
   listFeedback: (since?: number) => ipcRenderer.invoke('backend:listFeedback', since || 0),
 };

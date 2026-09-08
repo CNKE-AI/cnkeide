@@ -132,6 +132,8 @@ export interface CnkeAPI {
     getDeviceId: () => Promise<string>;
     getBuiltins: () => Promise<{ success: boolean; builtins?: any[]; error?: string }>;
     getAnnouncements: () => Promise<{ success: boolean; announcements?: any[]; error?: string }>;
+    subscribeAnnouncements: () => Promise<{ success: boolean; error?: string }>;
+    onAnnouncement: (cb: (payload: { type: string; announcements?: any[]; serverTime?: number }) => void) => () => void;
     submitFeedback: (msg: string, contact?: string) => Promise<{ success: boolean; item?: any; error?: string }>;
     listFeedback: (since?: number) => Promise<{ success: boolean; items?: any[]; newReplyCount?: number; serverTime?: number; error?: string }>;
   };

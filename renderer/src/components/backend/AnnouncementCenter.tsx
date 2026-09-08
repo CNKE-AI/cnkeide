@@ -55,20 +55,50 @@ const AnnouncementCenter: React.FC = () => {
   useEffect(() => {
     if (shownRef.current) return;
     shownRef.current = true;
+
+    // 拉取公告并（过滤已读 once 后）入队
+    const mergeAnnouncements = async (anns: Announcement[]) => {
+      if (!anns || anns.length === 0) return;
+      try {
+        const readRaw = await window.cnke.config.get('readAnnouncementIds');
+        const read = readRaw || [];
+        const fresh = anns.filter((a) => !(a.once && read.includes(a.id)));
+        if (fresh.length > 0) {
+          setQueue((q) => {
+            // 去重：已存在的 id 不重复入队
+            const existing = new Set(q.map((a) => a.id));
+            const add = fresh.filter((a) => !existing.has(a.id));
+            return [...q, ...add].slice(0, 8);
+          });
+        }
+      } catch { /* 静默 */ }
+    };
+
+    // 1. 启动时主动拉取一次（兜底，SSE 未建立或错过事件时仍能弹出）
     (async () => {
       try {
-        const [res, readRaw] = await Promise.all([
-          window.cnke.backend.getAnnouncements(),
-          window.cnke.config.get('readAnnouncementIds'),
-        ]);
-        if (!res.success || !res.announcements || res.announcements.length === 0) return;
-        const read = readRaw || [];
-        const fresh = res.announcements
-          .filter((a) => !(a.once && read.includes(a.id)))
-          .slice(0, 5);
-        if (fresh.length > 0) setQueue(fresh);
+        const res = await window.cnke.backend.getAnnouncements();
+        if (res.success) await mergeAnnouncements(res.announcements || []);
       } catch { /* 网络不可用则静默 */ }
     })();
+
+    // 2. 订阅 SSE 实时推送：服务端公告变化即时弹出
+    let unsubscribe: (() => void) | null = null;
+    (async () => {
+      try {
+        const sub = await window.cnke.backend.subscribeAnnouncements();
+        if (!sub?.success) return;
+        unsubscribe = window.cnke.backend.onAnnouncement((payload) => {
+          if (payload?.type === 'announcements' && payload.announcements) {
+            void mergeAnnouncements(payload.announcements);
+          }
+        });
+      } catch { /* 订阅失败则仅依赖启动拉取 */ }
+    })();
+
+    return () => {
+      try { unsubscribe?.(); } catch {}
+    };
   }, []);
 
   const current = queue[0];

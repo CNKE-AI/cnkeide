@@ -438,6 +438,31 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
     return backendAdapter.getAnnouncements();
   });
 
+  // 公告 SSE 实时推送订阅：渲染层发起订阅，主进程建立长连接，
+  // 收到公告变化后通过 'backend:announcement-event' 通道推送到渲染层。
+  let unsubscribeAnnouncements: (() => void) | null = null;
+  ipcMain.handle('backend:subscribeAnnouncements', async () => {
+    if (unsubscribeAnnouncements) {
+      // 已订阅则幂等返回（避免重复建连）
+      return { success: true };
+    }
+    try {
+      unsubscribeAnnouncements = backendAdapter.subscribeAnnouncements((evt) => {
+        if (evt.type === 'announcements') {
+          sendToWindow('backend:announcement-event', {
+            type: 'announcements',
+            announcements: evt.announcements || [],
+            serverTime: evt.serverTime,
+          });
+        }
+        // disconnect 事件仅内部用于重连，不需要推送给渲染层
+      });
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || '订阅失败' };
+    }
+  });
+
   ipcMain.handle('backend:submitFeedback', async (_e, msg: string, contact?: string) => {
     return backendAdapter.submitFeedback(msg, contact);
   });
@@ -481,6 +506,8 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
       void memoryStore.flushNow().catch(() => {});
       // 落盘更新日志并清理 autoUpdater 监听
       void updateManager.dispose();
+      // 断开公告 SSE 长连接
+      try { unsubscribeAnnouncements?.(); } catch {}
     },
   };
 }
