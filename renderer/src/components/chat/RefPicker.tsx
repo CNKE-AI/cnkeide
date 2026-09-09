@@ -121,6 +121,8 @@ const RefPicker: React.FC<RefPickerProps> = ({ open, onClose, onPickFile, onPick
               placeholder="搜索文件/符号（Enter 检索，Esc 关闭）"
               className="flex-1 bg-transparent outline-none text-[12px]"
               onKeyDown={(e) => {
+                // IME 合成中（候选确认/取消）不触发检索或关闭
+                if (e.nativeEvent.isComposing || e.keyCode === 229) return;
                 if (e.key === 'Enter') handleSearch((e.target as HTMLInputElement).value);
                 if (e.key === 'Escape') onClose();
               }}

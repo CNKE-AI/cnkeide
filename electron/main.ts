@@ -168,6 +168,12 @@ function showMainWindow() {
 function sendNotification(title: string, body: string) {
   try {
     if (!Notification.isSupported()) return;
+    // 窗口处于前台时跳过系统通知：
+    // Windows toast 出现会短暂抢占焦点，导致输入法上下文被停用、正在打字时键盘无响应。
+    // 用户正在使用应用无需打扰；仅在失焦/最小化（人不在应用前）时才弹通知。
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isMinimized() && mainWindow.isFocused()) {
+      return;
+    }
     const n = new Notification({
       title,
       body,

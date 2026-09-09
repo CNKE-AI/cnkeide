@@ -643,6 +643,8 @@ const ChatPanel: React.FC = () => {
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // IME 合成中（拼音候选确认/翻页）不触发发送，避免打断输入法导致文字卡住不上屏
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();

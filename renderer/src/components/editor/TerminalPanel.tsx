@@ -94,6 +94,8 @@ const TerminalPanel: React.FC = () => {
   }, [lines]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    // IME 合成中（输入法候选确认）不当作回车执行
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (e.key === 'Enter') {
       const cmd = input;
       setInput('');

@@ -24,8 +24,11 @@ export class WindowAdapter {
     if (this.mainWindow && !this.mainWindow.isDestroyed()) {
       this.mainWindow.webContents.send('app:notify', { title, body, type });
     }
-    // 同时发系统通知
-    if (Notification.isSupported()) {
+    // 系统通知仅在窗口失焦/最小化时发送：
+    // Windows toast 出现会短暂抢占焦点，导致输入法上下文被停用、正在打字时键盘无响应。
+    const focused = this.mainWindow && !this.mainWindow.isDestroyed()
+      && !this.mainWindow.isMinimized() && this.mainWindow.isFocused();
+    if (!focused && Notification.isSupported()) {
       const notif = new Notification({ title, body });
       notif.show();
     }
