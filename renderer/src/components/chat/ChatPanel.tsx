@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import * as XLSX from 'xlsx';
 import { useChatStore, ChatMessage, AgentMode, UploadedFile, MAX_FILE_TEXT_CHARS, MAX_UPLOAD_FILES } from '../../store/chatStore';
 import { useApp } from '../../store/AppProvider';
 import Markdown from './Markdown';
@@ -127,7 +128,7 @@ const TEXT_EXTS = new Set([
   'ts', 'tsx', 'mts', 'cts', 'py', 'pyw', 'java', 'c', 'h', 'cpp', 'hpp', 'cc', 'cxx', 'go', 'rs',
   'rb', 'php', 'sh', 'bash', 'zsh', 'bat', 'cmd', 'ps1', 'yaml', 'yml', 'toml', 'ini', 'cfg',
   'conf', 'config', 'properties', 'env', 'xml', 'html', 'htm', 'css', 'scss', 'less', 'sql',
-  'csv', 'tsv', 'vue', 'svelte', 'astro', 'graphql', 'proto', 'lua', 'pl', 'r', 'swift', 'kt',
+  'csv', 'tsv', 'xlsx', 'xls', 'xlsm', 'ods', 'numbers', 'vue', 'svelte', 'astro', 'graphql', 'proto', 'lua', 'pl', 'r', 'swift', 'kt',
   'kts', 'cs', 'dart', 'ex', 'exs', 'hs', 'scala', 'sol', 'prisma', 'gitignore',
   'gitattributes', 'editorconfig', 'dockerfile', 'makefile', 'snap', 'diff', 'patch', 'rst',
   'tex', 'svg', 'webmanifest', 'license',
@@ -136,8 +137,64 @@ const TEXT_EXTS = new Set([
 /** 文本类 MIME（application 下的 JSON/XML/脚本类也算文本） */
 const TEXT_MIME_RE = /^(text\/|application\/(json|xml|javascript|x-sh|x-python|x-yaml|x-toml|sql|graphql|ld\+json|x-ndjson|x-httpd-php|x-ruby|x-perl|x-lua|x-shellscript|toml|yaml|wasm-json))/;
 
+/** 表格类扩展名（需用 SheetJS 解析成可读文本，而非按原始二进制读取） */
+const SPREADSHEET_EXTS = new Set(['xlsx', 'xls', 'xlsm', 'ods']);
+
+/**
+ * 解析表格文件（xlsx/xls/ods）为可读文本：
+ * - 每个 sheet 转为「sheet 名 + 表格内容」，单元格用制表符分隔、换行分隔行
+ * - 数值/日期/布尔等非字符串单元格也转成文本，保证 AI 能读取
+ * - 最多解析前若干 sheet、每 sheet 前若干行，避免超大表撑爆上下文
+ */
+function parseSpreadsheet(buf: ArrayBuffer): string {
+  try {
+    const wb = XLSX.read(buf, { type: 'array' });
+    const parts: string[] = [];
+    const maxSheets = 4;
+    const maxRows = 500;
+    const sheetNames = wb.SheetNames.slice(0, maxSheets);
+    for (const name of sheetNames) {
+      const ws = wb.Sheets[name];
+      if (!ws) continue;
+      // sheet_to_json 保留空行，header:1 得到二维数组（每行是单元格数组）
+      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' }) as any[][];
+      const lines: string[] = [];
+      for (let r = 0; r < rows.length && r < maxRows; r++) {
+        const row = rows[r] || [];
+        // 去掉行尾连续空单元格，避免无意义的尾部制表符
+        let end = row.length;
+        while (end > 0 && (row[end - 1] === '' || row[end - 1] == null)) end--;
+        if (end === 0) {
+          lines.push('');
+          continue;
+        }
+        lines.push(row.slice(0, end).map((c) => cellToText(c)).join('\t'));
+      }
+      const more = rows.length > maxRows ? `\n…（该工作表共 ${rows.length} 行，仅展示前 ${maxRows} 行）` : '';
+      parts.push(`【工作表：${name}】\n${lines.join('\n')}${more}`);
+    }
+    const extra = wb.SheetNames.length > maxSheets
+      ? `\n\n（该文件共 ${wb.SheetNames.length} 个工作表，仅解析前 ${maxSheets} 个）`
+      : '';
+    return parts.join('\n\n') + extra;
+  } catch {
+    return '';
+  }
+}
+
+/** 单元格值转文本：日期/数值/布尔统一转可读字符串 */
+function cellToText(c: any): string {
+  if (c == null) return '';
+  if (typeof c === 'string') return c;
+  if (c instanceof Date) return c.toISOString().slice(0, 10);
+  if (typeof c === 'number') return Number.isInteger(c) ? String(c) : String(c);
+  if (typeof c === 'boolean') return c ? 'TRUE' : 'FALSE';
+  return String(c);
+}
+
 /**
  * 读取上传文件的文本内容（最多 MAX_FILE_TEXT_CHARS 字符）：
+ * - 表格文件（xlsx/xls/ods）用 SheetJS 解析为可读文本
  * - 文件过大时只读取开头足够字节，不整文件读入内存
  * - 非文本类文件（按扩展名/MIME 判断 + NUL 字节兜底检测）返回 null
  */
@@ -145,6 +202,14 @@ async function readTextFile(file: File): Promise<{ content: string; truncated: b
   const ext = (file.name.split('.').pop() || '').toLowerCase();
   const isPlainText = TEXT_MIME_RE.test(file.type) || file.type.startsWith('text/') || TEXT_EXTS.has(ext);
   try {
+    // 表格文件：用 SheetJS 解析
+    if (SPREADSHEET_EXTS.has(ext)) {
+      const ab = await file.arrayBuffer();
+      const text = parseSpreadsheet(ab);
+      if (!text) return null;
+      const truncated = text.length > MAX_FILE_TEXT_CHARS;
+      return { content: truncated ? text.slice(0, MAX_FILE_TEXT_CHARS) : text, truncated };
+    }
     const need = MAX_FILE_TEXT_CHARS * 4 + 4096;
     const buf = file.size > need ? file.slice(0, need) : file;
     const text = await buf.text();
