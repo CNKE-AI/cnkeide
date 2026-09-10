@@ -42,6 +42,25 @@ const CODE_COLLAPSE_LINES = 20;
 /** 折叠时显示的最大高度 */
 const CODE_COLLAPSED_HEIGHT = 260;
 
+/**
+ * 启发式判断一段"代码块"是否其实只是单行普通文本（路径/文件名/短语），
+ * 是的话降级为行内 code 而不是占满宽度的灰色大代码框。
+ */
+function looksLikeNonCodeLine(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  // 单行（无换行）
+  if (t.includes('\n')) return false;
+  // Windows / Unix 路径
+  if (/^[a-zA-Z]:[\\/]/.test(t)) return true;
+  if (t.startsWith('~/') || t.startsWith('./') || t.startsWith('../') || t.startsWith('/')) return true;
+  // 纯文件名 / 扩展名
+  if (/^[\w.\- ]+\.[a-zA-Z0-9]{1,5}$/.test(t)) return true;
+  // 短中文短语（≤16 字符）没有特殊字符 → 更像说明文字而非代码
+  if (/^[\u4e00-\u9fa5()\sA-Za-z0-9·.\-]{1,16}$/.test(t) && !/[{}()\[\];=<>]/.test(t)) return true;
+  return false;
+}
+
 /** 代码块/行内代码渲染，带语言标签与复制按钮 */
 const CodeBlock: React.FC<any> = ({ inline, className, children, ...props }) => {
   const match = /language-(\w+)/.exec(className || '');
@@ -49,6 +68,15 @@ const CodeBlock: React.FC<any> = ({ inline, className, children, ...props }) => 
   const [expanded, setExpanded] = useState(false);
 
   if (inline) {
+    return (
+      <code className="bg-secondary/70 rounded-md px-1.5 py-0.5 text-[0.9em] font-mono text-cyan-300">
+        {codeText}
+      </code>
+    );
+  }
+
+  // 兜底：单行无语言标识 + 内容看起来不是代码（路径/文件名/短语）→ 降级为行内 code
+  if (!match && looksLikeNonCodeLine(codeText)) {
     return (
       <code className="bg-secondary/70 rounded-md px-1.5 py-0.5 text-[0.9em] font-mono text-cyan-300">
         {codeText}

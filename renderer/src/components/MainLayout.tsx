@@ -9,12 +9,13 @@ import EditorPanel from './editor/EditorPanel';
 import TerminalPanel from './editor/TerminalPanel';
 import SettingsSheet from './SettingsSheet';
 import AnnouncementCenter from './backend/AnnouncementCenter';
-import { Code2, TerminalSquare, X } from 'lucide-react';
+import { Code2, TerminalSquare, FolderTree, X } from 'lucide-react';
 
 const MainLayout: React.FC = () => {
   const { settingsOpen } = useApp();
   const [editorVisible, setEditorVisible] = useState(true);
   const [terminalVisible, setTerminalVisible] = useState(true);
+  const [explorerVisible, setExplorerVisible] = useState(true);
 
   // 应用启动时自动同步官方内置模型到「我的 API 配置」；用户自定义添加的配置不受影响
   useEffect(() => {
@@ -123,12 +124,44 @@ const MainLayout: React.FC = () => {
               </div>
             </div>
           </Panel>
-          <PanelResizeHandle className="w-1 bg-border/60 hover:bg-primary/60 active:bg-primary transition-colors" />
 
-          {/* 最右：资源管理器（文件树） */}
-          <Panel defaultSize={10} minSize={6}>
-            <FileTree />
-          </Panel>
+          {/* 资源管理器栏：隐藏时只留切换按钮 */}
+          {explorerVisible ? (
+            <>
+              <PanelResizeHandle className="w-1 bg-border/60 hover:bg-primary/60 active:bg-primary transition-colors" />
+              <Panel defaultSize={10} minSize={6}>
+                <div className="flex flex-col h-full">
+                  {/* 顶部标签栏：标题 + 关闭按钮 */}
+                  <div className="flex items-center justify-between px-3 py-1.5 border-b border-border bg-secondary/20 shrink-0">
+                    <div className="flex items-center gap-1.5 text-[11px] text-foreground/80 font-medium">
+                      <FolderTree className="w-3.5 h-3.5 text-amber-400" />
+                      资源管理器
+                    </div>
+                    <button
+                      onClick={() => setExplorerVisible(false)}
+                      className="p-1 rounded hover:bg-muted-foreground/20 text-muted-foreground hover:text-foreground transition-colors"
+                      title="隐藏资源管理器"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                  <div className="flex-1 overflow-hidden">
+                    <FileTree />
+                  </div>
+                </div>
+              </Panel>
+            </>
+          ) : (
+            <div className="w-9 shrink-0 border-l border-border bg-secondary/20 flex flex-col items-center py-2">
+              <button
+                onClick={() => setExplorerVisible(true)}
+                className="p-1.5 rounded-md text-muted-foreground hover:bg-accent/60 hover:text-foreground transition-colors"
+                title="显示资源管理器"
+              >
+                <FolderTree className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
         </PanelGroup>
       </div>
       {settingsOpen && <SettingsSheet />}

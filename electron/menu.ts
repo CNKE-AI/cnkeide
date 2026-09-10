@@ -1,4 +1,4 @@
-import { Menu, BrowserWindow, shell } from 'electron';
+import { Menu, BrowserWindow, shell, app } from 'electron';
 
 /** CnkeIDE 官网首页地址 */
 const OFFICIAL_WEBSITE_URL = 'https://github.com/CNKE-AI/cnkeide';
@@ -26,6 +26,8 @@ export function createMenu(): void {
       submenu: [
         { label: '打开文件夹...', accelerator: 'CmdOrCtrl+O', click: () => BrowserWindow.getFocusedWindow()?.webContents.send('menu:openFolder') },
         { label: '保存文件', accelerator: 'CmdOrCtrl+S', click: () => BrowserWindow.getFocusedWindow()?.webContents.send('menu:saveFile') },
+        { type: 'separator' },
+        { label: '生成 PPT...', accelerator: 'CmdOrCtrl+Shift+P', click: () => app.emit('open-ppt') },
         { type: 'separator' },
         isMac ? { role: 'close' } : { role: 'quit', label: '退出' },
       ],

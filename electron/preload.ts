@@ -209,6 +209,82 @@ const notifyApi = {
   },
 };
 
+// ===== PPT 生成 API（W14）=====
+const pptApi = {
+  /** 打开独立的 PPT 生成窗口 */
+  open: () => ipcRenderer.send('ppt:open'),
+  /** 关闭 PPT 窗口 */
+  close: () => ipcRenderer.send('ppt:close'),
+  minimize: () => ipcRenderer.send('ppt:minimize'),
+  /** 生成并保存 PPT 到指定路径 */
+  generate: (req: any, savePath: string) => ipcRenderer.invoke('ppt:generate', req, savePath),
+  /** AI 生成 PPT 大纲（复用当前 active API + LLMProvider） */
+  generateOutline: (topic: string, slideCount: number) => ipcRenderer.invoke('ppt:generateOutline', topic, slideCount),
+  /** 扫描当前工作区内容摘要（目录结构 + README + 文档清单） */
+  scanWorkspace: (wsPath?: string) => ipcRenderer.invoke('ppt:scanWorkspace', wsPath),
+  /** 基于当前工作区代码/文档自动生成 PPT 大纲 */
+  generateFromWorkspace: (opts?: { wsPath?: string; slideCount?: number; focus?: string }) =>
+    ipcRenderer.invoke('ppt:generateFromWorkspace', opts),
+  /** 列出内置主题清单（4 套） */
+  listThemes: () => ipcRenderer.invoke('ppt:listThemes'),
+  /** 第 2 轮 LLM：把大纲 + 主题样式 → 渲染为完整 HTML 演示文稿 */
+  renderTheme: (payload: {
+    themeId: string;
+    outline: { title: string; slides: { title: string; bullets: string[] }[] };
+    extraInstruction?: string;
+  }) => ipcRenderer.invoke('ppt:renderTheme', payload),
+  /** 保存渲染好的 HTML 到指定路径 */
+  saveHtml: (payload: { html: string; savePath: string }) =>
+    ipcRenderer.invoke('ppt:saveHtml', payload),
+  /** 导出 PDF：把渲染好的 HTML 转为 16:9 PDF 文件（savePath 缺省时弹保存对话框） */
+  exportPdf: (payload: { html: string; savePath?: string; title?: string }) =>
+    ipcRenderer.invoke('ppt:exportPdf', payload),
+  /** 监听 PPT 渲染进度（render/audit/reflow/finalize 阶段） */
+  onRenderProgress: (handler: (payload: { stage: string; current: number; total: number; message: string }) => void) => {
+    const wrapped = (_e: any, payload: any) => handler(payload);
+    ipcRenderer.on('ppt:renderProgress', wrapped);
+    return () => ipcRenderer.removeListener('ppt:renderProgress', wrapped);
+  },
+  /** 列出远程 PPT 模板索引（支持分页/分类/搜索） */
+  listRemoteTemplates: (payload?: { page?: number; pageSize?: number; category?: string; keyword?: string }) =>
+    ipcRenderer.invoke('ppt:listRemoteTemplates', payload || {}),
+  /** 列出远程模板分类 */
+  listRemoteCategories: () => ipcRenderer.invoke('ppt:listRemoteCategories'),
+  /** 下载远程模板到本地缓存 */
+  downloadTemplate: (payload: { id: string }) => ipcRenderer.invoke('ppt:downloadTemplate', payload),
+  /** 监听远程模板下载进度 */
+  onTemplateProgress: (handler: (payload: { id: string; downloaded: number; total: number; ratio: number }) => void) => {
+    const wrapped = (_e: any, payload: any) => handler(payload);
+    ipcRenderer.on('ppt:templateProgress', wrapped);
+    return () => ipcRenderer.removeListener('ppt:templateProgress', wrapped);
+  },
+  /** 大纲细化扩写（单页） */
+  expandSlide: (payload: {
+    slide: { title: string; bullets: string[] };
+    presentationTopic?: string;
+    intensity?: 'light' | 'standard' | 'deep';
+    extraInstruction?: string;
+  }) => ipcRenderer.invoke('ppt:expandSlide', payload),
+  /** 大纲细化扩写（全文） */
+  expandAll: (payload: {
+    outline: { title: string; slides: { title: string; bullets: string[] }[] };
+    intensity?: 'light' | 'standard' | 'deep';
+    extraInstruction?: string;
+  }) => ipcRenderer.invoke('ppt:expandAll', payload),
+  /** 监听全文扩写进度 */
+  onExpandProgress: (handler: (payload: { current: number; total: number; message: string }) => void) => {
+    const wrapped = (_e: any, payload: any) => handler(payload);
+    ipcRenderer.on('ppt:expandProgress', wrapped);
+    return () => ipcRenderer.removeListener('ppt:expandProgress', wrapped);
+  },
+  /** 套用模板 + 大纲 → 生成最终 .pptx */
+  applyTemplate: (payload: {
+    templateId: string;
+    outline: { title: string; slides: { title: string; bullets: string[] }[] };
+    savePath?: string;
+  }) => ipcRenderer.invoke('ppt:applyTemplate', payload),
+};
+
 // ===== 远程更新 API =====
 const updateApi = {
   check: (mode: 'manual' | 'auto') => ipcRenderer.invoke('update:check', mode),
@@ -247,6 +323,7 @@ contextBridge.exposeInMainWorld('cnke', {
   approval: approvalApi,
   sessionEx: sessionExApi,
   plan: planApi,
+  ppt: pptApi,
 });
 
 // 类型导出（给渲染进程的 d.ts 用）

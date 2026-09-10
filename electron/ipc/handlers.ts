@@ -13,6 +13,15 @@ import { CodebaseIndexer } from '../core-fork/codebase/CodebaseIndexer';
 import { BackendAdapter } from '../adapter/BackendAdapter';
 import { UpdateManager } from '../updater/UpdateManager';
 import { PlanManager } from '../core-fork/plan/PlanManager';
+import { LLMProvider } from '../core-fork/llm/LLMProvider';
+import { createPptxAdapter, PptxAdapter } from '../core-fork/tools/PptxTools';
+import { renderOutlineToHtml } from '../core-fork/ppt/pptRenderer';
+import { PPT_THEMES, findTheme } from '../core-fork/ppt/pptThemes';
+import { exportHtmlToPdf } from '../core-fork/ppt/pptPdf';
+import { PptTemplateClient } from '../core-fork/ppt/pptTemplateClient';
+import { expandSlide, expandAll } from '../core-fork/ppt/pptOutlineExpand';
+import { applyTemplate } from '../core-fork/ppt/pptApply';
+import { promises as fsp } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
@@ -495,6 +504,494 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
 
   ipcMain.handle('update:getLogs', async (_e, limit?: number) => {
     return updateManager.getUpdateLogs(limit || 100);
+  });
+
+  // ===== PPT 生成 IPC（W14）=====
+  let pptAdapter: PptxAdapter | null = null;
+  const getPptAdapter = async (): Promise<PptxAdapter> => {
+    if (!pptAdapter) pptAdapter = await createPptxAdapter();
+    return pptAdapter;
+  };
+
+  // 生成 PPT 并保存到指定路径
+  ipcMain.handle('ppt:generate', async (_e, req: any, savePath?: string) => {
+    const adapter = await getPptAdapter();
+    if (!adapter.available) {
+      return { success: false, error: 'PPT 生成未就绪：缺少 pptxgenjs 依赖，请运行 npm install pptxgenjs' };
+    }
+    if (!savePath) {
+      const { canceled, filePath } = await dialog.showSaveDialog({
+        title: '保存 PPT',
+        defaultPath: path.join(app.getPath('documents'), `${req?.title || '演示文稿'}.pptx`),
+        filters: [{ name: 'PowerPoint 演示文稿', extensions: ['pptx'] }],
+      });
+      if (canceled || !filePath) return { success: false, error: '已取消保存' };
+      savePath = filePath;
+    }
+    return adapter.generate(req ?? {}, savePath);
+  });
+
+  // AI 生成 PPT 大纲（复用当前 active API 配置）
+  ipcMain.handle('ppt:generateOutline', async (_e, topic: string, slideCount?: number) => {
+    const configs = config.getApiKeyConfigs();
+    const activeId = config.get<string>('activeApiConfigId');
+    const apiConfig = configs.find((c: any) => c.id === activeId) || configs[0];
+    if (!apiConfig) {
+      return { success: false, error: '未配置 API，无法生成大纲。请先在设置中配置模型 API。' };
+    }
+    const n = Math.max(1, Math.min(20, Number(slideCount) || 8));
+    try {
+      const llm = new LLMProvider();
+      const prompt = [
+        `你是专业的演示文稿策划专家。请根据主题「${topic}」生成一份 ${n} 页 PPT 大纲。`,
+        `严格输出 JSON（不要任何 markdown 代码块、不要多余文字），结构如下：`,
+        `{"title":"演示文稿总标题","slides":[{"title":"第 i 页标题","bullets":["要点1","要点2","要点3"]}]}`,
+        `要求：每页 2-5 个要点，语言简洁有力，逻辑递进。`,
+      ].join('\n');
+      const resp = await llm.chat({
+        apiConfig,
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.7,
+      });
+      // 剥离可能的 ```json ... ``` 包裹
+      let text = (resp.content || '').trim();
+      const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+      if (fenceMatch) text = fenceMatch[1].trim();
+      const parsed = JSON.parse(text);
+      return { success: true, outline: parsed };
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) };
+    }
+  });
+
+  // ===== PPT 主题相关 =====
+  // 返回内置主题清单（不调用 LLM）
+  ipcMain.handle('ppt:listThemes', async () => {
+    return {
+      success: true,
+      themes: PPT_THEMES.map((t) => ({
+        id: t.id,
+        name: t.name,
+        description: t.description,
+        colors: t.colors,
+        icon: t.icon,
+      })),
+    };
+  });
+
+  // 第 2 轮 LLM：把大纲 + 主题样式 → 渲染为完整 HTML 演示文稿
+  ipcMain.handle(
+    'ppt:renderTheme',
+    async (
+      e,
+      payload: {
+        themeId: string;
+        outline: { title: string; slides: { title: string; bullets: string[] }[] };
+        extraInstruction?: string;
+      },
+    ) => {
+      const theme = findTheme(payload.themeId);
+      if (!theme) return { success: false, error: `未知主题：${payload.themeId}` };
+      const configs = config.getApiKeyConfigs();
+      const activeId = config.get<string>('activeApiConfigId');
+      const apiConfig = configs.find((c: any) => c.id === activeId) || configs[0];
+      if (!apiConfig) return { success: false, error: '未配置 API，无法渲染。请先在设置中配置模型 API。' };
+      const sender = e.sender;
+      try {
+        const llm = new LLMProvider();
+        const result = await renderOutlineToHtml(llm, apiConfig, {
+          themeId: payload.themeId,
+          outline: payload.outline,
+          extraInstruction: payload.extraInstruction,
+          onProgress: (stage, current, total, message) => {
+            try { sender.send('ppt:renderProgress', { stage, current, total, message }); } catch {}
+          },
+        });
+        return result;
+      } catch (err: any) {
+        return { success: false, error: err?.message || String(err) };
+      }
+    },
+  );
+
+  // 保存渲染好的 HTML 到指定路径
+  ipcMain.handle('ppt:saveHtml', async (_e, payload: { html: string; savePath: string }) => {
+    try {
+      if (!payload?.html || !payload?.savePath) {
+        return { success: false, error: '缺少 html 或 savePath' };
+      }
+      await fsp.mkdir(path.dirname(payload.savePath), { recursive: true });
+      await fsp.writeFile(payload.savePath, payload.html, 'utf-8');
+      return { success: true, path: payload.savePath };
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) };
+    }
+  });
+
+  // 导出 PDF：把渲染好的 HTML（含 @media print 分页样式）转 16:9 PDF
+  ipcMain.handle(
+    'ppt:exportPdf',
+    async (_e, payload: { html: string; savePath?: string; title?: string }) => {
+      if (!payload?.html) return { success: false, error: '缺少 html' };
+      let savePath = payload.savePath;
+      if (!savePath) {
+        const { canceled, filePath } = await dialog.showSaveDialog({
+          title: '导出 PDF',
+          defaultPath: path.join(app.getPath('documents'), `${payload.title || '演示文稿'}.pdf`),
+          filters: [{ name: 'PDF 文档', extensions: ['pdf'] }],
+        });
+        if (canceled || !filePath) return { success: false, error: '已取消导出' };
+        savePath = filePath;
+      }
+      return exportHtmlToPdf(payload.html, savePath);
+    },
+  );
+
+  // ===== 远程 PPT 模板（服务器内置 + 本地 mock）=====
+  const tplClient = new PptTemplateClient();
+
+  // 列出远程模板索引（支持分页/分类/搜索）
+  ipcMain.handle(
+    'ppt:listRemoteTemplates',
+    async (_e, payload?: { page?: number; pageSize?: number; category?: string; keyword?: string }) => {
+      try {
+        const idx = await tplClient.fetchIndex(payload || {});
+        return { success: true, index: idx };
+      } catch (err: any) {
+        return { success: false, error: err?.message || String(err) };
+      }
+    },
+  );
+
+  // 列出分类（一次性拉所有分类）
+  ipcMain.handle('ppt:listRemoteCategories', async () => {
+    try {
+      const r = await fetch(`${tplClient.getBaseUrl()}/api/categories`);
+      if (!r.ok) return { success: false, error: `HTTP ${r.status}` };
+      const data = await r.json() as { categories: string[] };
+      return { success: true, categories: data.categories || [] };
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) };
+    }
+  });
+
+  // 下载远程模板到本地缓存
+  ipcMain.handle(
+    'ppt:downloadTemplate',
+    async (e, payload: { id: string }) => {
+      const sender = e.sender;
+      try {
+        const res = await tplClient.downloadTemplate(payload.id, (p) => {
+          try { sender.send('ppt:templateProgress', { id: payload.id, ...p }); } catch {}
+        });
+        return res;
+      } catch (err: any) {
+        return { success: false, error: err?.message || String(err) };
+      }
+    },
+  );
+
+  // 大纲细化扩写（单页）
+  ipcMain.handle(
+    'ppt:expandSlide',
+    async (
+      _e,
+      payload: {
+        slide: { title: string; bullets: string[] };
+        presentationTopic?: string;
+        intensity?: 'light' | 'standard' | 'deep';
+        extraInstruction?: string;
+      },
+    ) => {
+      const configs = config.getApiKeyConfigs();
+      const activeId = config.get<string>('activeApiConfigId');
+      const apiConfig = configs.find((c: any) => c.id === activeId) || configs[0];
+      if (!apiConfig) return { success: false, error: '未配置 API，无法扩写' };
+      try {
+        const llm = new LLMProvider();
+        const result = await expandSlide(llm, apiConfig, payload.slide, {
+          intensity: payload.intensity,
+          extraInstruction: payload.extraInstruction,
+          presentationTopic: payload.presentationTopic,
+        });
+        return result;
+      } catch (err: any) {
+        return { success: false, error: err?.message || String(err) };
+      }
+    },
+  );
+
+  // 大纲细化扩写（全文）
+  ipcMain.handle(
+    'ppt:expandAll',
+    async (
+      e,
+      payload: {
+        outline: { title: string; slides: { title: string; bullets: string[] }[] };
+        intensity?: 'light' | 'standard' | 'deep';
+        extraInstruction?: string;
+      },
+    ) => {
+      const configs = config.getApiKeyConfigs();
+      const activeId = config.get<string>('activeApiConfigId');
+      const apiConfig = configs.find((c: any) => c.id === activeId) || configs[0];
+      if (!apiConfig) return { success: false, error: '未配置 API，无法扩写' };
+      const sender = e.sender;
+      try {
+        const llm = new LLMProvider();
+        const result = await expandAll(llm, apiConfig, payload.outline, {
+          intensity: payload.intensity,
+          extraInstruction: payload.extraInstruction,
+          presentationTopic: payload.outline.title,
+          onProgress: (current, total, message) => {
+            try { sender.send('ppt:expandProgress', { current, total, message }); } catch {}
+          },
+        });
+        return result;
+      } catch (err: any) {
+        return { success: false, error: err?.message || String(err) };
+      }
+    },
+  );
+
+  // 套用模板 + 大纲 → 生成最终 .pptx
+  ipcMain.handle(
+    'ppt:applyTemplate',
+    async (
+      _e,
+      payload: {
+        templateId: string;
+        outline: { title: string; slides: { title: string; bullets: string[] }[] };
+        savePath?: string;
+      },
+    ) => {
+      try {
+        const templatePath = tplClient.getCachedPath(payload.templateId);
+        const dl = await tplClient.downloadTemplate(payload.templateId);
+        if (!dl.success || !dl.path) return { success: false, error: dl.error || '模板下载失败' };
+        const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const safeTitle = (payload.outline.title || '演示文稿').replace(/[\\/:*?"<>|]/g, '_').slice(0, 40);
+        const filename = `${safeTitle}-模板${payload.templateId}-${ts}.pptx`;
+        const finalPath = payload.savePath || templatePath.replace(/\.pptx$/, `-applied-${ts}.pptx`);
+        const result = await applyTemplate({
+          templatePath: dl.path,
+          outline: payload.outline,
+          savePath: finalPath,
+        });
+        return result;
+      } catch (err: any) {
+        return { success: false, error: err?.message || String(err) };
+      }
+    },
+  );
+
+  // ===== 工作区内容扫描（供 PPT 从当前项目自动生成内容）=====
+
+  /** 需要忽略的目录/文件名，避免把依赖、构建产物、缓存扫进来 */
+  const PPT_SCAN_IGNORE_DIRS = new Set([
+    'node_modules', '.git', 'dist', 'build', 'out', 'release',
+    '.next', '.nuxt', '.cache', 'coverage', 'vendor', '__pycache__',
+    '.idea', '.vscode', 'venv', '.venv', 'target', '.gradle',
+  ]);
+  const PPT_SCAN_IGNORE_FILES = new Set([
+    'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', '.DS_Store', 'Thumbs.db',
+  ]);
+  /** 优先作为项目说明读取的文档名 */
+  const PPT_README_CANDIDATES = [
+    'README.md', 'readme.md', 'README.MD', 'README', 'README.txt',
+    'README.rst', 'readme', '说明.md', '项目说明.md', '介绍.md', 'README.zh.md',
+  ];
+  /** 扫描目录结构时每层最多列出的条目数，避免超大目录刷屏 */
+  const PPT_SCAN_MAX_ENTRIES_PER_DIR = 60;
+  /** 递归扫描的最大深度 */
+  const PPT_SCAN_MAX_DEPTH = 5;
+
+  interface WorkspaceScanSummary {
+    success: boolean;
+    workspace?: string;
+    projectName?: string;
+    readmeContent?: string;
+    readmePath?: string;
+    structure?: string;
+    fileStats?: { totalFiles: number; topDirs: { name: string; count: number }[] };
+    docFiles?: { path: string; size: number }[];
+    error?: string;
+  }
+
+  /** 递归列出目录结构（限定深度与每层条目数） */
+  async function buildDirStructure(
+    dir: string,
+    depth: number,
+    maxDepth: number,
+    lines: string[],
+    prefix: string,
+    basePath: string,
+  ): Promise<void> {
+    if (depth > maxDepth || lines.length > 800) return;
+    let entries: any[] = [];
+    try {
+      const res = await fsAdapter.listDir(dir);
+      if (!res.success || !res.entries) return;
+      entries = res.entries.filter(
+        (e: any) => !PPT_SCAN_IGNORE_DIRS.has(e.name) && !PPT_SCAN_IGNORE_FILES.has(e.name),
+      );
+    } catch {
+      return;
+    }
+    const dirs = entries.filter((e: any) => e.isDirectory);
+    const files = entries.filter((e: any) => e.isFile);
+    const shown = [...dirs, ...files].slice(0, PPT_SCAN_MAX_ENTRIES_PER_DIR);
+    for (let i = 0; i < shown.length; i++) {
+      const e = shown[i];
+      const isLast = i === shown.length - 1;
+      const rel = path.relative(basePath, e.path) || e.name;
+      const connector = isLast ? '└─ ' : '├─ ';
+      lines.push(`${prefix}${connector}${e.name}${e.isDirectory ? '/' : ''}`);
+      if (e.isDirectory) {
+        await buildDirStructure(e.path, depth + 1, maxDepth, lines, `${prefix}${isLast ? '   ' : '│  '}`, basePath);
+      }
+    }
+  }
+
+  /** 读取工作区 README / 文档，返回摘要 */
+  async function scanWorkspaceSummary(wsPath: string): Promise<WorkspaceScanSummary> {
+    try {
+      const statRes = await fsAdapter.listDir(wsPath);
+      if (!statRes.success) {
+        return { success: false, error: `无法读取工作区：${statRes.error || '目录不存在'}` };
+      }
+
+      // 1. 项目名
+      const projectName = path.basename(wsPath) || '当前项目';
+
+      // 2. 查找 README 文档
+      let readmeContent: string | undefined;
+      let readmePath: string | undefined;
+      for (const cand of PPT_README_CANDIDATES) {
+        const fp = path.join(wsPath, cand);
+        const r = await fsAdapter.readFile(fp);
+        if (r.success && r.content) {
+          readmeContent = r.content.slice(0, 6000); // 截断，避免上下文过长
+          readmePath = cand;
+          break;
+        }
+      }
+
+      // 3. 目录结构
+      const structureLines: string[] = [`${projectName}/`];
+      await buildDirStructure(wsPath, 1, PPT_SCAN_MAX_DEPTH, structureLines, '', wsPath);
+
+      // 4. 统计文档文件（.md/.txt/.rst/.docx/.pdf 等）
+      const docFiles: { path: string; size: number }[] = [];
+      const topDirs: Record<string, number> = {};
+      const collectDocs = async (dir: string, depth: number) => {
+        if (depth > 3) return;
+        let entries: any[] = [];
+        try {
+          const res = await fsAdapter.listDir(dir);
+          if (!res.success || !res.entries) return;
+          entries = res.entries;
+        } catch {
+          return;
+        }
+        for (const e of entries) {
+          if (PPT_SCAN_IGNORE_DIRS.has(e.name) || PPT_SCAN_IGNORE_FILES.has(e.name)) continue;
+          if (e.isDirectory) {
+            if (depth === 1) topDirs[e.name] = topDirs[e.name] || 0;
+            await collectDocs(e.path, depth + 1);
+          } else if (e.isFile) {
+            if (depth === 1 && e.isDirectory === false) topDirs['(根目录)'] = topDirs['(根目录)'] || 0;
+            if (/\.(md|markdown|txt|rst|adoc|docx|pdf|html|htm)$/i.test(e.name)) {
+              if (docFiles.length < 30) docFiles.push({ path: path.relative(wsPath, e.path), size: e.size });
+            }
+          }
+        }
+      };
+      await collectDocs(wsPath, 1);
+
+      const totalFiles = (statRes.entries || []).length;
+      const topDirStats = Object.entries(topDirs)
+        .map(([name, count]) => ({ name, count }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 10);
+
+      return {
+        success: true,
+        workspace: wsPath,
+        projectName,
+        readmeContent,
+        readmePath,
+        structure: structureLines.join('\n'),
+        fileStats: { totalFiles, topDirs: topDirStats },
+        docFiles,
+      };
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) };
+    }
+  }
+
+  // 扫描当前工作区并返回内容摘要（供 PPT 窗口使用）
+  ipcMain.handle('ppt:scanWorkspace', async (_e, wsPath?: string) => {
+    const target = wsPath || config.getLastWorkspace();
+    if (!target) {
+      return { success: false, error: '尚未打开任何工作区，请先在主界面打开文件夹。' };
+    }
+    return scanWorkspaceSummary(target);
+  });
+
+  // 基于当前工作区代码/文档自动生成 PPT 大纲
+  ipcMain.handle('ppt:generateFromWorkspace', async (_e, opts?: { wsPath?: string; slideCount?: number; focus?: string }) => {
+    const wsPath = opts?.wsPath || config.getLastWorkspace();
+    if (!wsPath) {
+      return { success: false, error: '尚未打开任何工作区，请先在主界面打开文件夹。' };
+    }
+    const configs = config.getApiKeyConfigs();
+    const activeId = config.get<string>('activeApiConfigId');
+    const apiConfig = configs.find((c: any) => c.id === activeId) || configs[0];
+    if (!apiConfig) {
+      return { success: false, error: '未配置 API，无法生成大纲。请先在设置中配置模型 API。' };
+    }
+    const n = Math.max(1, Math.min(20, Number(opts?.slideCount) || 8));
+
+    const summary = await scanWorkspaceSummary(wsPath);
+    if (!summary.success) {
+      return { success: false, error: summary.error };
+    }
+
+    try {
+      const llm = new LLMProvider();
+      const focusHint = opts?.focus?.trim()
+        ? `\n用户特别关注的方向：${opts.focus.trim()}`
+        : '';
+      const prompt = [
+        `你是专业的演示文稿策划专家。请基于下面提供的「项目/工作区」信息，自动生成一份 ${n} 页 PPT 大纲，用于向他人介绍、汇报或讲解该项目。`,
+        ``,
+        `【项目名称】${summary.projectName}`,
+        `【README 摘要】${summary.readmeContent ? summary.readmeContent.slice(0, 3000) : '（无 README）'}`,
+        `【目录结构】`,
+        summary.structure,
+        `【文档文件】${summary.docFiles?.length ? summary.docFiles.slice(0, 15).map((d) => d.path).join('、') : '（无）'}`,
+        focusHint,
+        ``,
+        `请提取项目核心内容（定位、功能、技术栈、架构、亮点等），组织成逻辑递进的 ${n} 页大纲。`,
+        `严格输出 JSON（不要任何 markdown 代码块、不要多余文字），结构如下：`,
+        `{"title":"演示文稿总标题","slides":[{"title":"第 i 页标题","bullets":["要点1","要点2","要点3"]}]}`,
+        `要求：每页 2-5 个要点，语言简洁有力，贴合项目实际内容，不要编造不存在的功能。`,
+      ].join('\n');
+
+      const resp = await llm.chat({
+        apiConfig,
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.7,
+      });
+      let text = (resp.content || '').trim();
+      const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+      if (fenceMatch) text = fenceMatch[1].trim();
+      const parsed = JSON.parse(text);
+      return { success: true, outline: parsed, workspace: summary };
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) };
+    }
   });
 
   // 返回应用退出时的清理函数

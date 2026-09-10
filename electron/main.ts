@@ -29,6 +29,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 let mainWindow: BrowserWindow | null = null;
+let pptWindow: BrowserWindow | null = null;
 let appCleanup: { dispose: () => void } | null = null;
 let tray: Tray | null = null;
 const configAdapter = new ConfigAdapter();
@@ -107,6 +108,72 @@ async function createWindow() {
   ipcMain.on('window:close', () => mainWindow?.close());
   ipcMain.on('window:isMaximized', (event) => {
     event.returnValue = mainWindow?.isMaximized() ?? false;
+  });
+}
+
+/** 创建独立的「生成 PPT」窗口 */
+async function createPptWindow(): Promise<void> {
+  // 已存在则聚焦复用
+  if (pptWindow && !pptWindow.isDestroyed()) {
+    pptWindow.show();
+    pptWindow.focus();
+    return;
+  }
+
+  pptWindow = new BrowserWindow({
+    width: 1100,
+    height: 780,
+    minWidth: 800,
+    minHeight: 600,
+    show: true,
+    title: '生成 PPT - CnkeIDE',
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
+    frame: false,
+    backgroundColor: '#0a0a0a',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+      webSecurity: true,
+    },
+  });
+
+  const isDev = process.env.NODE_ENV === 'development' || !!process.env.VITE_DEV_SERVER_URL;
+
+  if (isDev) {
+    const devUrl = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5173';
+    await pptWindow.loadURL(`${devUrl}/ppt.html`);
+  } else {
+    // __dirname = <root>/renderer/dist-electron，产物 dist/ 在项目根：<root>/dist/ppt.html
+    await pptWindow.loadFile(path.join(__dirname, '../../dist/ppt.html'));
+  }
+
+  pptWindow.webContents.setWindowOpenHandler(({ url }) => {
+    shell.openExternal(url);
+    return { action: 'deny' };
+  });
+
+  // 窗口控制 IPC（关闭时仅销毁本窗口）
+  ipcMain.on('ppt:close', () => {
+    if (pptWindow && !pptWindow.isDestroyed()) {
+      pptWindow.close();
+    }
+  });
+  ipcMain.on('ppt:minimize', () => pptWindow?.minimize());
+
+  // 开发期兜底：Ctrl+R / Cmd+R 手动 reload PPT 窗口（解决 vite-plugin-electron
+  // 对独立 entry (ppt.html) 热更新不及时、窗口变黑 / 卡死的问题）
+  const wc = pptWindow.webContents;
+  wc.on('before-input-event', (event, input) => {
+    if ((input.control || input.meta) && input.key.toLowerCase() === 'r' && input.type === 'keyDown') {
+      event.preventDefault();
+      wc.reload();
+    }
+  });
+
+  pptWindow.on('closed', () => {
+    pptWindow = null;
   });
 }
 
@@ -213,12 +280,25 @@ app.whenReady().then(async () => {
   });
 });
 
+// 打开 PPT 生成窗口（菜单 / 主窗口渲染进程均可触发）
+ipcMain.on('ppt:open', () => {
+  void createPptWindow();
+});
+// 菜单「文件 → 生成 PPT」通过 app 事件触发（避免 menu.ts 与 main.ts 循环依赖）
+(app as any).on('open-ppt', () => {
+  void createPptWindow();
+});
+
 app.on('before-quit', () => {
   // 清理 MCP 连接与子进程等资源
   appCleanup?.dispose();
   appCleanup = null;
   tray?.destroy();
   tray = null;
+  if (pptWindow && !pptWindow.isDestroyed()) {
+    pptWindow.close();
+  }
+  pptWindow = null;
 });
 
 app.on('window-all-closed', () => {

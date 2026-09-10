@@ -9,6 +9,12 @@ export default defineConfig({
   build: {
     outDir: '../dist',
     emptyOutDir: true,
+    rollupOptions: {
+      input: {
+        main: resolve(__dirname, 'renderer/index.html'),
+        ppt: resolve(__dirname, 'renderer/ppt.html'),
+      },
+    },
   },
   resolve: {
     alias: {

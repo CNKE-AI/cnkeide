@@ -10,6 +10,7 @@ import {
   Send, Square, Brain, Hammer, Bug, MessageCircleQuestion,
   Plus, Trash2, ChevronDown, ChevronRight, Paperclip, Sparkles, Zap, MessageCircle,
   Copy, Check, Wand2, RotateCcw, RefreshCw, FileText, BrainCircuit, BookmarkPlus, X, FolderPlus, AtSign, CornerUpLeft,
+  Presentation,
 } from 'lucide-react';
 import RefPicker from './RefPicker';
 import { resolveAllRefs } from '../../utils/promptRefs';
@@ -642,13 +643,24 @@ const ChatPanel: React.FC = () => {
   const handleSend = async () => {
     if (!input.trim() && images.length === 0 && files.length === 0) return;
     if (loading) return;
+
+    // 快捷指令：/ppt [主题] —— 直接打开 PPT 窗口并预填主题
+    const raw = input.trim();
+    if (/^\/ppt(\s|$)/i.test(raw)) {
+      const topic = raw.replace(/^\/ppt\s*/i, '').trim();
+      setInput('');
+      // 通过 IPC 通知 PPT 窗口预填主题（如果已打开）
+      try { window.cnke.ppt.openWithTopic?.(topic); } catch {}
+      window.cnke.ppt.open();
+      return;
+    }
+
     const ws = activeWorkspaceId || workspacePath;
     if (!ws) {
       alert('请先打开一个工作区文件夹');
       return;
     }
     // 解析 @文件/@目录 与 #codebase 检索，注入实际内容
-    const raw = input.trim();
     const resolved = await resolveAllRefs(raw, ws);
     const prompt = resolved.prompt;
     setInput('');
@@ -1066,86 +1078,101 @@ const ChatPanel: React.FC = () => {
             ))}
           </div>
         )}
-        <div className="flex items-end gap-2 bg-card border border-border rounded-xl p-1.5 focus-within:ring-1 focus-within:ring-primary/50 focus-within:border-primary/40 transition-all">
-          <button
-            onClick={() => setAutoMode(!autoMode)}
-            className={
-              autoMode
-                ? 'p-1.5 rounded-md transition-colors shrink-0 text-amber-400 hover:text-amber-300 hover:bg-amber-500/10'
-                : 'p-1.5 rounded-md transition-colors shrink-0 text-muted-foreground hover:text-foreground hover:bg-accent'
-            }
-            title={autoMode ? '全自动模式已开启：工具调用自动批准' : '开启全自动模式：工具调用自动批准'}
-          >
-            <Zap className={autoMode ? 'w-4 h-4 fill-amber-400 text-amber-400' : 'w-4 h-4'} />
-          </button>
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            className="p-1.5 text-muted-foreground hover:text-foreground rounded-md transition-colors"
-            title="上传文件/图片（AI 分析用，支持文本、代码、图片，Ctrl+V 可粘贴截图）"
-          >
-            <Paperclip className="w-4 h-4" />
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            className="hidden"
-            onChange={handleFileSelect}
-            aria-label="上传文件"
-          />
-          <button
-            onClick={openRefPicker}
-            disabled={!workspacePath}
-            className="p-1.5 text-violet-400 hover:text-violet-300 rounded-md transition-colors disabled:opacity-40"
-            title="引用文件/文件夹（@ 路径）或代码库检索（#codebase 关键词）"
-          >
-            <AtSign className="w-4 h-4" />
-          </button>
-          <button
-            onClick={handleEnhance}
-            disabled={!input.trim() || enhancing}
-            className={`p-1.5 rounded-md transition-colors shrink-0 ${
-              !input.trim() || enhancing
-                ? 'text-muted-foreground/40 cursor-not-allowed'
-                : 'text-violet-400 hover:text-violet-300 hover:bg-violet-500/10'
-            }`}
-            title="AI 一键增强输入"
-          >
-            <Wand2 className={`w-4 h-4 ${enhancing ? 'animate-spin' : ''}`} />
-          </button>
-          <textarea
-            ref={textareaRef}
-            value={input}
-            onChange={handleInputChange}
-            onKeyDown={handleKeyDown}
-            onPaste={handlePaste}
-            placeholder={workspacePath ? '输入需求，Enter 发送 · 支持 @文件引用、#codebase 检索、上传文件/图片' : '请先打开工作区'}
-            rows={2}
-            style={{ height: inputHeight }}
-            className="flex-1 bg-transparent outline-none resize-none text-[13px] leading-relaxed placeholder:text-muted-foreground/50 overflow-y-auto"
-          />
-          {loading ? (
+        {/* 整体输入卡片：顶部附件工具条 + 主输入区（统一边框） */}
+        <div className="bg-card border border-border rounded-xl focus-within:ring-1 focus-within:ring-primary/50 focus-within:border-primary/40 transition-all overflow-hidden">
+          {/* 顶部工具条：附件 / 引用 / PPT 等"给输入注入内容"的入口 */}
+          <div className="flex items-center gap-0.5 px-1.5 py-1 border-b border-border/50">
             <button
-              onClick={handleStop}
-              className="p-2 bg-red-600/80 hover:bg-red-600 rounded-lg transition-colors shrink-0"
-              title="停止生成"
+              onClick={() => fileInputRef.current?.click()}
+              className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition-colors"
+              title="上传文件/图片（AI 分析用，支持文本、代码、图片，Ctrl+V 可粘贴截图）"
             >
-              <Square className="w-4 h-4 text-white" />
+              <Paperclip className="w-3.5 h-3.5" />
             </button>
-          ) : (
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              className="hidden"
+              onChange={handleFileSelect}
+              aria-label="上传文件"
+            />
             <button
-              onClick={handleSend}
-              disabled={!input.trim() && images.length === 0 && files.length === 0}
-              className={`p-2 rounded-lg transition-colors shrink-0 ${
-                !input.trim() && images.length === 0 && files.length === 0
-                  ? 'bg-secondary text-muted-foreground cursor-not-allowed'
-                  : 'btn-gradient'
+              onClick={openRefPicker}
+              disabled={!workspacePath}
+              className="p-1.5 text-violet-400 hover:text-violet-300 hover:bg-violet-500/10 rounded-md transition-colors disabled:opacity-40 disabled:hover:bg-transparent"
+              title="引用文件/文件夹（@ 路径）或代码库检索（#codebase 关键词）"
+            >
+              <AtSign className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={() => window.cnke.ppt.open()}
+              className="p-1.5 text-fuchsia-400 hover:text-fuchsia-300 hover:bg-fuchsia-500/10 rounded-md transition-colors"
+              title="生成 PPT（独立窗口）"
+            >
+              <Presentation className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          {/* 主输入框行：模式 + 输入 + 增强 + 发送 */}
+          <div className="flex items-end gap-2 p-1.5">
+            <button
+              onClick={() => setAutoMode(!autoMode)}
+              className={
+                autoMode
+                  ? 'p-1.5 rounded-md transition-colors shrink-0 text-amber-400 hover:text-amber-300 hover:bg-amber-500/10'
+                  : 'p-1.5 rounded-md transition-colors shrink-0 text-muted-foreground hover:text-foreground hover:bg-accent'
+              }
+              title={autoMode ? '全自动模式已开启：工具调用自动批准' : '开启全自动模式：工具调用自动批准'}
+            >
+              <Zap className={autoMode ? 'w-4 h-4 fill-amber-400 text-amber-400' : 'w-4 h-4'} />
+            </button>
+            <textarea
+              ref={textareaRef}
+              value={input}
+              onChange={handleInputChange}
+              onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
+              placeholder={workspacePath ? '输入需求 · Enter 发送 · @文件 / #codebase / 上传 · 输入 /ppt 主题 打开 PPT 生成' : '请先打开工作区'}
+              rows={2}
+              style={{ height: inputHeight }}
+              className="flex-1 bg-transparent outline-none resize-none text-[13px] leading-relaxed placeholder:text-muted-foreground/50 overflow-y-auto"
+            />
+            <button
+              onClick={handleEnhance}
+              disabled={!input.trim() || enhancing}
+              className={`p-1.5 rounded-md transition-colors shrink-0 ${
+                !input.trim() || enhancing
+                  ? 'text-muted-foreground/40 cursor-not-allowed'
+                  : 'text-violet-400 hover:text-violet-300 hover:bg-violet-500/10'
               }`}
-              title="发送"
+              title="AI 一键增强输入"
             >
-              <Send className="w-4 h-4" />
+              <Wand2 className={`w-4 h-4 ${enhancing ? 'animate-spin' : ''}`} />
             </button>
-          )}
+            {loading ? (
+              <button
+                onClick={handleStop}
+                className="p-2 bg-red-600/80 hover:bg-red-600 rounded-lg transition-colors shrink-0"
+                title="停止生成"
+              >
+                <Square className="w-4 h-4 text-white" />
+              </button>
+            ) : (
+              <button
+                onClick={handleSend}
+                disabled={!input.trim() && images.length === 0 && files.length === 0}
+                className={`p-2 rounded-lg transition-colors shrink-0 ${
+                  !input.trim() && images.length === 0 && files.length === 0
+                    ? 'bg-secondary text-muted-foreground cursor-not-allowed'
+                    : 'btn-gradient'
+                }`}
+                title="发送"
+              >
+                <Send className="w-4 h-4" />
+              </button>
+            )}
+          </div>
         </div>
         <div className="flex items-center justify-between gap-2 mt-1.5 px-0.5">
           {/* 模型切换 */}

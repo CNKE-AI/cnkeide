@@ -187,6 +187,42 @@ export interface CnkeAPI {
   plan: {
     get: (sessionId: string) => Promise<{ plan: any; progress: any }>;
   };
+  /** PPT 生成（W14） */
+  ppt: {
+    open: () => void;
+    close: () => void;
+    minimize: () => void;
+    generate: (req: any, savePath?: string) => Promise<{ success: boolean; path?: string; slideCount?: number; error?: string }>;
+    generateOutline: (topic: string, slideCount?: number) => Promise<{ success: boolean; outline?: any; error?: string }>;
+    scanWorkspace: (wsPath?: string) => Promise<WorkspaceScanSummary>;
+    generateFromWorkspace: (opts?: { wsPath?: string; slideCount?: number; focus?: string }) => Promise<{ success: boolean; outline?: any; workspace?: WorkspaceScanSummary; error?: string }>;
+    listThemes: () => Promise<{ success: boolean; themes?: { id: string; name: string; description: string; colors: { primary: string; secondary: string; accent: string; background: string }; icon: string }[] }>;
+    renderTheme: (payload: { themeId: string; outline: { title: string; slides: { title: string; bullets: string[] }[] }; extraInstruction?: string }) => Promise<{ success: boolean; html?: string; theme?: any; error?: string }>;
+    saveHtml: (payload: { html: string; savePath: string }) => Promise<{ success: boolean; path?: string; error?: string }>;
+    exportPdf: (payload: { html: string; savePath?: string; title?: string }) => Promise<{ success: boolean; path?: string; error?: string }>;
+    onRenderProgress: (handler: (payload: { stage: 'render' | 'audit' | 'reflow' | 'finalize'; current: number; total: number; message: string }) => void) => () => void;
+    listRemoteTemplates: (payload?: { page?: number; pageSize?: number; category?: string; keyword?: string }) => Promise<{ success: boolean; index?: { version: string; updatedAt: string; templates: Array<{ id: string; name: string; category: string; pageCount: number; style: string; description: string; thumbnailUrl: string | null; downloadUrl: string | null; size: number; updatedAt: string }>; total?: number; page?: number; pageSize?: number; categories?: string[] }; error?: string }>;
+    listRemoteCategories: () => Promise<{ success: boolean; categories?: string[]; error?: string }>;
+    downloadTemplate: (payload: { id: string }) => Promise<{ success: boolean; path?: string; fromCache?: boolean; error?: string }>;
+    onTemplateProgress: (handler: (payload: { id: string; downloaded: number; total: number; ratio: number }) => void) => () => void;
+    expandSlide: (payload: { slide: { title: string; bullets: string[] }; presentationTopic?: string; intensity?: 'light' | 'standard' | 'deep'; extraInstruction?: string }) => Promise<{ success: boolean; slide?: { title: string; bullets: string[] }; error?: string }>;
+    expandAll: (payload: { outline: { title: string; slides: { title: string; bullets: string[] }[] }; intensity?: 'light' | 'standard' | 'deep'; extraInstruction?: string }) => Promise<{ success: boolean; outline?: { title: string; slides: { title: string; bullets: string[] }[] }; error?: string }>;
+    onExpandProgress: (handler: (payload: { current: number; total: number; message: string }) => void) => () => void;
+    applyTemplate: (payload: { templateId: string; outline: { title: string; slides: { title: string; bullets: string[] }[] }; savePath?: string }) => Promise<{ success: boolean; path?: string; pageCount?: number; filledCount?: number; strategy?: 'placeholder' | 'inject'; capacity?: number; error?: string }>;
+    openWithTopic?: (topic: string) => void;
+  };
+}
+
+export interface WorkspaceScanSummary {
+  success: boolean;
+  workspace?: string;
+  projectName?: string;
+  readmeContent?: string;
+  readmePath?: string;
+  structure?: string;
+  fileStats?: { totalFiles: number; topDirs: { name: string; count: number }[] };
+  docFiles?: { path: string; size: number }[];
+  error?: string;
 }
 
 export interface ContextState {
