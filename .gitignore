@@ -54,3 +54,13 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+# 临时/调试目录
+.playwright-cli/
+.tmp_*/
+.tmp_export_test/
+.tmp_ppt_test/
+scripts/ppt_templates_server/
+
+# Python 运行时（由 scripts 下载，非源码，见 README「运行时依赖」）
+runtime/
