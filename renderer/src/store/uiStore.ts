@@ -22,6 +22,10 @@ export interface PlanStep {
   id: string;
   title: string;
   status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
+  /** 关联工具名（如 write_to_file），用于展示该步在做什么 */
+  toolName?: string;
+  /** 关联文件路径 */
+  filePath?: string;
 }
 
 export interface PlanState {
@@ -115,8 +119,12 @@ function derivePlan(raw: any): PlanState | null {
     title: plan.title || '任务计划',
     steps: plan.items.map((it: any) => ({
       id: String(it.id ?? it.order ?? Math.random()),
-      title: it.title || it.description || '',
+      // 后端 PlanItem 的步骤文本字段是 content（见 PlanManager.ts），
+      // 早期这里只读 title/description，导致计划项标题恒为空、面板只剩空白圆圈
+      title: it.content || it.title || it.description || '',
       status: it.status || 'pending',
+      toolName: it.toolName || undefined,
+      filePath: it.filePath || undefined,
     })),
     progress: raw.progress || null,
   };

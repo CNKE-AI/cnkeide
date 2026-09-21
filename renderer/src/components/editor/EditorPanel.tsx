@@ -24,6 +24,7 @@ import { php } from '@codemirror/lang-php';
 import { yaml } from '@codemirror/lang-yaml';
 import { useEditorStore } from '../../store/editorStore';
 import { useUiStore } from '../../store/uiStore';
+import { useLayoutStore } from '../../store/layoutStore';
 import { FileCode2, X, Save, SaveAll, MessageSquarePlus } from 'lucide-react';
 
 /** CodeMirror 编辑器主题 - 深色背景，匹配 IDE 整体风格 */
@@ -226,6 +227,7 @@ function langLabelOf(name: string): string {
 const EditorPanel: React.FC = () => {
   const { tabs, activePath, closeTab, updateContent, saveFile, saveAll } = useEditorStore();
   const theme = useThemeStore((s) => s.theme);
+  const setPanelVisible = useLayoutStore((s) => s.setPanelVisible);
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const langCompartmentRef = useRef(new Compartment());
@@ -388,7 +390,7 @@ const EditorPanel: React.FC = () => {
       <div className="flex items-center justify-between border-b border-border bg-secondary/20 shrink-0">
         <div className="flex items-center overflow-x-auto flex-1" style={{ scrollbarWidth: 'none' }}>
           {tabs.length === 0 ? (
-            <span className="px-3 py-2 text-[11px] text-muted-foreground/50">暂无打开的文件，点击左侧文件树打开</span>
+            <span className="px-3 py-2 text-[11px] text-muted-foreground/50">暂无打开的文件，点击资源管理器中的文件打开</span>
           ) : (
             tabs.map((t) => {
               const isActive = t.path === activePath;
@@ -441,6 +443,15 @@ const EditorPanel: React.FC = () => {
             title="发送选中代码到对话"
           >
             <MessageSquarePlus className="w-3.5 h-3.5" />
+          </button>
+          <div className="w-px h-4 bg-border mx-0.5" />
+          {/* 隐藏编辑器：与资源管理器面板的 × 行为一致，隐藏后左侧留窄边栏可恢复 */}
+          <button
+            onClick={() => setPanelVisible('editor', false)}
+            className="p-1 hover:bg-muted-foreground/20 hover:text-foreground rounded transition-colors text-muted-foreground"
+            title="隐藏编辑器"
+          >
+            <X className="w-3 h-3" />
           </button>
         </div>
       </div>

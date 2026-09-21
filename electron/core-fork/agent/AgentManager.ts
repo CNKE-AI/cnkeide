@@ -296,7 +296,10 @@ export class AgentManager {
       const planGuide = this.planManager ? PLAN_GUIDE : '';
       // 基础 Prompt = 核心身份准则 + 模式专属 Prompt + 用户自定义 Prompt
       const fullBasePrompt = `${BASE_SYSTEM_PROMPT}\n\n${basePrompt}${customPrompt ? `\n\n${customPrompt}` : ''}`;
-      let systemPrompt = fullBasePrompt + planGuide + shellInfo + replyRule;
+      // 工作区锚点：必须显式告知模型当前工作区根目录，否则模型只能靠猜
+      // 相对路径（项目里最自然的写法），导致 read_file("src/a.ts") 直接 ENOENT。
+      const workspaceInfo = this.buildWorkspaceInfo(workspaceId);
+      let systemPrompt = fullBasePrompt + planGuide + workspaceInfo + shellInfo + replyRule;
 
       // 本地记忆：自动加载与当前工作区匹配的历史记忆（偏好/项目事实/摘要），
       // 让模型在多次调用之间延续上下文，用户无需重复交代相同背景
@@ -614,6 +617,36 @@ export class AgentManager {
       claims.push('声称查看/读取了文件，但没有读取类工具的执行记录');
     }
     return claims.length > 0 ? claims.join('；') : null;
+  }
+
+  /**
+   * 构造「工作区锚点」提示块。
+   *
+   * 之前系统提示词完全没有工作区路径，模型只能凭空猜相对路径，
+   * 于是 read_file("src/a.ts") 这类调用必然 ENOENT，表现为「识别不了工作区」。
+   * 这里把工作区根目录 + 目录清单显式写进提示词，并给出路径书写规范。
+   */
+  private buildWorkspaceInfo(workspaceId: string): string {
+    if (!workspaceId) {
+      return '\n\n[工作区] 当前没有打开任何工作区。请先用 list_directory / project_structure 询问用户，不要凭空假设路径。';
+    }
+    const win = process.platform === 'win32';
+    const example = win
+      ? `${workspaceId}\\src\\index.ts`
+      : `${workspaceId}/src/index.ts`;
+
+    const lines = [
+      '',
+      '',
+      '[工作区]',
+      `- 工作区根目录（绝对路径）：${workspaceId}`,
+      `- 描述文件时优先用「相对路径」书写，例如 src/index.ts、package.json。`,
+      `- 相对路径一律以工作区根目录为基准；工具会自动解析为 ${win ? '\\' : '/'} 分隔的绝对路径，你无需自己拼接。`,
+      `- 也可以直接给绝对路径，例如 ${example}。`,
+      '- 不要使用 ../ 跳出工作区，也不要假设工作区外存在文件。',
+      '- 不确定目录结构时，先调用 list_directory（path 传 "." 表示工作区根目录）或 project_structure 查看。',
+    ];
+    return lines.join('\n');
   }
 
   private buildMessages(systemPrompt: string, history: any[], prompt: string, images?: string[], files?: RunParams['files']): any[] {

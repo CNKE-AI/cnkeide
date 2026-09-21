@@ -192,12 +192,17 @@ export interface CnkeAPI {
     open: () => void;
     close: () => void;
     minimize: () => void;
-    generate: (req: any, savePath?: string) => Promise<{ success: boolean; path?: string; slideCount?: number; error?: string }>;
-    generateOutline: (topic: string, slideCount?: number) => Promise<{ success: boolean; outline?: any; error?: string }>;
+    generate: (req: any, savePath?: string) => Promise<{ success: boolean; path?: string; slideCount?: number; brandNotices?: string[]; audit?: { issues: Array<{ level: 'warning' | 'fixed'; slide: number; message: string }>; summary: string; passed: boolean }; error?: string }>;
+    generateOutline: (topic: string, slideCount?: number, scenarioId?: string) => Promise<{ success: boolean; outline?: any; scenarioId?: string | null; error?: string }>;
     scanWorkspace: (wsPath?: string) => Promise<WorkspaceScanSummary>;
     generateFromWorkspace: (opts?: { wsPath?: string; slideCount?: number; focus?: string }) => Promise<{ success: boolean; outline?: any; workspace?: WorkspaceScanSummary; error?: string }>;
+    listScenarios: () => Promise<{ success: boolean; scenarios: Array<{ id: string; name: string; description: string; recommendedTheme: string; recommendedPages: [number, number] }> }>;
+    detectScenario: (topic: string) => Promise<{ success: boolean; scenarioId: string; byLlm: boolean; confidence: number }>;
+    getBrand: () => Promise<{ success: boolean; brand: { enabled: boolean; companyName: string; logoPath: string; primary: string; secondary: string; accent: string; fontFamily: string; footerText: string } }>;
+    setBrand: (brand: any) => Promise<{ success: boolean; brand: any }>;
     listThemes: () => Promise<{ success: boolean; themes?: { id: string; name: string; description: string; colors: { primary: string; secondary: string; accent: string; background: string }; icon: string }[] }>;
-    renderTheme: (payload: { themeId: string; outline: { title: string; slides: { title: string; bullets: string[] }[] }; extraInstruction?: string }) => Promise<{ success: boolean; html?: string; theme?: any; error?: string }>;
+    generatePreview: (payload: { themeId: string; outline: { title: string; slides: any[] } }) => Promise<{ success: boolean; html?: string; error?: string }>;
+    renderTheme: (payload: { themeId: string; outline: { title: string; slides: { title: string; bullets: string[]; chart?: { type: 'bar' | 'line' | 'pie'; labels: string[]; series: { name: string; values: number[] }[] } }[] }; extraInstruction?: string }) => Promise<{ success: boolean; html?: string; theme?: any; error?: string }>;
     saveHtml: (payload: { html: string; savePath: string }) => Promise<{ success: boolean; path?: string; error?: string }>;
     exportPdf: (payload: { html: string; savePath?: string; title?: string }) => Promise<{ success: boolean; path?: string; error?: string }>;
     onRenderProgress: (handler: (payload: { stage: 'render' | 'audit' | 'reflow' | 'finalize'; current: number; total: number; message: string }) => void) => () => void;
@@ -210,6 +215,64 @@ export interface CnkeAPI {
     onExpandProgress: (handler: (payload: { current: number; total: number; message: string }) => void) => () => void;
     applyTemplate: (payload: { templateId: string; outline: { title: string; slides: { title: string; bullets: string[] }[] }; savePath?: string }) => Promise<{ success: boolean; path?: string; pageCount?: number; filledCount?: number; strategy?: 'placeholder' | 'inject'; capacity?: number; error?: string }>;
     openWithTopic?: (topic: string) => void;
+  };
+  /** PPT Master 原生 PPTX 流水线（替代旧 pptxgenjs 扁平导出） */
+  pptMaster: {
+    checkEnv: () => Promise<{
+      success: boolean;
+      ok?: boolean;
+      python?: { path: string; version: string | null; source: string } | null;
+      skillOk?: boolean;
+      missingSkill?: string[];
+      dependencies?: Array<{ name: string; importName: string; installed: boolean; impact: string; required: boolean }>;
+      blockers?: string[];
+      projectsRoot?: string;
+      error?: string;
+    }>;
+    rebindPython: (pythonPath?: string) => Promise<{ success: boolean; found: boolean; path?: string; version?: string | null; error?: string }>;
+    installDeps: () => Promise<{ success: boolean; error?: string }>;
+    generate: (opts: {
+      projectName?: string;
+      topic: string;
+      sources?: string[];
+      slideCount?: number;
+      canvasFormat?: string;
+      deliveryContext?: string;
+      styleHint?: string;
+      speakerNotes?: boolean;
+      animations?: boolean;
+      savePath?: string;
+    }) => Promise<{
+      success: boolean;
+      projectPath?: string;
+      pptxPath?: string;
+      reportPath?: string;
+      pageCount?: number;
+      qualityGate?: string;
+      warnings?: string[];
+      error?: string;
+      timings?: Record<string, number>;
+    }>;
+    pickSavePath: (defaultName?: string) => Promise<{ success: boolean; savePath: string }>;
+    listProjects: () => Promise<{
+      success: boolean;
+      projects: Array<{ name: string; path: string; pageCount: number; pptxPath: string | null; mtime: number }>;
+      root?: string;
+      error?: string;
+    }>;
+    openProjectDir: (projectPath: string) => Promise<{ success: boolean; error?: string }>;
+    listCapabilities: () => Promise<{ success: boolean; skillRoot?: string; workflows?: string[]; references?: string[]; error?: string }>;
+    onProgress: (
+      handler: (p: {
+        stage: 'idle' | 'checking' | 'converting' | 'init' | 'planning' | 'authoring' | 'early-gate' | 'final-gate' | 'postprocess' | 'exporting' | 'done' | 'error';
+        message: string;
+        current?: number;
+        total?: number;
+        percent?: number;
+        log?: string;
+      }) => void,
+    ) => () => void;
+    onInstallOutput: (handler: (line: string) => void) => () => void;
   };
 }
 

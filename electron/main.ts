@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain, Menu, dialog, shell, Tray, Notification, n
 import path from 'node:path';
 import fs from 'node:fs';
 import { registerIpcHandlers } from './ipc/handlers';
+import { initPptMaster } from './core-fork/pptmaster';
 import { ConfigAdapter } from './adapter/ConfigAdapter';
 import { createMenu } from './menu';
 
@@ -262,6 +263,17 @@ app.whenReady().then(async () => {
 
   // 注册所有IPC处理器
   appCleanup = registerIpcHandlers(configAdapter);
+
+  // 初始化 PPT Master 集成（定位 skill 包 + 探测 Python，失败不阻断启动）
+  void initPptMaster(configAdapter)
+    .then((r) => {
+      if (!r.ok) {
+        console.error('[pptmaster] 初始化未完成：未找到 skills/ppt-master 技能包');
+      } else if (!r.pythonFound) {
+        console.warn('[pptmaster] 未找到 Python 3.9+，PPTX 生成将不可用（可在设置中指定路径）');
+      }
+    })
+    .catch((e) => console.error('[pptmaster] 初始化异常:', e));
 
   // 监听 Agent 任务结束/异常，弹出系统通知
   ipcMain.on('agent:notify', (_event, payload: { type: 'done' | 'error'; title?: string; message?: string }) => {

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useApp } from '../../store/AppProvider';
-import { Terminal, Trash2, Loader2 } from 'lucide-react';
+import { useLayoutStore } from '../../store/layoutStore';
+import { Terminal, Trash2, Loader2, X } from 'lucide-react';
 
 interface TerminalLine {
   id: number;
@@ -11,6 +12,7 @@ const MAX_LINES = 800;
 
 const TerminalPanel: React.FC = () => {
   const { workspacePath } = useApp();
+  const setPanelVisible = useLayoutStore((s) => s.setPanelVisible);
   const [lines, setLines] = useState<TerminalLine[]>([]);
   const [pid, setPid] = useState<number | null>(null);
   const [running, setRunning] = useState(false);
@@ -127,6 +129,15 @@ const TerminalPanel: React.FC = () => {
           </span>
           <button onClick={handleClear} className="p-1.5 hover:bg-accent hover:text-foreground rounded-md transition-colors text-muted-foreground" title="清空终端">
             <Trash2 className="w-3.5 h-3.5" />
+          </button>
+          <div className="w-px h-4 bg-border mx-0.5" />
+          {/* 隐藏终端：与资源管理器面板的 × 行为一致，隐藏后左侧留窄边栏可恢复 */}
+          <button
+            onClick={() => setPanelVisible('terminal', false)}
+            className="p-1 hover:bg-muted-foreground/20 hover:text-foreground rounded transition-colors text-muted-foreground"
+            title="隐藏终端"
+          >
+            <X className="w-3 h-3" />
           </button>
         </div>
       </div>

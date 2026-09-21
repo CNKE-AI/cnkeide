@@ -21,9 +21,24 @@ import { exportHtmlToPdf } from '../core-fork/ppt/pptPdf';
 import { PptTemplateClient } from '../core-fork/ppt/pptTemplateClient';
 import { expandSlide, expandAll } from '../core-fork/ppt/pptOutlineExpand';
 import { applyTemplate } from '../core-fork/ppt/pptApply';
+import { generatePreviewHtml } from '../core-fork/ppt/pptPreview';
+import { PPT_SCENARIOS, getScenario, detectScenarioByKeyword, detectScenarioByLlm, buildScenarioOutlinePrompt, buildGenericOutlinePrompt } from '../core-fork/ppt/pptScenarios';
+import { DEFAULT_BRAND, normalizeBrand, PptBrand } from '../core-fork/ppt/pptBrand';
+import { auditOutline, summarizeIssues, AuditIssue } from '../core-fork/ppt/pptAudit';
 import { promises as fsp } from 'node:fs';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import {
+  getPptMasterService,
+  getSkillRunner,
+  getSkillRootCandidate,
+  getProjectsRoot,
+  rebindPython,
+  initPptMaster,
+  PptMasterService,
+} from '../core-fork/pptmaster';
+import { installDependencies } from '../core-fork/pptmaster';
 
 export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => void } {
   // 官方后台客户端（远程配置 / 公告 / 反馈）
@@ -513,7 +528,7 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
     return pptAdapter;
   };
 
-  // 生成 PPT 并保存到指定路径
+  // 生成 PPT 并保存到指定路径（企业级：生成前智能审校 + 自动修复 + 品牌注入）
   ipcMain.handle('ppt:generate', async (_e, req: any, savePath?: string) => {
     const adapter = await getPptAdapter();
     if (!adapter.available) {
@@ -528,11 +543,26 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
       if (canceled || !filePath) return { success: false, error: '已取消保存' };
       savePath = filePath;
     }
-    return adapter.generate(req ?? {}, savePath);
+    // 智能审校：文字溢出预防（超长标题/要点拆分/图表数据一致性），能修的自动修
+    let auditIssues: AuditIssue[] = [];
+    let finalReq = req ?? {};
+    if (finalReq?.slides) {
+      const audited = auditOutline(finalReq);
+      auditIssues = audited.issues;
+      finalReq = { ...finalReq, slides: audited.data.slides, title: audited.data.title };
+    }
+    const result = await adapter.generate(finalReq, savePath);
+    if (result.success) {
+      return {
+        ...result,
+        audit: { issues: auditIssues, summary: summarizeIssues(auditIssues), passed: auditIssues.every((i) => i.level === 'fixed') },
+      };
+    }
+    return result;
   });
 
-  // AI 生成 PPT 大纲（复用当前 active API 配置）
-  ipcMain.handle('ppt:generateOutline', async (_e, topic: string, slideCount?: number) => {
+  // AI 生成 PPT 大纲（企业级：支持场景化结构骨架 + 图表建议）
+  ipcMain.handle('ppt:generateOutline', async (_e, topic: string, slideCount?: number, scenarioId?: string) => {
     const configs = config.getApiKeyConfigs();
     const activeId = config.get<string>('activeApiConfigId');
     const apiConfig = configs.find((c: any) => c.id === activeId) || configs[0];
@@ -540,14 +570,12 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
       return { success: false, error: '未配置 API，无法生成大纲。请先在设置中配置模型 API。' };
     }
     const n = Math.max(1, Math.min(20, Number(slideCount) || 8));
+    const scenario = scenarioId ? getScenario(scenarioId) : null;
     try {
       const llm = new LLMProvider();
-      const prompt = [
-        `你是专业的演示文稿策划专家。请根据主题「${topic}」生成一份 ${n} 页 PPT 大纲。`,
-        `严格输出 JSON（不要任何 markdown 代码块、不要多余文字），结构如下：`,
-        `{"title":"演示文稿总标题","slides":[{"title":"第 i 页标题","bullets":["要点1","要点2","要点3"]}]}`,
-        `要求：每页 2-5 个要点，语言简洁有力，逻辑递进。`,
-      ].join('\n');
+      const prompt = scenario
+        ? buildScenarioOutlinePrompt(topic, n, scenario)
+        : buildGenericOutlinePrompt(topic, n);
       const resp = await llm.chat({
         apiConfig,
         messages: [{ role: 'user', content: prompt }],
@@ -558,10 +586,56 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
       const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
       if (fenceMatch) text = fenceMatch[1].trim();
       const parsed = JSON.parse(text);
-      return { success: true, outline: parsed };
+      return { success: true, outline: parsed, scenarioId: scenario?.id || null };
     } catch (err: any) {
       return { success: false, error: err?.message || String(err) };
     }
+  });
+
+  // ===== 企业级：场景体系 =====
+  // 场景清单（静态，不调 LLM）
+  ipcMain.handle('ppt:listScenarios', async () => {
+    return {
+      success: true,
+      scenarios: PPT_SCENARIOS.map((s) => ({
+        id: s.id,
+        name: s.name,
+        description: s.description,
+        recommendedTheme: s.recommendedTheme,
+        recommendedPages: s.recommendedPages,
+      })),
+    };
+  });
+
+  // 场景自动检测（LLM 分类 + 关键词兜底，永不失败）
+  ipcMain.handle('ppt:detectScenario', async (_e, topic: string) => {
+    const t = String(topic || '').trim();
+    if (!t) return { success: true, scenarioId: 'general', byLlm: false, confidence: 0 };
+    const configs = config.getApiKeyConfigs();
+    const activeId = config.get<string>('activeApiConfigId');
+    const apiConfig = configs.find((c: any) => c.id === activeId) || configs[0];
+    if (!apiConfig) {
+      // 未配置 API：直接关键词规则
+      return { success: true, scenarioId: detectScenarioByKeyword(t).id, byLlm: false, confidence: 0.5 };
+    }
+    try {
+      const llm = new LLMProvider();
+      const r = await detectScenarioByLlm(llm, apiConfig, t);
+      return { success: true, scenarioId: r.scenario.id, byLlm: r.byLlm, confidence: r.confidence };
+    } catch {
+      return { success: true, scenarioId: detectScenarioByKeyword(t).id, byLlm: false, confidence: 0.5 };
+    }
+  });
+
+  // ===== 企业级：品牌配置 =====
+  ipcMain.handle('ppt:getBrand', async () => {
+    return { success: true, brand: config.get<PptBrand>('ppt.brand', DEFAULT_BRAND) };
+  });
+
+  ipcMain.handle('ppt:setBrand', async (_e, brand: any) => {
+    const normalized = normalizeBrand(brand);
+    config.set('ppt.brand', normalized);
+    return { success: true, brand: normalized };
   });
 
   // ===== PPT 主题相关 =====
@@ -577,6 +651,27 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
         icon: t.icon,
       })),
     };
+  });
+
+  // 纯代码生成 HTML 预览（不调 LLM，确定性输出，与 PPTX 导出视觉一致）
+  // 替代 ppt:renderTheme 的 LLM 渲染路径——一键生成主推此路径
+  ipcMain.handle('ppt:generatePreview', async (_e, payload: {
+    themeId: string;
+    outline: { title: string; slides: any[] };
+  }) => {
+    try {
+      const theme = findTheme(payload.themeId);
+      if (!theme) return { success: false, error: `未知主题：${payload.themeId}` };
+      const brand = config.get<PptBrand>('ppt.brand', DEFAULT_BRAND);
+      const html = generatePreviewHtml({
+        themeId: payload.themeId,
+        outline: payload.outline,
+        brand: brand?.enabled ? brand : undefined,
+      });
+      return { success: true, html };
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) };
+    }
   });
 
   // 第 2 轮 LLM：把大纲 + 主题样式 → 渲染为完整 HTML 演示文稿
@@ -597,12 +692,21 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
       const apiConfig = configs.find((c: any) => c.id === activeId) || configs[0];
       if (!apiConfig) return { success: false, error: '未配置 API，无法渲染。请先在设置中配置模型 API。' };
       const sender = e.sender;
+      // 品牌色注入 HTML 预览（保证预览与导出 PPTX 视觉一致）
+      const brand = config.get<PptBrand>('ppt.brand', DEFAULT_BRAND);
+      const brandColors = brand?.enabled ? {
+        primary: brand.primary || theme.colors.primary,
+        secondary: brand.secondary || theme.colors.secondary,
+        accent: brand.accent || theme.colors.accent,
+        background: theme.colors.background,
+      } : undefined;
       try {
         const llm = new LLMProvider();
         const result = await renderOutlineToHtml(llm, apiConfig, {
           themeId: payload.themeId,
           outline: payload.outline,
           extraInstruction: payload.extraInstruction,
+          brandColors,
           onProgress: (stage, current, total, message) => {
             try { sender.send('ppt:renderProgress', { stage, current, total, message }); } catch {}
           },
@@ -992,6 +1096,216 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
     } catch (err: any) {
       return { success: false, error: err?.message || String(err) };
     }
+  });
+
+  // ===== PPT Master 原生 PPTX 流水线（替代旧 pptxgenjs 生成链路）=====
+  // 说明：PPT Master 走「LLM 逐页画 SVG → Python 转原生 DrawingML」，
+  // 产出的是 PowerPoint 原生可编辑对象（母版/版式/形状/占位符），而非扁平文本框。
+
+  /** 环境自检：Python + 技能包 + 依赖 */
+  ipcMain.handle('pptmaster:checkEnv', async () => {
+    const svc = getPptMasterService();
+    if (!svc) {
+      const viaSkill = getSkillRootCandidate();
+      return {
+        success: false,
+        error: `PPT Master 未初始化。候选路径：${viaSkill}。请确认 skills/ppt-master 目录随应用分发。`,
+      };
+    }
+    try {
+      const env = await svc.checkEnvironment();
+      return { success: true, ...env, projectsRoot: getProjectsRoot() };
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) };
+    }
+  });
+
+  /** 重新解析 Python（用户改了路径后调用） */
+  ipcMain.handle('pptmaster:rebindPython', async (_e, pythonPath?: string) => {
+    try {
+      if (typeof pythonPath === 'string') {
+        config.set('pptMaster.pythonPath', pythonPath.trim());
+      }
+      const r = await rebindPython(config);
+      return { success: true, ...r };
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) };
+    }
+  });
+
+  /** 安装依赖（pip install -r requirements.txt） */
+  ipcMain.handle('pptmaster:installDeps', async (e) => {
+    const runner = getSkillRunner();
+    if (!runner) return { success: false, error: 'PPT Master 未初始化' };
+    const py = await runner.ensurePython();
+    if (!py) return { success: false, error: '未找到 Python 解释器' };
+
+    const requirements = path.join(runner.getSkillRoot(), 'requirements.txt');
+    if (!existsSync(requirements)) {
+      return { success: false, error: `未找到 requirements.txt: ${requirements}` };
+    }
+
+    const { sender } = e;
+    const result = await installDependencies(py.path, requirements, (line) => {
+      try {
+        sender.send('pptmaster:installOutput', line);
+      } catch {
+        /* 窗口已关闭 */
+      }
+    });
+    return { success: result.success, error: result.error };
+  });
+
+  /** 生成原生 PPTX（主流程）。进度通过 pptmaster:progress 推送 */
+  ipcMain.handle(
+    'pptmaster:generate',
+    async (
+      e,
+      opts: {
+        projectName: string;
+        topic: string;
+        sources?: string[];
+        slideCount?: number;
+        canvasFormat?: string;
+        deliveryContext?: string;
+        styleHint?: string;
+        speakerNotes?: boolean;
+        animations?: boolean;
+        savePath?: string;
+      },
+    ) => {
+      const runner = getSkillRunner();
+      if (!runner) {
+        return { success: false, error: 'PPT Master 未初始化，请检查 skills/ppt-master 是否存在。' };
+      }
+      if (!opts?.topic?.trim()) {
+        return { success: false, error: '缺少主题（topic）' };
+      }
+
+      const { sender } = e;
+      const projectsRoot = getProjectsRoot();
+
+      // 项目名安全化 + 时间戳，避免同名覆盖
+      const safeName =
+        (opts.projectName || opts.topic).replace(/[^\w\u4e00-\u9fa5-]/g, '_').slice(0, 40) || 'deck';
+      const stamp = new Date()
+        .toISOString()
+        .slice(0, 10)
+        .replace(/-/g, '');
+
+      const service = new PptMasterService({
+        runner,
+        projectsRoot,
+        config,
+        onEvent: (p) => {
+          try {
+            sender.send('pptmaster:progress', p);
+          } catch {
+            /* 窗口已关闭 */
+          }
+        },
+      });
+
+      try {
+        const result = await service.generate({
+          projectName: `${safeName}_${stamp}`,
+          topic: opts.topic,
+          sources: opts.sources,
+          slideCount: opts.slideCount,
+          canvasFormat: opts.canvasFormat,
+          deliveryContext: opts.deliveryContext,
+          styleHint: opts.styleHint,
+          speakerNotes: opts.speakerNotes,
+          animations: opts.animations,
+          savePath: opts.savePath,
+        });
+        return result;
+      } catch (err: any) {
+        return { success: false, error: err?.message || String(err) };
+      }
+    },
+  );
+
+  /** 选择保存路径（导出前调用） */
+  ipcMain.handle('pptmaster:pickSavePath', async (_e, defaultName?: string) => {
+    const name = (defaultName || '演示文稿').replace(/[\\/:*?"<>|]/g, '_').slice(0, 60);
+    const r = await dialog.showSaveDialog({
+      defaultPath: path.join(app.getPath('documents'), `${name}.pptx`),
+      filters: [{ name: 'PowerPoint 演示文稿', extensions: ['pptx'] }],
+    });
+    return { success: !r.canceled && !!r.filePath, savePath: r.filePath || '' };
+  });
+
+  /** 列出已生成的项目 */
+  ipcMain.handle('pptmaster:listProjects', async () => {
+    const root = getProjectsRoot();
+    try {
+      if (!existsSync(root)) return { success: true, projects: [] };
+      const entries = await fsp.readdir(root, { withFileTypes: true });
+      const projects: Array<{
+        name: string;
+        path: string;
+        pageCount: number;
+        pptxPath: string | null;
+        mtime: number;
+      }> = [];
+      for (const en of entries) {
+        if (!en.isDirectory()) continue;
+        const p = path.join(root, en.name);
+        const svgDir = path.join(p, 'svg_output');
+        let pageCount = 0;
+        let pptxPath: string | null = null;
+        try {
+          if (existsSync(svgDir)) {
+            pageCount = (await fsp.readdir(svgDir)).filter((f) => f.endsWith('.svg')).length;
+          }
+          const exportsDir = path.join(p, 'exports');
+          if (existsSync(exportsDir)) {
+            const files = (await fsp.readdir(exportsDir)).filter((f) => f.endsWith('.pptx'));
+            pptxPath = files.length ? path.join(exportsDir, files[0]) : null;
+          }
+        } catch {
+          /* ignore */
+        }
+        let mtime = 0;
+        try {
+          mtime = (await fsp.stat(p)).mtimeMs;
+        } catch {
+          /* ignore */
+        }
+        projects.push({ name: en.name, path: p, pageCount, pptxPath, mtime });
+      }
+      projects.sort((a, b) => b.mtime - a.mtime);
+      return { success: true, projects, root };
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err), projects: [] };
+    }
+  });
+
+  /** 打开项目目录 */
+  ipcMain.handle('pptmaster:openProjectDir', async (_e, projectPath: string) => {
+    try {
+      await shell.openPath(projectPath);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) };
+    }
+  });
+
+  /** 列出技能包内置工作流与参考文档（供 UI 展示能力） */
+  ipcMain.handle('pptmaster:listCapabilities', async () => {
+    const runner = getSkillRunner();
+    if (!runner) return { success: false, error: 'PPT Master 未初始化' };
+    const [workflows, references] = await Promise.all([
+      runner.listWorkflows(),
+      runner.listReferences(),
+    ]);
+    return {
+      success: true,
+      skillRoot: runner.getSkillRoot(),
+      workflows,
+      references,
+    };
   });
 
   // 返回应用退出时的清理函数

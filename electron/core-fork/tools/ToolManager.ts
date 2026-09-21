@@ -22,6 +22,18 @@ export interface ToolDefinition {
   parameters: any;
 }
 
+/**
+ * 跨平台路径拼接：模型在 Windows 上也可能给出 posix 风格（src/a.ts），
+ * 直接用 path.join 在 Windows 上没问题，但在 POSIX 上遇到 Windows 风格分隔符会出错。
+ * 这里统一先把分隔符归一化再拼接，保证两种风格混用都能落到正确位置。
+ */
+function pathLikeJoin(base: string, rel: string): string {
+  const normalized = rel.replace(/[\\/]+/g, '/');
+  const joined = path.join(base, normalized);
+  // Windows 上 path.join 会输出反斜杠，正好符合 Node fs 的期望
+  return joined;
+}
+
 export interface ToolResult {
   success: boolean;
   output?: string;
@@ -87,6 +99,32 @@ export class ToolManager {
     this.sessionId = sessionId;
     this.workspaceId = workspaceId;
     this.modifiedFiles.clear();
+  }
+
+  /**
+   * 把模型给出的路径解析为绝对路径。
+   *
+   * 模型天然倾向输出相对路径（src/index.ts、"src"、"."），而 fsAdapter 只认绝对路径，
+   * 直接透传会让所有相对路径调用报 ENOENT —— 这就是「识别不了工作区」的直接原因。
+   * 规则：
+   *   - 已经是绝对路径 → 原样返回
+   *   - 相对路径 → 以当前工作区根目录为基准拼接
+   *   - 没有工作区 → 原样返回，交由底层报错（附带清晰错误信息由调用方给出）
+   */
+  private resolvePath(p: string): string {
+    const raw = String(p ?? '').trim();
+    if (!raw) return this.workspaceId || raw;
+    // Windows 盘符绝对路径（C:\ / C:/）或 UNC（\\server\share）
+    const isWinAbs = /^[a-zA-Z]:[\\/]/.test(raw) || raw.startsWith('\\\\');
+    // POSIX 绝对路径
+    const isPosixAbs = raw.startsWith('/');
+    if (isWinAbs || isPosixAbs) return raw;
+    const base = this.workspaceId || '';
+    if (!base) return raw;
+    // 去掉开头的 ./，避免 path.join 产生冗余段
+    const cleaned = raw.replace(/^\.[\\/]/, '');
+    if (cleaned === '.') return base;
+    return pathLikeJoin(base, cleaned);
   }
 
   /** 本次会话修改过的文件（用于回滚/展示） */
@@ -601,54 +639,65 @@ export class ToolManager {
 
       switch (toolName) {
         case 'read_file': {
-          const result = await this.fsAdapter.readFile(args.path);
-          if (!result.success) return { success: false, error: result.error };
+          const abs = this.resolvePath(args.path);
+          const result = await this.fsAdapter.readFile(abs);
+          if (!result.success) return { success: false, error: `${result.error}（解析路径: ${abs}）` };
           return { success: true, output: result.content };
         }
         case 'write_to_file': {
-          await this.snapshotBeforeWrite(args.path);
-          const result = await this.fsAdapter.writeFile(args.path, args.content);
-          if (!result.success) return { success: false, error: result.error };
-          return { success: true, output: `文件已写入: ${args.path}` };
+          const abs = this.resolvePath(args.path);
+          await this.snapshotBeforeWrite(abs);
+          const result = await this.fsAdapter.writeFile(abs, args.content);
+          if (!result.success) return { success: false, error: `${result.error}（解析路径: ${abs}）` };
+          this.modifiedFiles.add(abs);
+          return { success: true, output: `文件已写入: ${abs}` };
         }
         case 'create_file': {
-          const result = await this.fsAdapter.createFile(args.path, args.content ?? '');
-          if (!result.success) return { success: false, error: result.error };
-          this.modifiedFiles.add(args.path);
-          return { success: true, output: `文件已创建: ${args.path}` };
+          const abs = this.resolvePath(args.path);
+          const result = await this.fsAdapter.createFile(abs, args.content ?? '');
+          if (!result.success) return { success: false, error: `${result.error}（解析路径: ${abs}）` };
+          this.modifiedFiles.add(abs);
+          return { success: true, output: `文件已创建: ${abs}` };
         }
         case 'delete_file': {
-          await this.snapshotBeforeWrite(args.path);
-          const result = await this.fsAdapter.deletePath(args.path);
-          if (!result.success) return { success: false, error: result.error };
-          return { success: true, output: `已删除: ${args.path}` };
+          const abs = this.resolvePath(args.path);
+          await this.snapshotBeforeWrite(abs);
+          const result = await this.fsAdapter.deletePath(abs);
+          if (!result.success) return { success: false, error: `${result.error}（解析路径: ${abs}）` };
+          return { success: true, output: `已删除: ${abs}` };
         }
         case 'rename_file': {
-          await this.snapshotBeforeWrite(args.oldPath);
-          const result = await this.fsAdapter.renamePath(args.oldPath, args.newPath);
-          if (!result.success) return { success: false, error: result.error };
-          this.modifiedFiles.add(args.newPath);
-          return { success: true, output: `已重命名: ${args.oldPath} -> ${args.newPath}` };
+          const absOld = this.resolvePath(args.oldPath);
+          const absNew = this.resolvePath(args.newPath);
+          await this.snapshotBeforeWrite(absOld);
+          const result = await this.fsAdapter.renamePath(absOld, absNew);
+          if (!result.success) return { success: false, error: `${result.error}（解析路径: ${absOld} -> ${absNew}）` };
+          this.modifiedFiles.add(absNew);
+          return { success: true, output: `已重命名: ${absOld} -> ${absNew}` };
         }
         case 'search_files': {
-          const result = await this.fsAdapter.searchFiles(args.path, args.regex);
-          if (!result.success) return { success: false, error: result.error };
-          const output = result.results?.map((r) => `${r.relativePath}:${r.line}: ${r.match}`).join('\n');
+          const abs = this.resolvePath(args.path);
+          const result = await this.fsAdapter.searchFiles(abs, args.regex);
+          if (!result.success) return { success: false, error: `${result.error}（解析路径: ${abs}）` };
+          const output = result.results!.map((r: any) => `${r.relativePath}:${r.line}: ${r.match}`).join('\n');
           return { success: true, output: output || '未找到匹配' };
         }
         case 'list_directory': {
-          const result = await this.fsAdapter.listDir(args.path);
-          if (!result.success) return { success: false, error: result.error };
-          const output = result.entries?.map((e) => `${e.isDirectory ? '[目录]' : '[文件]'} ${e.name}`).join('\n');
+          const abs = this.resolvePath(args.path);
+          const result = await this.fsAdapter.listDir(abs);
+          if (!result.success) return { success: false, error: `${result.error}（解析路径: ${abs}）` };
+          const output = result.entries!.map((e) => `${e.isDirectory ? '[目录]' : '[文件]'} ${e.name}`).join('\n');
           return { success: true, output: output || '空目录' };
         }
         case 'execute_command': {
-          const result = await this.terminalAdapter.exec(args.command, args.cwd || process.cwd());
+          // cwd 也按工作区解析：模型常给 "." 或相对子目录
+          const cwd = args.cwd ? this.resolvePath(args.cwd) : this.workspaceId || process.cwd();
+          const result = await this.terminalAdapter.exec(args.command, cwd);
           if (!result.success) return { success: false, error: result.error, output: result.stdout };
           return { success: true, output: result.stdout || result.stderr || '命令执行完成' };
         }
         case 'apply_diff': {
-          return this.applyDiff(args.path, args.diff);
+          return this.applyDiff(this.resolvePath(args.path), args.diff);
         }
         case 'search_symbol': {
           const symbols = await this.codebaseIndexer.searchSymbol(args.name);

@@ -7,6 +7,13 @@
   },
   "files": ["renderer/dist-electron/**/*", "dist/**/*", "package.json"],
   "asar": true,
+  "extraResources": [
+    {
+      "from": "skills/ppt-master",
+      "to": "skills/ppt-master",
+      "filter": ["**/*", "!**/__pycache__/**", "!**/*.pyc", "!**/.git/**"]
+    }
+  ],
   "win": {
     "target": [
       { "target": "nsis", "arch": ["x64"] }
