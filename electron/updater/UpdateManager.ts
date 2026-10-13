@@ -5,6 +5,7 @@ import fsPromises from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { ConfigAdapter } from '../adapter/ConfigAdapter';
+import { execFileSafe } from '../core-fork/util/SafeSpawn';
 
 /**
  * UpdateManager - CnkeIDE 远程更新管理器
@@ -82,6 +83,12 @@ interface RetryConfig {
   retryDelayMs: number;
 }
 
+/** setStatus 节流：避免 download-progress 高频事件（每秒 10-30 次）压垮 IPC。
+ *  - 每 200ms 至多推送一次「下载进度」类更新（首末帧立即透传，确保进度条不会丢起点/终点）
+ *  - 非下载阶段（checking/available/installing/error 等）不受节流，立即推送
+ */
+const PROGRESS_THROTTLE_MS = 200;
+
 export class UpdateManager {
   private win: BrowserWindow | null = null;
   private status: UpdateStatus = { phase: 'idle', mode: 'auto', percent: 0, transferred: 0, total: 0, differential: false };
@@ -100,6 +107,15 @@ export class UpdateManager {
   private pendingInfo: UpdateDownloadedEvent | null = null;
   // 强制更新弹窗是否正在显示（防重复弹窗）
   private forcedPromptShowing = false;
+  // ===== 性能优化：下载进度节流 =====
+  /** 上次推送下载进度的时间戳（用于节流） */
+  private lastProgressEmit = 0;
+  /** 待发送的下载进度（节流窗口内只保留最新） */
+  private pendingProgress: Partial<UpdateStatus> | null = null;
+  /** 节流定时器 */
+  private progressTimer: NodeJS.Timeout | null = null;
+  /** 自动安装倒计时定时器（autoInstall=true 时下载完成 N 秒后自动 installNow） */
+  private installTimer: NodeJS.Timeout | null = null;
 
   constructor(private config: ConfigAdapter) {
     this.logPath = path.join(app.getPath('userData'), 'logs', LOG_FILE);
@@ -170,41 +186,50 @@ export class UpdateManager {
     });
 
     autoUpdater.on('download-progress', (p: ProgressInfo) => {
-      this.setStatus({
+      // 走节流通道：每秒最高 5 次推送（PROGRESS_THROTTLE_MS = 200）
+      const patch: Partial<UpdateStatus> = {
         phase: 'downloading',
         percent: Math.min(99.9, Number(((p.percent || 0)).toFixed(1))),
         transferred: p.transferred || 0,
         total: p.total || 0,
         differential: !!p.delta,
         message: `正在下载更新包 ${Math.floor(p.percent)}%`,
-      });
+      };
+      this.status = { ...this.status, ...patch };
+      this.scheduleThrottledProgress(patch);
     });
 
     autoUpdater.on('update-downloaded', (event: UpdateDownloadedEvent) => {
       this.downloading = false;
       this.pendingInstall = true;
       this.pendingInfo = event;
-      // 保留基准安装包：下次更新走差分下载（仅几 MB），不再全量 ~86MB
-      this.preserveInstallerForDifferential();
-      this.log('download', this.status.mode, event.version, 'success', '更新包下载完成');
+      // 立即推送 100%（确保节流窗口内的进度到位）
+      this.flushProgressTimer();
       this.setStatus({
         phase: 'downloaded',
         version: event.version,
         releaseNotes: this.extractReleaseNotes(event),
         percent: 100,
-        transferred: (event as any)?.files?.reduce((s: number, f: any) => s + (f.size || 0), 0) || this.status.transferred,
+        transferred: (event as any)?.files?.reduce((s: number, fed: any) => s + (fed.size || 0), 0) || this.status.transferred,
         total: this.status.total || this.status.transferred,
         message: '更新包下载完成，准备安装',
       });
-      // W13 新增：自动模式（silent 启动时）5s 后自动安装
-      // 手动模式（用户在设置里点更新）则等用户点击
-      if (this.status.mode === 'auto') {
-        this.log('install', this.status.mode, event.version, 'success', '5s 后自动安装');
-        setTimeout(() => {
-          if (this.pendingInstall) {
-            this.installNow();
-          }
-        }, 5000);
+      // 后台异步保留差分基准（不阻塞 UI），完成后追加一条日志
+      void this.preserveInstallerForDifferentialAsync(event.version);
+      this.log('download', this.status.mode, event.version, 'success', '更新包下载完成');
+
+      // ===== 真正无感更新：autoInstall 配置开启时，下载完成立即自动安装 =====
+      // 不再区分 manual/auto：只要用户没关闭 autoInstall，下载完就自动安装，
+      // 用户完全不需要点任何按钮，进度条走完后直接重启到新版本。
+      const autoInstall = this.config.get<boolean>('update.autoInstall', true);
+      if (autoInstall) {
+        const delaySec = this.config.get<number>('update.autoInstallDelaySec', 3);
+        this.log('install', this.status.mode, event.version, 'success', `${delaySec}s 后自动安装`);
+        // 给用户 3s 时间看到「即将重启安装…」提示，期间可手动取消（点 X）
+        this.installTimer = setTimeout(() => {
+          this.installTimer = null;
+          if (this.pendingInstall) this.installNow();
+        }, delaySec * 1000);
       }
     });
 
@@ -257,32 +282,45 @@ export class UpdateManager {
    * 存在）时复制一份，下次更新即走差分（仅下载差异块，几 MB 级别）。
    */
   private preserveInstallerForDifferential(): void {
+    void this.preserveInstallerForDifferentialAsync(undefined);
+  }
+
+  /**
+   * 异步保留本次安装包到差分基准位置（不阻塞 UI 反馈）。
+   * electron-updater 的 NSIS 差分下载要求本地存在「当前已安装版本」安装包作为拼装基准，
+   * 统一在 installNow 之前 await 完，可能清空 pending 残留。
+   */
+  private async preserveInstallerForDifferentialAsync(version: string | undefined): Promise<void> {
     try {
       const cacheDir = this.getUpdaterCacheDir();
       if (!cacheDir) return;
       const pendingDir = path.join(cacheDir, 'pending');
+      // 用 existsSync + readdirSync 失败都视为可忽略（下次仍走全量）
       if (!fs.existsSync(pendingDir)) return;
-      const exes = fs
-        .readdirSync(pendingDir)
-        .filter((f) => f.toLowerCase().endsWith('.exe'));
-      if (exes.length === 0) return;
-      // 取最新修改的一个（正常情况下 pending 里只有一个刚下载的安装包）
-      let latest = exes[0];
+      const exes = await fsPromises.readdir(pendingDir).catch(() => [] as string[]);
+      const filtered = exes.filter((f) => f.toLowerCase().endsWith('.exe'));
+      if (filtered.length === 0) return;
+      // 取最新修改的一个
+      let latest = filtered[0];
       let latestMtime = 0;
-      for (const f of exes) {
-        const st = fs.statSync(path.join(pendingDir, f));
-        if (st.mtimeMs > latestMtime) {
-          latestMtime = st.mtimeMs;
-          latest = f;
+      for (const f of filtered) {
+        try {
+          const st = await fsPromises.stat(path.join(pendingDir, f));
+          if (st.mtimeMs > latestMtime) {
+            latestMtime = st.mtimeMs;
+            latest = f;
+          }
+        } catch {
+          /* skip */
         }
       }
       const src = path.join(pendingDir, latest);
       const dest = path.join(cacheDir, 'installer.exe');
-      fs.copyFileSync(src, dest);
-      this.log('download', this.status.mode, undefined, 'success', `已保留差分基准安装包: ${latest}`);
+      // 大文件异步拷贝（86MB 同步拷贝会卡几百 ms，改异步后让出事件循环）
+      await fsPromises.copyFile(src, dest);
+      this.log('download', this.status.mode, version, 'success', `已保留差分基准安装包: ${latest}`);
     } catch (e: any) {
-      // 保留失败不影响正常更新流程（下次仍全量下载）
-      this.log('download', this.status.mode, undefined, 'failed', '保留差分基准安装包失败', e?.message);
+      this.log('download', this.status.mode, version, 'failed', '保留差分基准安装包失败', e?.message);
     }
   }
 
@@ -308,13 +346,82 @@ export class UpdateManager {
   }
 
   private setStatus(patch: Partial<UpdateStatus>): void {
+    const isDownloadingProgress = patch.phase === 'downloading' &&
+      (patch.percent !== undefined || patch.transferred !== undefined);
     this.status = { ...this.status, ...patch };
+    // 下载进度走节流通道，避免每秒 20+ 次 IPC 推送拖慢主进程与渲染层
+    if (isDownloadingProgress) {
+      this.scheduleThrottledProgress(patch);
+      return;
+    }
+    // 非下载阶段立即推送（覆盖之前的节流窗口）
+    this.flushProgressTimer();
     this.emit('update:status', this.getStatus());
   }
 
+  /**
+   * 把下载进度 patch 放进节流队列，200ms 内只发最新一次。
+   * 首帧（百分比变化超过 5% 或首次）会立即透传，避免进度条不响应。
+   */
+  private scheduleThrottledProgress(patch: Partial<UpdateStatus>): void {
+    const now = Date.now();
+    const last = this.status;
+    const isFirstFrame = this.lastProgressEmit === 0;
+    const bigJump = typeof patch.percent === 'number' && Math.abs(patch.percent - (last.percent || 0)) >= 5;
+    if (isFirstFrame || bigJump || now - this.lastProgressEmit >= PROGRESS_THROTTLE_MS) {
+      this.lastProgressEmit = now;
+      this.emit('update:status', this.getStatus());
+      return;
+    }
+    // 缓存最新进度，节流窗口结束后补发一次
+    this.pendingProgress = { ...this.pendingProgress, ...patch };
+    if (!this.progressTimer) {
+      this.progressTimer = setTimeout(() => {
+        this.progressTimer = null;
+        if (this.pendingProgress) {
+          this.status = { ...this.status, ...this.pendingProgress };
+          this.pendingProgress = null;
+          this.lastProgressEmit = Date.now();
+          this.emit('update:status', this.getStatus());
+        }
+      }, PROGRESS_THROTTLE_MS);
+    }
+  }
+
+  /** 清理节流定时器（阶段切换时调用，避免残留 patch 污染下一阶段） */
+  private flushProgressTimer(): void {
+    if (this.progressTimer) {
+      clearTimeout(this.progressTimer);
+      this.progressTimer = null;
+    }
+    this.pendingProgress = null;
+  }
+
+  /**
+   * 解析主窗口用于状态推送。
+   *
+   * 注册的引用可能失效或尚未就绪（IPC 处理器先于 createWindow 注册，此时无窗口），
+   * 因此与 WindowAdapter.getMainWindow 保持同样的策略：引用不可用时动态回退到
+   * 当前存在的非 PPT 窗口，避免「检查更新/下载进度」推送静默丢失。
+   */
+  private resolveWindow(): BrowserWindow | null {
+    if (this.win && !this.win.isDestroyed()) return this.win;
+    const isMainWindow = (w: BrowserWindow) => {
+      try {
+        return !w.webContents.getURL().includes('ppt.html');
+      } catch {
+        return true;
+      }
+    };
+    const focused = BrowserWindow.getFocusedWindow();
+    if (focused && !focused.isDestroyed() && isMainWindow(focused)) return focused;
+    return BrowserWindow.getAllWindows().find((w) => !w.isDestroyed() && isMainWindow(w)) || null;
+  }
+
   private emit(channel: string, payload: unknown): void {
-    if (this.win && !this.win.isDestroyed()) {
-      this.win.webContents.send(channel, payload);
+    const win = this.resolveWindow();
+    if (win && !win.webContents.isDestroyed()) {
+      win.webContents.send(channel, payload);
     }
   }
 
@@ -416,19 +523,37 @@ export class UpdateManager {
     if (!this.pendingInstall) {
       return { success: false, error: '尚未下载更新包' };
     }
-    this.setStatus({ phase: 'installing', message: '正在安装更新，应用即将重启…' });
+    // 取消自动安装倒计时（用户手动点击安装）
+    if (this.installTimer) {
+      clearTimeout(this.installTimer);
+      this.installTimer = null;
+    }
+    // 安装阶段进度不再节流（阶段切换会清空节流队列）
+    this.flushProgressTimer();
+    this.setStatus({ phase: 'installing', percent: 0, message: '正在准备安装环境…', transferred: 0, total: 0 });
     this.log('install', this.status.mode, this.pendingInfo?.version, 'success', '开始安装更新并重启');
     try {
-      // W13 改进：主动 kill 残留子进程避免文件被占用（1.2.1 教训）
-      this.killResidualProcesses();
-      // 给 2s 缓冲让 OS 释放文件句柄
-      setTimeout(() => {
+      // 阶段一（0→30%）：kill 残留进程（异步并行，不再串行）
+      this.killResidualProcessesAsync().then(() => {
+        // 阶段二（30→60%）：等待 OS 释放文件句柄（缩短到 0.6s，原 2s 过长）
+        this.setStatus({ phase: 'installing', percent: 30, message: '正在关闭后台进程…' });
+        return new Promise<void>((r) => setTimeout(r, 600));
+      }).then(() => {
+        // 阶段三（60→90%）：Squirrel 替换 exe 前再确认一次文件就绪
+        this.setStatus({ phase: 'installing', percent: 60, message: '正在替换应用文件…' });
+        return new Promise<void>((r) => setTimeout(r, 200));
+      }).then(() => {
+        // 阶段四（90→100%）：交给 Squirrel 执行 quitAndInstall
+        // 第一个参数 isSilent=true：强制走 NSIS 静默升级（/S 参数），**不弹任何安装界面**
+        // 第二个参数 isForceRunAfter=true：安装完自动启动新版本（用户完全不感知）
+        // 真实无感升级：进度条走完→直接重启到新版本，绝无任何弹窗
+        this.setStatus({ phase: 'installing', percent: 90, message: '即将重启应用完成安装…' });
         try {
-          autoUpdater.quitAndInstall(false, true);
+          autoUpdater.quitAndInstall(true, true);
         } catch (err: any) {
           this.log('error', this.status.mode, undefined, 'failed', 'quitAndInstall 失败', err?.message);
         }
-      }, 2000);
+      });
       return { success: true };
     } catch (err: any) {
       this.log('error', this.status.mode, undefined, 'failed', '安装准备失败', err?.message);
@@ -442,20 +567,30 @@ export class UpdateManager {
    * 导致 Squirrel installer 替换时 Access denied
    */
   private killResidualProcesses(): void {
+    void this.killResidualProcessesAsync();
+  }
+
+  /**
+   * 异步并行清理残留子进程，不再串行阻塞主进程。
+   * 3 个 taskkill 同时执行，最长等待时间由 max → max（因为是并行的，wall time 不变），
+   * 但主进程事件循环不再被同步 spawn 占据，UI 可继续响应。
+   */
+  private async killResidualProcessesAsync(): Promise<void> {
     try {
-      const { exec } = require('node:child_process');
-      // 杀掉所有 CnkeIDE 的子进程（agent worker 等）
-      // taskkill /T 杀进程树，/F 强杀
       const cmds: Array<{ cmd: string; args: string[] }> = [
-        // Windows: 杀所有 node 派生的子进程（CnkeIDE 自己用 child_process spawn 的）
         { cmd: 'taskkill', args: ['/F', '/IM', 'node.exe', '/FI', 'WINDOWTITLE eq CnkeIDE*'] },
-        // 杀 cmd.exe / powershell.exe（agent 启动的 shell）
         { cmd: 'taskkill', args: ['/F', '/IM', 'cmd.exe', '/FI', 'WINDOWTITLE eq CnkeIDE*'] },
         { cmd: 'taskkill', args: ['/F', '/IM', 'powershell.exe', '/FI', 'WINDOWTITLE eq CnkeIDE*'] },
       ];
-      for (const c of cmds) {
-        try { exec(c.cmd, c.args, { windowsHide: true }); } catch { /* ignore */ }
-      }
+      await Promise.allSettled(
+        cmds.map((c) => new Promise<void>((resolve) => {
+          // execFileSafe 是同步的（spawnSync），包一层 Promise 让并行生效
+          try {
+            execFileSafe(c.cmd, c.args, { windowsHide: true, timeout: 1500 });
+          } catch { /* ignore */ }
+          resolve();
+        }))
+      );
       this.log('install', this.status.mode, undefined, 'success', '已清理残留子进程');
     } catch (err) {
       // best-effort
@@ -464,6 +599,10 @@ export class UpdateManager {
 
   /** 取消当前更新流程。 */
   cancel(): void {
+    if (this.installTimer) {
+      clearTimeout(this.installTimer);
+      this.installTimer = null;
+    }
     if (this.downloading) {
       this.downloading = false;
       this.log('download', this.status.mode, undefined, 'cancelled', '用户取消下载');
@@ -476,6 +615,47 @@ export class UpdateManager {
   /** 是否已下载完成待安装。 */
   isPendingInstall(): boolean {
     return this.pendingInstall;
+  }
+
+  /**
+   * 检查是否刚完成更新（当前版本与上次记录版本不同），若需要公告则返回版本号。
+   * 同时把当前版本写入持久化标记，后续启动不再重复弹出。
+   */
+  async checkPostUpdateAnnouncement(): Promise<string | null> {
+    try {
+      const currentVersion = app.getVersion();
+      const key = 'update.lastAnnouncementVersion';
+      const lastShown = this.config.get<string>(key, '');
+      if (lastShown === currentVersion) {
+        // 已经为此版本弹过公告
+        return null;
+      }
+      // 记录当前版本，后续不再弹
+      this.config.set(key, currentVersion);
+      return currentVersion;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 从远程服务器获取 releasenotes.txt 内容（更新公告）。
+   * 用 https 直接拉取，不依赖 electron-updater 的 UpdateInfo。
+   */
+  async fetchReleaseNotes(): Promise<string> {
+    const url = UPDATE_SERVER_URL + 'releasenotes.txt';
+    const https = await import('node:https');
+    return new Promise<string>((resolve) => {
+      const req = https.get(url, { timeout: 10000 }, (res) => {
+        let data = '';
+        res.setEncoding('utf-8');
+        res.on('data', (chunk) => { data += chunk; });
+        res.on('end', () => resolve(data || ''));
+        res.on('error', () => resolve(''));
+      });
+      req.on('error', () => resolve(''));
+      req.on('timeout', () => { req.destroy(); resolve(''); });
+    });
   }
 
   // ============================================================
@@ -573,6 +753,11 @@ export class UpdateManager {
       clearTimeout(this.logWriteTimer);
       this.logWriteTimer = null;
     }
+    if (this.installTimer) {
+      clearTimeout(this.installTimer);
+      this.installTimer = null;
+    }
+    this.flushProgressTimer();
     await this.flushLog();
     this.cancel();
     try {

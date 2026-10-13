@@ -50,11 +50,12 @@ async function test3_mockCloseNoop() {
   log(true, 'close 不抛错', '');
 }
 
-async function test4_realAdapterFailsGracefully() {
-  console.log('\n[4] createRealPlaywrightAdapter 未安装时返回 null');
+async function test4_realAdapterAvailability() {
+  console.log('\n[4] createRealPlaywrightAdapter 可选加载');
   const a = await createRealPlaywrightAdapter();
-  // 测试环境未装 playwright → 期望 null
-  log(a === null, '返回 null', `a=${a === null ? 'null' : 'object'}`);
+  // 未安装时降级 null；已安装时返回可用的真实适配器，二者都是正确行为。
+  log(a === null || a.available === true, '返回 null 或可用适配器', `a=${a === null ? 'null' : 'available=' + a.available}`);
+  await a?.close();
 }
 
 // ===== ImageGen =====
@@ -171,7 +172,7 @@ async function test11_openaiGenerateTimeout() {
   test1_mockAvailable();
   await test2_mockNavigateThrows();
   await test3_mockCloseNoop();
-  await test4_realAdapterFailsGracefully();
+  await test4_realAdapterAvailability();
   test5_mockImageGen();
   await test6_mockImageGenReturnsError();
   test7_openaiAdapterStructure();

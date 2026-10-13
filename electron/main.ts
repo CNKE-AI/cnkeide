@@ -5,6 +5,19 @@ import { registerIpcHandlers } from './ipc/handlers';
 import { initPptMaster } from './core-fork/pptmaster';
 import { ConfigAdapter } from './adapter/ConfigAdapter';
 import { createMenu } from './menu';
+import { stripElectronEnvFromProcess } from './core-fork/util/SafeSpawn';
+
+// ===== 硬约束：应用运行期间不得产生 electron.exe 子进程 =====
+// 必须在任何窗口创建 / 任何子进程派生之前执行：
+// 移除 process.env 里 Electron 注入的 ELECTRON_* 变量（ELECTRON_RUN_AS_NODE 等），
+// 避免它们被透传给子进程后，某个被子进程（node/npm/python）被解析成 electron.exe
+// 并以 Node 模式启动，在任务管理器里多出 electron.exe。
+// 之后所有走 SafeSpawn 的派生还会做二进制黑名单二次拦截；此处的进程级清理
+// 是兜底，覆盖直接调用 child_process 的第三方库。
+const removedElectronEnv = stripElectronEnvFromProcess();
+if (removedElectronEnv.length > 0) {
+  console.log('[SafeSpawn] 已移除 Electron 注入环境变量，杜绝 electron.exe 子进程:', removedElectronEnv.join(', '));
+}
 
 // 全局未捕获异常守卫：吞掉原生句柄销毁等竞态错误，避免主进程崩溃弹窗
 // 典型场景：关闭应用时子进程 ChildProcess._handle.onexit 触发，前端 BrowserWindow/webContents
@@ -34,6 +47,28 @@ let pptWindow: BrowserWindow | null = null;
 let appCleanup: { dispose: () => void } | null = null;
 let tray: Tray | null = null;
 const configAdapter = new ConfigAdapter();
+
+// ===== 单实例锁 =====
+// 必须放在任何窗口创建之前。第二个实例启动时直接退出，并把已有窗口唤到前台，
+// 避免同一 userData 目录被两个进程同时读写（配置/会话/索引）导致数据错乱。
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+
+if (!gotSingleInstanceLock) {
+  // 已有实例在运行：立即退出本进程（不弹窗、不建窗口）
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    // 用户重复双击图标：把已有窗口唤到前台
+    if (pptWindow && !pptWindow.isDestroyed() && pptWindow.isFocused()) {
+      return;
+    }
+    showMainWindow();
+    if (pptWindow && !pptWindow.isDestroyed()) {
+      pptWindow.show();
+      pptWindow.focus();
+    }
+  });
+}
 
 async function createWindow() {
   mainWindow = new BrowserWindow({
@@ -76,6 +111,28 @@ async function createWindow() {
     mainWindow?.show();
   });
 
+  // 窗口保护（任务执行期防误最小化 / 尺寸护栏）
+  attachWindowGuards(mainWindow, { minWidth: 1000, minHeight: 600 });
+
+  // 任务进行中关闭主窗口 → 二次确认，避免误触导致任务中断且窗口消失
+  mainWindow.on('close', (event) => {
+    if (!agentBusy) return;
+    const choice = dialog.showMessageBoxSync(mainWindow!, {
+      type: 'warning',
+      buttons: ['继续执行', '仍要关闭'],
+      defaultId: 0,
+      cancelId: 0,
+      title: 'AI 任务正在执行',
+      message: 'AI 任务尚未完成，关闭窗口会中断当前任务。',
+      detail: '确定要关闭吗？',
+      noLink: true,
+    });
+    if (choice === 0) {
+      event.preventDefault();
+      notifyBusyGuard('AI 任务执行中，已取消关闭');
+    }
+  });
+
   // 兜底：页面加载后强制显示，避免 ready-to-show 未触发导致窗口永久隐藏
   mainWindow.webContents.once('did-finish-load', () => {
     setTimeout(() => {
@@ -84,6 +141,20 @@ async function createWindow() {
       }
     }, 1000);
   });
+
+  // 可见性看门狗：任务执行期间每 2s 检查一次，被外部手段（系统快捷键 / 任务栏 /
+  // 第三方窗口管理器）最小化或隐藏时立即拉回，保证长任务跑完时窗口一定在眼前。
+  const guardTimer = setInterval(() => {
+    if (!agentBusy || !mainWindow || mainWindow.isDestroyed()) return;
+    if (mainWindow.isMinimized()) {
+      mainWindow.restore();
+      notifyBusyGuard('检测到窗口被最小化，已自动恢复');
+    } else if (!mainWindow.isVisible()) {
+      mainWindow.show();
+      notifyBusyGuard('检测到窗口被隐藏，已自动恢复');
+    }
+  }, 2000);
+  mainWindow.on('closed', () => clearInterval(guardTimer));
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
@@ -96,28 +167,80 @@ async function createWindow() {
   };
   mainWindow.on('maximize', broadcastMaximizeState);
   mainWindow.on('unmaximize', broadcastMaximizeState);
+}
 
-  // 窗口控制 IPC
-  ipcMain.on('window:minimize', () => mainWindow?.minimize());
-  ipcMain.on('window:maximize', () => {
-    if (mainWindow?.isMaximized()) {
-      mainWindow.unmaximize();
-    } else {
-      mainWindow?.maximize();
+/**
+ * 窗口保护
+ *
+ * 目标：AI 任务执行期间，窗口不应被误最小化 / 误关闭后「消失不见」，
+ * 同时阻止窗口被清零尺寸或拖出可视区域导致再也点不到。
+ *
+ * 策略：
+ *  1) 记录「任务进行中」状态（由渲染进程通过 IPC 同步）。
+ *  2) 任务进行中收到 minimize → 不真正最小化，改为提示并返回（拦截）。
+ *  3) 任务进行中收到 close → 弹确认框，用户确认才关闭。
+ *  4) 兜底：若窗口被外部手段（系统快捷键 / 任务栏右键）最小化，立即 restore 还原。
+ *  5) 尺寸护栏：resize 后若宽度/高度过小，自动抬回最小值。
+ */
+let agentBusy = false;
+
+/** 标记 AI 任务是否正在执行（用于窗口保护） */
+export function setAgentBusy(busy: boolean): void {
+  agentBusy = busy;
+}
+
+/** 任务进行中：拦截最小化，并提示用户 */
+function notifyBusyGuard(reason: string): void {
+  try {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+      mainWindow.webContents.send('window:guard-notice', { reason });
+      mainWindow.flashFrame(true);
+      setTimeout(() => {
+        try {
+          mainWindow?.flashFrame(false);
+        } catch {
+          /* 窗口可能已销毁 */
+        }
+      }, 1500);
     }
+  } catch {
+    /* 忽略竞态 */
+  }
+}
+
+/** 装配窗口保护：拦截 + 兜底还原 + 尺寸护栏 */
+function attachWindowGuards(win: BrowserWindow, opts: { minWidth: number; minHeight: number }): void {
+  // 兜底：被外部手段最小化后立即还原（任务进行中才生效）
+  // 注：minimize 事件的 preventDefault 在部分平台上不阻止最小化，
+  // 因此这里额外 restore + show 做双保险。
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  win.on('minimize' as any, (event: any) => {
+    if (!agentBusy) return;
+    event.preventDefault?.();
+    win.restore();
+    win.show();
+    notifyBusyGuard('AI 任务执行中，窗口已保持在前台');
   });
-  ipcMain.on('window:close', () => mainWindow?.close());
-  ipcMain.on('window:isMaximized', (event) => {
-    event.returnValue = mainWindow?.isMaximized() ?? false;
+
+  // 尺寸护栏：防止被压成 0 尺寸 / 极端窄条后无法操作
+  win.on('resize', () => {
+    if (win.isDestroyed() || win.isMinimized() || win.isMaximized() || win.isFullScreen()) return;
+    const [w, h] = win.getSize();
+    const needW = Math.max(w, opts.minWidth);
+    const needH = Math.max(h, opts.minHeight);
+    if (needW !== w || needH !== h) {
+      win.setSize(needW, needH, false);
+    }
   });
 }
 
 /** 创建独立的「生成 PPT」窗口 */
-async function createPptWindow(): Promise<void> {
-  // 已存在则聚焦复用
+async function createPptWindow(topic?: string): Promise<void> {
+  // 已存在则聚焦复用，并将新主题发送给页面。
   if (pptWindow && !pptWindow.isDestroyed()) {
     pptWindow.show();
     pptWindow.focus();
+    if (topic) pptWindow.webContents.send('ppt:prefill-topic', topic);
     return;
   }
 
@@ -142,6 +265,9 @@ async function createPptWindow(): Promise<void> {
 
   const isDev = process.env.NODE_ENV === 'development' || !!process.env.VITE_DEV_SERVER_URL;
 
+  // 窗口保护：PPT 窗口同样不允许被压成 0 尺寸
+  attachWindowGuards(pptWindow, { minWidth: 800, minHeight: 600 });
+
   if (isDev) {
     const devUrl = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5173';
     await pptWindow.loadURL(`${devUrl}/ppt.html`);
@@ -149,6 +275,8 @@ async function createPptWindow(): Promise<void> {
     // __dirname = <root>/renderer/dist-electron，产物 dist/ 在项目根：<root>/dist/ppt.html
     await pptWindow.loadFile(path.join(__dirname, '../../dist/ppt.html'));
   }
+
+  if (topic) pptWindow.webContents.send('ppt:prefill-topic', topic);
 
   pptWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
@@ -221,15 +349,22 @@ function createTray() {
   }
 }
 
-/** 显示/恢复主窗口 */
+/**
+ * 显示/恢复主窗口
+ *
+ * 覆盖三种「窗口不见了」的现场：已销毁、已最小化、已隐藏。
+ * 由托盘点击、重复启动（second-instance）、系统通知点击共用。
+ */
 function showMainWindow() {
-  if (!mainWindow) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
     void createWindow();
     return;
   }
   if (mainWindow.isMinimized()) mainWindow.restore();
-  mainWindow.show();
+  if (!mainWindow.isVisible()) mainWindow.show();
   mainWindow.focus();
+  // 任务执行中恢复窗口：顺便提示用户任务仍在跑
+  if (agentBusy) notifyBusyGuard('窗口已恢复显示（AI 任务执行中）');
 }
 
 /** 发送系统通知（任务结束 / 异常退出） */
@@ -258,11 +393,25 @@ function sendNotification(title: string, body: string) {
 app.whenReady().then(async () => {
   await configAdapter.init();
   createMenu();
-  await createWindow();
   createTray();
 
-  // 注册所有IPC处理器
-  appCleanup = registerIpcHandlers(configAdapter);
+  // 注册所有IPC处理器。
+  //
+  // 必须在 createWindow() 之前：渲染层在 React 挂载时（App.tsx 的 UpdateAnnouncement）
+  // 就会 invoke('update:checkAnnouncement') 等通道，窗口加载完成早于此处注册会导致
+  // "No handler registered for 'update:check'" 这类启动竞态报错。
+  //
+  // 这里显式捕获异常：registerIpcHandlers 内部会一次性注册上百个通道，任一模块
+  // 加载失败（历史问题：RagManager 运行期 require 相对路径）都会让后续所有
+  // ipcMain.handle 一个都不注册，表现为「窗口能开但全部 IPC 报 No handler registered」。
+  // 捕获后至少保证窗口正常创建，并把真实原因打到主进程日志，便于定位。
+  try {
+    appCleanup = registerIpcHandlers(configAdapter);
+  } catch (e) {
+    console.error('[main] registerIpcHandlers 失败，IPC 将不可用:', e);
+  }
+
+  await createWindow();
 
   // 初始化 PPT Master 集成（定位 skill 包 + 探测 Python，失败不阻断启动）
   void initPptMaster(configAdapter)
@@ -290,11 +439,34 @@ app.whenReady().then(async () => {
       createWindow();
     }
   });
+}).catch((e) => {
+  console.error('[main] 启动初始化失败:', e);
 });
 
 // 打开 PPT 生成窗口（菜单 / 主窗口渲染进程均可触发）
-ipcMain.on('ppt:open', () => {
-  void createPptWindow();
+ipcMain.on('ppt:open', (_event, topic?: string) => {
+  void createPptWindow(typeof topic === 'string' ? topic.trim() : undefined);
+});
+
+// ===== 窗口控制 IPC（模块级仅注册一次） =====
+// 注意：不能放在 createWindow() 内——窗口销毁重建（托盘唤起 / macOS activate）
+// 会重复注册同名通道，消息被多次处理（典型症状：重建后点「最大化」无反应，
+// toggle 逻辑被执行两次互相抵消）。
+ipcMain.on('window:minimize', () => mainWindow?.minimize());
+ipcMain.on('window:maximize', () => {
+  if (mainWindow?.isMaximized()) {
+    mainWindow.unmaximize();
+  } else {
+    mainWindow?.maximize();
+  }
+});
+ipcMain.on('window:close', () => mainWindow?.close());
+ipcMain.on('window:isMaximized', (event) => {
+  event.returnValue = mainWindow?.isMaximized() ?? false;
+});
+// AI 任务进行中状态同步：渲染进程在 agent:run / 结束时通知，用于窗口保护策略
+ipcMain.on('window:set-agent-busy', (_e, busy: boolean) => {
+  setAgentBusy(!!busy);
 });
 // 菜单「文件 → 生成 PPT」通过 app 事件触发（避免 menu.ts 与 main.ts 循环依赖）
 (app as any).on('open-ppt', () => {

@@ -42,6 +42,10 @@ scripts/test_encoding.js
 scripts/smoke.js
 scripts/proc_info.ps1
 
+# Python 字节码缓存
+__pycache__/
+*.py[cod]
+
 # 系统文件
 .DS_Store
 Thumbs.db
@@ -61,6 +65,9 @@ Thumbs.db
 .tmp_export_test/
 .tmp_ppt_test/
 scripts/ppt_templates_server/
+
+# 归档目录（保留历史调试脚本与产物，不纳入版本控制）
+_archive/
 
 # Python 运行时（由 scripts 下载，非源码，见 README「运行时依赖」）
 runtime/

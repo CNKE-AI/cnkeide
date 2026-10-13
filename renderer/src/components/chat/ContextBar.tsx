@@ -23,8 +23,8 @@ const ContextBar: React.FC = () => {
         : 'text-emerald-400';
 
   return (
-    <div className="px-3 py-1.5 border-b border-border bg-secondary/10">
-      <div className="flex items-center gap-2">
+    <div className="px-4 py-2 border-b border-border/70 bg-secondary/10">
+      <div className="flex items-center gap-2.5">
         <button
           onClick={() => setContextExpanded(!contextExpanded)}
           className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors shrink-0"
@@ -34,9 +34,9 @@ const ContextBar: React.FC = () => {
           <Gauge className="w-3 h-3" />
           <span>上下文</span>
         </button>
-        <div className="flex-1 h-2 bg-secondary rounded-full overflow-hidden">
+        <div className="flex-1 h-1.5 bg-secondary rounded-full overflow-hidden">
           <div
-            className={`h-full ${color} transition-all duration-300`}
+            className={`h-full ${color} transition-all duration-300 rounded-full`}
             style={{ width: `${Math.max(2, pct)}%` }}
           />
         </div>

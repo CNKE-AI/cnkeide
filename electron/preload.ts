@@ -12,6 +12,14 @@ const windowApi = {
     ipcRenderer.on('window:maximized-changed', handler);
     return () => ipcRenderer.removeListener('window:maximized-changed', handler);
   },
+  /** 同步「AI 任务进行中」状态，主进程据此启用窗口保护（防误最小化/误关闭） */
+  setAgentBusy: (busy: boolean) => ipcRenderer.send('window:set-agent-busy', busy),
+  /** 订阅窗口保护提示（例如任务执行中尝试最小化被拦截） */
+  onGuardNotice: (cb: (payload: { reason: string }) => void) => {
+    const handler = (_e: any, payload: any) => cb(payload);
+    ipcRenderer.on('window:guard-notice', handler);
+    return () => ipcRenderer.removeListener('window:guard-notice', handler);
+  },
 };
 
 // ===== 文件系统 API =====
@@ -26,7 +34,28 @@ const fsApi = {
   renamePath: (oldPath: string, newPath: string) => ipcRenderer.invoke('fs:renamePath', oldPath, newPath),
   exists: (filePath: string) => ipcRenderer.invoke('fs:exists', filePath),
   searchFiles: (rootPath: string, pattern: string) => ipcRenderer.invoke('fs:searchFiles', rootPath, pattern),
+  /** 开始监听工作区目录变更（打开/切换文件夹时调用） */
+  watchWorkspace: (rootPath: string) => ipcRenderer.invoke('fs:watchWorkspace', rootPath),
+  /** 停止监听工作区目录变更 */
+  unwatchWorkspace: () => ipcRenderer.invoke('fs:unwatchWorkspace'),
+  /** 查询当前监听状态 */
+  watchStatus: () => ipcRenderer.invoke('fs:watchStatus'),
+  /** 订阅工作区文件变更（批量，已 debounce 合并） */
+  onChanged: (cb: (payload: { root: string; changes: FsChange[] }) => void) => {
+    const handler = (_e: any, payload: any) => cb(payload);
+    ipcRenderer.on('fs:changed', handler);
+    return () => ipcRenderer.removeListener('fs:changed', handler);
+  },
 };
+
+/** 工作区文件变更条目 */
+export interface FsChange {
+  type: 'rename' | 'change';
+  absolutePath: string;
+  relativePath: string;
+  dir: string;
+  at: number;
+}
 
 // ===== 终端 API =====
 const terminalApi = {
@@ -79,6 +108,12 @@ const sessionApi = {
 };
 
 // ===== 配置 API =====
+const skillApi = {
+  list: () => ipcRenderer.invoke('skills:list'),
+  scan: () => ipcRenderer.invoke('skills:scan'),
+  setEnabled: (id: string, enabled: boolean) => ipcRenderer.invoke('skills:setEnabled', id, enabled),
+};
+
 const configApi = {
   get: (key: string) => ipcRenderer.invoke('config:get', key),
   set: (key: string, value: any) => ipcRenderer.invoke('config:set', key, value),
@@ -174,6 +209,9 @@ const sessionExApi = {
 // ===== Plan 查询 API（W3）=====
 const planApi = {
   get: (sessionId: string) => ipcRenderer.invoke('plan:get', sessionId),
+  skip: (sessionId: string, itemId: string) => ipcRenderer.invoke('plan:skip', sessionId, itemId),
+  retry: (sessionId: string, itemId: string) => ipcRenderer.invoke('plan:retry', sessionId, itemId),
+  abandon: (sessionId: string) => ipcRenderer.invoke('plan:abandon', sessionId),
 };
 
 // ===== 官方后台 API（远程配置 / 公告 / 反馈）=====
@@ -211,8 +249,14 @@ const notifyApi = {
 
 // ===== PPT 生成 API（W14）=====
 const pptApi = {
-  /** 打开独立的 PPT 生成窗口 */
-  open: () => ipcRenderer.send('ppt:open'),
+  /** 打开独立的 PPT 生成窗口，可选预填主题 */
+  open: (topic?: string) => ipcRenderer.send('ppt:open', topic),
+  /** 订阅来自主窗口的预填主题 */
+  onTopic: (handler: (topic: string) => void) => {
+    const wrapped = (_e: Electron.IpcRendererEvent, topic: string) => handler(topic);
+    ipcRenderer.on('ppt:prefill-topic', wrapped);
+    return () => ipcRenderer.removeListener('ppt:prefill-topic', wrapped);
+  },
   /** 关闭 PPT 窗口 */
   close: () => ipcRenderer.send('ppt:close'),
   minimize: () => ipcRenderer.send('ppt:minimize'),
@@ -221,6 +265,9 @@ const pptApi = {
   /** AI 生成 PPT 大纲（复用当前 active API + LLMProvider；场景化时按场景结构骨架组织） */
   generateOutline: (topic: string, slideCount?: number, scenarioId?: string) =>
     ipcRenderer.invoke('ppt:generateOutline', topic, slideCount, scenarioId),
+  /** AI 自动生成原创视觉方案（配色、字体和风格），不使用外部模板。 */
+  generateAiDesign: (payload: { topic?: string; scenarioName?: string; slides?: any[]; fallbackThemeId?: string }) =>
+    ipcRenderer.invoke('ppt:generateAiDesign', payload),
   /** 扫描当前工作区内容摘要（目录结构 + README + 文档清单） */
   scanWorkspace: (wsPath?: string) => ipcRenderer.invoke('ppt:scanWorkspace', wsPath),
   /** 基于当前工作区代码/文档自动生成 PPT 大纲 */
@@ -229,7 +276,7 @@ const pptApi = {
   /** 列出内置主题清单（4 套） */
   listThemes: () => ipcRenderer.invoke('ppt:listThemes'),
   /** 纯代码生成 HTML 预览（不调 LLM，确定性输出，与 PPTX 视觉一致）—— 一键生成主推 */
-  generatePreview: (payload: { themeId: string; outline: { title: string; slides: any[] } }) =>
+  generatePreview: (payload: { themeId: string; outline: { title: string; slides: any[] }; design?: { palette?: { primary?: string; secondary?: string; accent?: string; background?: string }; fontFamily?: string; artDirection?: string } }) =>
     ipcRenderer.invoke('ppt:generatePreview', payload),
   /** 第 2 轮 LLM：把大纲 + 主题样式 → 渲染为完整 HTML 演示文稿 */
   renderTheme: (payload: {
@@ -248,19 +295,6 @@ const pptApi = {
     const wrapped = (_e: any, payload: any) => handler(payload);
     ipcRenderer.on('ppt:renderProgress', wrapped);
     return () => ipcRenderer.removeListener('ppt:renderProgress', wrapped);
-  },
-  /** 列出远程 PPT 模板索引（支持分页/分类/搜索） */
-  listRemoteTemplates: (payload?: { page?: number; pageSize?: number; category?: string; keyword?: string }) =>
-    ipcRenderer.invoke('ppt:listRemoteTemplates', payload || {}),
-  /** 列出远程模板分类 */
-  listRemoteCategories: () => ipcRenderer.invoke('ppt:listRemoteCategories'),
-  /** 下载远程模板到本地缓存 */
-  downloadTemplate: (payload: { id: string }) => ipcRenderer.invoke('ppt:downloadTemplate', payload),
-  /** 监听远程模板下载进度 */
-  onTemplateProgress: (handler: (payload: { id: string; downloaded: number; total: number; ratio: number }) => void) => {
-    const wrapped = (_e: any, payload: any) => handler(payload);
-    ipcRenderer.on('ppt:templateProgress', wrapped);
-    return () => ipcRenderer.removeListener('ppt:templateProgress', wrapped);
   },
   /** 大纲细化扩写（单页） */
   expandSlide: (payload: {
@@ -281,12 +315,6 @@ const pptApi = {
     ipcRenderer.on('ppt:expandProgress', wrapped);
     return () => ipcRenderer.removeListener('ppt:expandProgress', wrapped);
   },
-  /** 套用模板 + 大纲 → 生成最终 .pptx */
-  applyTemplate: (payload: {
-    templateId: string;
-    outline: { title: string; slides: { title: string; bullets: string[] }[] };
-    savePath?: string;
-  }) => ipcRenderer.invoke('ppt:applyTemplate', payload),
   /** 场景清单（商务汇报/产品发布/项目提案/年度总结/培训课件/通用） */
   listScenarios: () => ipcRenderer.invoke('ppt:listScenarios'),
   /** 场景自动检测（LLM 分类 + 关键词兜底） */
@@ -351,6 +379,8 @@ const updateApi = {
   cancel: () => ipcRenderer.invoke('update:cancel'),
   getStatus: () => ipcRenderer.invoke('update:getStatus'),
   getLogs: (limit?: number) => ipcRenderer.invoke('update:getLogs', limit),
+  checkAnnouncement: () => ipcRenderer.invoke('update:checkAnnouncement'),
+  getReleaseNotes: () => ipcRenderer.invoke('update:getReleaseNotes'),
   onStatus: (cb: (status: any) => void) => {
     const handler = (_e: any, status: any) => cb(status);
     ipcRenderer.on('update:status', handler);
@@ -365,6 +395,7 @@ contextBridge.exposeInMainWorld('cnke', {
   terminal: terminalApi,
   agent: agentApi,
   session: sessionApi,
+  skills: skillApi,
   config: configApi,
   memory: memoryApi,
   mcp: mcpApi,

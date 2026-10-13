@@ -14,7 +14,7 @@
 import { existsSync } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawnSafe, sanitizeEnv } from '../util/SafeSpawn';
 import { resolvePython, PythonInfo, clearPythonCache } from './PythonRuntime';
 
 export interface SkillRunResult {
@@ -153,17 +153,16 @@ export class SkillRunner {
     const pyPath = existingPyPath ? `${scriptsDir}${path.delimiter}${existingPyPath}` : scriptsDir;
 
     return new Promise<SkillRunResult>((resolve) => {
-      const child = spawn(this.python!.path, [scriptPath, ...args], {
+      const child = spawnSafe(this.python!.path, [scriptPath, ...args], {
         cwd: opts.cwd ?? this.skillRoot,
         windowsHide: true,
-        env: {
-          ...process.env,
+        env: sanitizeEnv({
           PYTHONIOENCODING: 'utf-8',
           PYTHONUTF8: '1',
           PYTHONPATH: pyPath,
           ...this.baseEnv,
           ...(opts.env ?? {}),
-        } as NodeJS.ProcessEnv,
+        }),
       });
 
       let stdout = '';

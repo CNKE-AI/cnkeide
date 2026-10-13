@@ -4,12 +4,16 @@
  * 失败兜底：返回错误信息由 LLM 决定下一步
  */
 
-import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { execFileSafe } from '../util/SafeSpawn';
 
-const execFileAsync = promisify(execFile);
+const execFileAsync = promisify(execFileSafe as any) as (
+  file: string,
+  args: string[],
+  options: Record<string, unknown>,
+) => Promise<{ stdout: string; stderr: string }>;
 
 export type Formatter = 'prettier' | 'eslint-fix' | 'black' | 'gofmt' | 'rustfmt' | 'unknown';
 

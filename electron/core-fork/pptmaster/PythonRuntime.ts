@@ -13,10 +13,14 @@
 
 import { existsSync } from 'node:fs';
 import * as path from 'node:path';
-import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { execFileSafe, spawnSafe } from '../util/SafeSpawn';
 
-const execFileAsync = promisify(execFile);
+const execFileAsync = promisify(execFileSafe as any) as (
+  file: string,
+  args: string[],
+  options: Record<string, unknown>,
+) => Promise<{ stdout: string; stderr: string }>;
 
 export interface PythonInfo {
   /** 可执行文件绝对路径，或裸命令名（回退到 PATH） */
@@ -195,10 +199,8 @@ export async function installDependencies(
   onOutput?: (line: string) => void,
 ): Promise<{ success: boolean; error?: string }> {
   return new Promise((resolve) => {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { spawn } = require('node:child_process');
     const args = ['-m', 'pip', 'install', '-r', requirementsPath];
-    const child = spawn(pythonPath, args, { windowsHide: true });
+    const child = spawnSafe(pythonPath, args, { windowsHide: true });
 
     child.stdout?.on('data', (b: Buffer) => onOutput?.(b.toString()));
     child.stderr?.on('data', (b: Buffer) => onOutput?.(b.toString()));

@@ -13,21 +13,35 @@ export class WindowAdapter {
     this.mainWindow = win;
   }
 
+  /**
+   * 获取主窗口：优先用注册的引用；引用失效（窗口销毁重建）时
+   * 动态回退到当前存在的非 PPT 窗口，避免通知/标题设置发往已销毁窗口而丢失。
+   */
   getMainWindow(): BrowserWindow | null {
-    return this.mainWindow && !this.mainWindow.isDestroyed() ? this.mainWindow : null;
+    if (this.mainWindow && !this.mainWindow.isDestroyed()) return this.mainWindow;
+    const isMainWindow = (w: BrowserWindow) => {
+      try {
+        return !w.webContents.getURL().includes('ppt.html');
+      } catch {
+        return true;
+      }
+    };
+    return (
+      BrowserWindow.getAllWindows().find((w) => !w.isDestroyed() && isMainWindow(w)) || null
+    );
   }
 
   /**
    * 发送通知到渲染进程
    */
   notify(title: string, body: string, type: 'info' | 'warning' | 'error' = 'info'): void {
-    if (this.mainWindow && !this.mainWindow.isDestroyed()) {
-      this.mainWindow.webContents.send('app:notify', { title, body, type });
+    const win = this.getMainWindow();
+    if (win && !win.webContents.isDestroyed()) {
+      win.webContents.send('app:notify', { title, body, type });
     }
     // 系统通知仅在窗口失焦/最小化时发送：
     // Windows toast 出现会短暂抢占焦点，导致输入法上下文被停用、正在打字时键盘无响应。
-    const focused = this.mainWindow && !this.mainWindow.isDestroyed()
-      && !this.mainWindow.isMinimized() && this.mainWindow.isFocused();
+    const focused = win && !win.isMinimized() && win.isFocused();
     if (!focused && Notification.isSupported()) {
       const notif = new Notification({ title, body });
       notif.show();
@@ -124,8 +138,9 @@ export class WindowAdapter {
    * 设置窗口标题
    */
   setTitle(title: string): void {
-    if (this.mainWindow && !this.mainWindow.isDestroyed()) {
-      this.mainWindow.setTitle(title);
+    const win = this.getMainWindow();
+    if (win && !win.isDestroyed()) {
+      win.setTitle(title);
     }
   }
 }

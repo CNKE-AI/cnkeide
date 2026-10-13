@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { useAgentActivityStore } from './agentActivityStore';
 
 /** 编辑器打开的单个文件标签 */
 export interface EditorTab {
@@ -10,6 +11,10 @@ export interface EditorTab {
   content: string;
   /** 是否有未保存的修改 */
   dirty: boolean;
+  /** 磁盘上的内容已被外部（Agent / 终端等）修改，本地内容已过期 */
+  stale: boolean;
+  /** 外部修改时间戳，用于提示条动画/排序 */
+  staleAt: number;
 }
 
 interface EditorState {
@@ -31,6 +36,29 @@ interface EditorState {
   saveAll: () => Promise<void>;
   /** 标记为未保存 */
   markDirty: (path: string, dirty: boolean) => void;
+  /**
+   * 外部（Agent / 终端 / 其他工具）改动了磁盘文件。
+   * - 未打开的标签：忽略；
+   * - 已打开且无本地修改：自动重新加载，做到"实时跟随"；
+   * - 已打开且有本地修改：标记 stale，提示用户手动处理，避免覆盖用户编辑。
+   */
+  noteExternalChange: (path: string) => Promise<void>;
+  /** 重新加载指定文件（用户点击"重新加载"时调用） */
+  reloadFile: (path: string) => Promise<void>;
+  /** 清除 stale 标记 */
+  clearStale: (path: string) => void;
+  /**
+   * 关闭所有不属于指定工作区根目录的标签。
+   * 切换/打开新工作区时调用，避免旧工作区的文件残留在编辑器里
+   * 造成"换了文件夹还是显示旧文件"的错觉。
+   * 返回被关闭的标签数。
+   */
+  closeTabsOutsideRoot: (rootPath: string) => number;
+}
+
+/** 路径规范化比较（Windows 大小写不敏感 + 分隔符统一） */
+function samePath(a: string, b: string): boolean {
+  return a.replace(/\\/g, '/').toLowerCase() === b.replace(/\\/g, '/').toLowerCase();
 }
 
 export const useEditorStore = create<EditorState>((set, get) => ({
@@ -39,10 +67,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   openFile: async (path, name) => {
     const { tabs } = get();
-    // 已打开则仅激活
-    const existing = tabs.find((t) => t.path === path);
+    const existing = tabs.find((t) => samePath(t.path, path));
+    // 已打开则仅激活（同时清掉 stale，视为用户主动查看最新状态）
     if (existing) {
-      set({ activePath: path });
+      set((s) => ({
+        activePath: existing.path,
+        tabs: s.tabs.map((t) => (samePath(t.path, path) ? { ...t, stale: false } : t)),
+      }));
       return;
     }
     const res = await window.cnke.fs.readFile(path);
@@ -51,16 +82,23 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       return;
     }
     const fileName = name ?? window.cnke.path.basename(path);
-    const tab: EditorTab = { path, name: fileName, content: res.content ?? '', dirty: false };
+    const tab: EditorTab = {
+      path,
+      name: fileName,
+      content: res.content ?? '',
+      dirty: false,
+      stale: false,
+      staleAt: 0,
+    };
     set((s) => ({ tabs: [...s.tabs, tab], activePath: path }));
   },
 
   closeTab: (path) => {
     set((s) => {
-      const idx = s.tabs.findIndex((t) => t.path === path);
-      const tabs = s.tabs.filter((t) => t.path !== path);
+      const idx = s.tabs.findIndex((t) => samePath(t.path, path));
+      const tabs = s.tabs.filter((t) => !samePath(t.path, path));
       let activePath = s.activePath;
-      if (s.activePath === path) {
+      if (s.activePath && samePath(s.activePath, path)) {
         // 激活相邻标签
         activePath = tabs.length > 0 ? tabs[Math.min(idx, tabs.length - 1)].path : null;
       }
@@ -72,18 +110,22 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   updateContent: (path, content) => {
     set((s) => ({
-      tabs: s.tabs.map((t) => (t.path === path ? { ...t, content } : t)),
+      tabs: s.tabs.map((t) => (samePath(t.path, path) ? { ...t, content } : t)),
     }));
   },
 
   saveFile: async (path) => {
-    const tab = get().tabs.find((t) => t.path === path);
+    const tab = get().tabs.find((t) => samePath(t.path, path));
     if (!tab) return false;
-    const res = await window.cnke.fs.writeFile(path, tab.content);
+    const res = await window.cnke.fs.writeFile(tab.path, tab.content);
     if (res.success) {
       set((s) => ({
-        tabs: s.tabs.map((t) => (t.path === path ? { ...t, dirty: false } : t)),
+        tabs: s.tabs.map((t) =>
+          samePath(t.path, path) ? { ...t, dirty: false, stale: false, staleAt: 0 } : t
+        ),
       }));
+      // 保存后同步清除 Agent 活动面板里的"已修改"标记
+      useAgentActivityStore.getState().clearModified(tab.path);
       return true;
     }
     alert(res.error || '保存失败');
@@ -99,7 +141,79 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   markDirty: (path, dirty) => {
     set((s) => ({
-      tabs: s.tabs.map((t) => (t.path === path ? { ...t, dirty } : t)),
+      tabs: s.tabs.map((t) => (samePath(t.path, path) ? { ...t, dirty } : t)),
     }));
+  },
+
+  noteExternalChange: async (path) => {
+    const tab = get().tabs.find((t) => samePath(t.path, path));
+    if (!tab) return; // 未打开的文件无需处理
+
+    // 无本地修改：自动重新加载，实现编辑器实时跟随 Agent 输出
+    if (!tab.dirty) {
+      const res = await window.cnke.fs.readFile(tab.path);
+      if (res.success) {
+        set((s) => ({
+          tabs: s.tabs.map((t) =>
+            samePath(t.path, path)
+              ? { ...t, content: res.content ?? '', stale: false, staleAt: 0 }
+              : t
+          ),
+        }));
+      }
+      return;
+    }
+
+    // 有本地修改：标记 stale，保留用户编辑不动
+    set((s) => ({
+      tabs: s.tabs.map((t) =>
+        samePath(t.path, path) ? { ...t, stale: true, staleAt: Date.now() } : t
+      ),
+    }));
+  },
+
+  reloadFile: async (path) => {
+    const tab = get().tabs.find((t) => samePath(t.path, path));
+    if (!tab) return;
+    const res = await window.cnke.fs.readFile(tab.path);
+    if (!res.success) return;
+    set((s) => ({
+      tabs: s.tabs.map((t) =>
+        samePath(t.path, path)
+          ? { ...t, content: res.content ?? '', dirty: false, stale: false, staleAt: 0 }
+          : t
+      ),
+    }));
+  },
+
+  clearStale: (path) => {
+    set((s) => ({
+      tabs: s.tabs.map((t) => (samePath(t.path, path) ? { ...t, stale: false, staleAt: 0 } : t)),
+    }));
+  },
+
+  closeTabsOutsideRoot: (rootPath) => {
+    const normRoot = (rootPath || '').replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase();
+    if (!normRoot) return 0;
+
+    const { tabs, activePath } = get();
+    // 仅保留位于新工作区内的文件；不同工作区的标签一律关闭
+    const kept = tabs.filter((t) => {
+      const p = t.path.replace(/\\/g, '/').toLowerCase();
+      return p === normRoot || p.startsWith(normRoot + '/');
+    });
+    const removed = tabs.length - kept.length;
+    if (removed === 0 && (activePath === null || kept.some((t) => samePath(t.path, activePath)))) {
+      return 0;
+    }
+
+    // 激活标签若被关闭，则回退到保留列表的最后一个（无则置空）
+    let nextActive = activePath;
+    if (activePath && !kept.some((t) => samePath(t.path, activePath))) {
+      nextActive = kept.length > 0 ? kept[kept.length - 1].path : null;
+    }
+
+    set({ tabs: kept, activePath: nextActive });
+    return removed;
   },
 }));

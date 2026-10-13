@@ -107,8 +107,8 @@ export class PlanManager {
     const item = plan.items.find((i) => i.id === itemId);
     if (!item) return false;
 
-    // 状态机：禁止从终态进入其它状态（除非重置）
-    const isTerminal = (s: PlanItemStatus) => s === 'completed' || s === 'skipped';
+    // 所有终态只能通过 retryItem 显式重试，避免跳过或失败步骤被工具调用意外恢复。
+    const isTerminal = (s: PlanItemStatus) => s === 'completed' || s === 'failed' || s === 'skipped';
     if (isTerminal(item.status) && status !== item.status) {
       return false;
     }
@@ -146,6 +146,20 @@ export class PlanManager {
   /** 标记失败（带错误信息） */
   failItem(sessionId: string, itemId: string, error: string): boolean {
     return this.updateStatus(sessionId, itemId, 'failed', error);
+  }
+
+  /** 将失败或跳过的步骤恢复为待执行。 */
+  retryItem(sessionId: string, itemId: string): boolean {
+    const plan = this.plans.get(sessionId);
+    const item = plan?.items.find((entry) => entry.id === itemId);
+    if (!plan || !item || (item.status !== 'failed' && item.status !== 'skipped')) return false;
+    item.startedAt = undefined;
+    item.completedAt = undefined;
+    item.error = undefined;
+    item.status = 'pending';
+    plan.updatedAt = Date.now();
+    this.emit({ type: 'item-status-changed', planId: plan.id, plan, item });
+    return true;
   }
 
   /** 用户跳过某步骤 */

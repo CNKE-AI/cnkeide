@@ -84,6 +84,33 @@ body {
   background-clip: padding-box;
 }
 
+/* 隐藏滚动条但保留滚动能力（横向标签栏等） */
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* 焦点可见性：键盘导航友好，且不破坏鼠标操作视觉 */
+:focus-visible {
+  outline: 1.5px solid hsl(var(--primary) / 0.7);
+  outline-offset: 1px;
+  border-radius: 4px;
+}
+
+/* 尊重系统「减少动态效果」偏好 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
 @layer components {
   /* 面板头部统一风格 */
   .panel-header {
@@ -107,6 +134,9 @@ body {
   .brand-gradient {
     @apply bg-gradient-to-r from-cyan-300 via-violet-300 to-fuchsia-300 bg-clip-text text-transparent;
   }
+  .light .brand-gradient {
+    @apply from-cyan-600 via-violet-600 to-fuchsia-600;
+  }
 
   /* 顶部炫彩细条 */
   .brand-bar {
@@ -125,6 +155,48 @@ body {
     @apply bg-gradient-to-r from-violet-500 to-fuchsia-500 text-white;
     box-shadow: 0 4px 14px -4px rgb(168 85 247 / 0.5);
   }
+
+  /* 图标按钮：标题栏 / 面板头部统一交互反馈 */
+  .icon-btn {
+    @apply p-1.5 rounded-md text-muted-foreground transition-colors;
+  }
+  .icon-btn:hover {
+    @apply bg-accent text-foreground;
+  }
+  .icon-btn:disabled {
+    @apply opacity-40 pointer-events-none;
+  }
+
+  /* 分段控件（Ask/Craft/Plan 等） */
+  .segmented {
+    @apply inline-flex items-center gap-0.5 rounded-lg bg-secondary/50 p-0.5 border border-border/60;
+  }
+  .segmented__item {
+    @apply px-2 py-1 rounded-md text-[11px] transition-all;
+  }
+  .segmented__item[class*='bg-primary/15'] {
+    box-shadow: 0 0 0 1px hsl(var(--primary) / 0.25), 0 2px 8px -2px hsl(var(--primary) / 0.3);
+  }
+
+  /* 浮层面板（记忆 / 快照 / 审批规则等）统一卡片 */
+  .overlay-panel {
+    @apply bg-card border border-border rounded-xl shadow-2xl;
+  }
+  /* 浮层遮罩统一 */
+  .overlay-mask {
+    @apply absolute inset-0 z-50 flex items-center justify-center bg-black/50;
+    backdrop-filter: blur(4px);
+  }
+
+  /* 空状态容器 */
+  .empty-state {
+    @apply flex flex-col items-center justify-center h-full text-center gap-3 text-muted-foreground;
+  }
+  .empty-state__icon {
+    @apply w-16 h-16 rounded-2xl flex items-center justify-center;
+    background-image: linear-gradient(135deg, rgb(139 92 246 / 0.18), rgb(217 70 239 / 0.18));
+    border: 1px solid hsl(var(--primary) / 0.2);
+  }
 }
 
 @layer utilities {
@@ -136,6 +208,79 @@ body {
   .transition-all-fast {
     transition: all 0.15s ease;
   }
+  /* 面板级柔和分隔线（比纯色更轻） */
+  .divider-x {
+    box-shadow: inset -1px 0 0 0 hsl(var(--border) / 0.8);
+  }
+  .divider-y {
+    box-shadow: inset 0 -1px 0 0 hsl(var(--border) / 0.8);
+  }
+  /* 卡片悬浮抬升 */
+  .hover-lift {
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+  }
+  .hover-lift:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 20px -8px rgb(0 0 0 / 0.5);
+  }
+}
+
+/* ===== 面板拖拽分隔条：更明显的可拖拽提示 ===== */
+[data-panel-resize-handle-id] {
+  position: relative;
+  transition: background-color 0.15s ease;
+}
+[data-panel-resize-handle-id]::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  background: hsl(var(--primary) / 0);
+  transition: background-color 0.15s ease;
+}
+[data-panel-resize-handle-id]:hover::after,
+[data-panel-resize-handle-id][data-resize-handle-active]::after {
+  background: hsl(var(--primary) / 0.55);
+}
+
+/* ===== 流式输出光标 ===== */
+@keyframes cnke-caret {
+  0%,
+  45% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0.15;
+  }
+}
+.stream-caret::after {
+  content: '▍';
+  margin-left: 1px;
+  color: hsl(var(--primary));
+  animation: cnke-caret 1s steps(1, end) infinite;
+}
+
+/* ===== 品牌渐变描边（标题栏 / 输入框聚焦态） ===== */
+.brand-ring {
+  position: relative;
+}
+.brand-ring::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(120deg, #22d3ee, #a855f7 55%, #ec4899);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  opacity: 0;
+  transition: opacity 0.18s ease;
+  pointer-events: none;
+}
+.brand-ring:focus-within::before {
+  opacity: 1;
 }
 
 /* ===== Markdown 渲染样式 ===== */

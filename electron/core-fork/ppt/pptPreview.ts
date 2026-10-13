@@ -41,6 +41,12 @@ export interface PreviewOptions {
   themeId: string;
   outline: PreviewOutline;
   brand?: PptBrand;
+  /** AI 原创设计选择的配色；启用企业品牌色时品牌色优先。 */
+  colors?: { primary?: string; secondary?: string; accent?: string; background?: string };
+  /** AI 原创设计选择的字体。 */
+  fontFamily?: string;
+  /** AI 选择的主题化视觉场景。 */
+  artDirection?: 'education' | 'culture' | 'technology' | 'healthcare' | 'business';
 }
 
 /**
@@ -50,9 +56,9 @@ export interface PreviewOptions {
  */
 export function generatePreviewHtml(opts: PreviewOptions): string {
   const theme = findTheme(opts.themeId);
-  const themeColors = theme?.colors || {
+  const themeColors = { ...(theme?.colors || {
     primary: '#1e3a8a', secondary: '#7c3aed', accent: '#06b6d4', background: '#f8fafc',
-  };
+  }), ...(opts.colors || {}) };
   const merged = mergeBrandColors(opts.brand, themeColors);
 
   const slides: SlideDraft[] = (opts.outline.slides || []).map((s) => ({
@@ -78,5 +84,7 @@ export function generatePreviewHtml(opts: PreviewOptions): string {
       accent: `#${merged.accent}`,
       background: `#${merged.background}`,
     } : undefined,
+    opts.fontFamily,
+    opts.artDirection,
   );
 }

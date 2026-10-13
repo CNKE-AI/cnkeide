@@ -37,8 +37,9 @@ async function test2_nsisCleanOldUpdater() {
 async function test3_nsisCleanPending() {
   console.log('\n[3] NSIS 清理 pending');
   const content = await fs.readFile('build/installer.nsh', 'utf-8');
-  log(/pending/.test(content), '含 pending 路径', '');
-  log(/cnkeide-updater\\pending/.test(content) || /cnkeide-updater.{0,10}pending/.test(content), '清理 cnkeide-updater/pending', '');
+  // NSIS 使用 $LOCALAPPDATA\cnkeide-updater\pending 形式，反斜杠或正斜杠均可
+  log(/pending/i.test(content), '含 pending 路径', '');
+  log(/cnkeide-updater.{0,20}pending/i.test(content), '清理 cnkeide-updater/pending', '');
 }
 
 async function test4_nsisUninstallCleanup() {
@@ -56,33 +57,32 @@ async function test5_electronBuilderInclude() {
 
 // ===== 6) UpdateManager 代码层 =====
 async function test6_updateManagerSource() {
-  console.log('\n[6] UpdateManager.ts 包含 killResidualProcesses');
+  console.log('\n[6] UpdateManager.ts 清理残留进程');
   const src = await fs.readFile('electron/updater/UpdateManager.ts', 'utf-8');
-  log(/killResidualProcesses/.test(src), '含 killResidualProcesses 方法', '');
+  log(/killResidualProcessesAsync/.test(src), '含异步清理方法', '');
   log(/taskkill/i.test(src), '使用 taskkill', '');
-  // 允许跨行：setTimeout 在前，2000 在后（中间可能有其它字符）
-  log(/setTimeout[\s\S]{0,500}2000/.test(src), 'setTimeout 2000ms', '');
+  log(/Promise\.allSettled/.test(src), '并行执行清理命令', '');
 }
 
 async function test7_updateManagerAutoInstall() {
-  console.log('\n[7] UpdateManager auto 模式 5s 倒计时');
+  console.log('\n[7] UpdateManager 可配置自动安装');
   const src = await fs.readFile('electron/updater/UpdateManager.ts', 'utf-8');
-  log(/5000/.test(src), '含 5s 自动安装', '');
-  log(/this\.status\.mode === 'auto'/.test(src), '仅 auto 模式自动装', '');
+  log(/update\.autoInstall/.test(src), '读取 autoInstall 配置', '');
+  log(/update\.autoInstallDelaySec/.test(src), '读取自动安装延迟配置', '');
+  log(/delaySec \* 1000/.test(src), '延迟以秒配置并换算毫秒', '');
   log(/this\.pendingInstall/.test(src), '防重入检查', '');
 }
 
 async function test8_installNowFlow() {
   console.log('\n[8] installNow 流程');
   const src = await fs.readFile('electron/updater/UpdateManager.ts', 'utf-8');
-  // 找 installNow 方法体
   const match = src.match(/installNow\(\):[^{]*\{([\s\S]*?)\n  \}/);
   if (match) {
     const body = match[1];
-    log(/killResidualProcesses/.test(body), '先调 killResidualProcesses', '');
-    log(/setTimeout/.test(body), 'setTimeout 延时', '');
+    log(/killResidualProcessesAsync/.test(body), '先异步清理残留进程', '');
+    log(/setTimeout/.test(body), '安装前包含释放句柄延时', '');
     log(/quitAndInstall/.test(body), '调用 quitAndInstall', '');
-    log(/2000/.test(body), '2s 延时', '');
+    log(/setTimeout\(r, 600\)/.test(body) && /setTimeout\(r, 200\)/.test(body), '使用短暂分阶段延时', '');
   } else {
     log(false, '未找到 installNow 方法', '');
   }
@@ -90,9 +90,11 @@ async function test8_installNowFlow() {
 
 // ===== 9) package.json version =====
 async function test9_packageVersion() {
-  console.log('\n[9] package.json 版本 1.2.2');
+  console.log('\n[9] package.json 与锁文件版本一致');
   const pkg = JSON.parse(await fs.readFile('package.json', 'utf-8'));
-  log(pkg.version === '1.2.2', 'version=1.2.2', `v=${pkg.version}`);
+  const lock = JSON.parse(await fs.readFile('package-lock.json', 'utf-8'));
+  log(/^\d+\.\d+\.\d+$/.test(pkg.version), 'package.json 使用语义化版本', `v=${pkg.version}`);
+  log(lock.version === pkg.version && lock.packages?.['']?.version === pkg.version, 'package-lock 版本与 package.json 一致', `lock=${lock.version}`);
 }
 
 (async () => {

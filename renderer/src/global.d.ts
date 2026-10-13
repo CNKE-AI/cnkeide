@@ -38,6 +38,20 @@ export interface MemorySettings {
   injectBudgetChars: number;
 }
 
+export interface SkillView {
+  id: string;
+  name: string;
+  description: string;
+  kind: 'prompt' | 'package';
+  source: 'builtin' | 'bundled' | 'local';
+  version?: string;
+  rootPath?: string;
+  entryPath?: string;
+  available?: boolean;
+  error?: string;
+  enabled: boolean;
+}
+
 export interface CnkeAPI {
   window: {
     minimize: () => void;
@@ -45,6 +59,10 @@ export interface CnkeAPI {
     close: () => void;
     isMaximized: () => boolean;
     onMaximizedChange: (cb: (maximized: boolean) => void) => () => void;
+    /** 同步「AI 任务进行中」状态（主进程据此启用窗口保护） */
+    setAgentBusy: (busy: boolean) => void;
+    /** 订阅窗口保护提示（任务执行中误最小化 / 误关闭被拦截） */
+    onGuardNotice: (cb: (payload: { reason: string }) => void) => () => void;
   };
   fs: {
     openFolder: () => Promise<string | null>;
@@ -57,6 +75,19 @@ export interface CnkeAPI {
     renamePath: (oldPath: string, newPath: string) => Promise<{ success: boolean; error?: string }>;
     exists: (filePath: string) => Promise<boolean>;
     searchFiles: (rootPath: string, pattern: string) => Promise<{ success: boolean; results?: any[]; error?: string }>;
+    /** 开始监听工作区目录变更（打开/切换文件夹时调用） */
+    watchWorkspace: (rootPath: string) => Promise<{ success: boolean; error?: string }>;
+    /** 停止监听工作区目录变更 */
+    unwatchWorkspace: () => Promise<{ success: boolean }>;
+    /** 查询当前监听状态 */
+    watchStatus: () => Promise<{ watching: boolean; root: string | null }>;
+    /** 订阅工作区文件变更（批量，主进程已 debounce 合并） */
+    onChanged: (cb: (payload: { root: string; changes: FsChange[] }) => void) => () => void;
+  };
+  skills: {
+    list: () => Promise<SkillView[]>;
+    scan: () => Promise<SkillView[]>;
+    setEnabled: (id: string, enabled: boolean) => Promise<{ success: boolean; error?: string; skills: SkillView[] }>;
   };
   terminal: {
     spawn: (cmd: string, args: string[], cwd: string) => Promise<{ success: boolean; pid?: number; error?: string }>;
@@ -145,6 +176,10 @@ export interface CnkeAPI {
     cancel: () => Promise<{ success: boolean }>;
     getStatus: () => Promise<UpdateStatus>;
     getLogs: (limit?: number) => Promise<UpdateLogEntry[]>;
+    /** 检查是否刚完成更新（返回版本号或 null） */
+    checkAnnouncement: () => Promise<string | null>;
+    /** 获取远程 releasenotes.txt 内容 */
+    getReleaseNotes: () => Promise<string>;
     onStatus: (cb: (status: UpdateStatus) => void) => () => void;
   };
   /** 系统通知（任务结束 / 异常退出） */
@@ -186,6 +221,9 @@ export interface CnkeAPI {
   /** 计划查询（W3） */
   plan: {
     get: (sessionId: string) => Promise<{ plan: any; progress: any }>;
+    skip: (sessionId: string, itemId: string) => Promise<{ success: boolean; plan: any; progress: any }>;
+    retry: (sessionId: string, itemId: string) => Promise<{ success: boolean; plan: any; progress: any }>;
+    abandon: (sessionId: string) => Promise<{ success: boolean; plan: any; progress: any }>;
   };
   /** PPT 生成（W14） */
   ppt: {
@@ -194,6 +232,7 @@ export interface CnkeAPI {
     minimize: () => void;
     generate: (req: any, savePath?: string) => Promise<{ success: boolean; path?: string; slideCount?: number; brandNotices?: string[]; audit?: { issues: Array<{ level: 'warning' | 'fixed'; slide: number; message: string }>; summary: string; passed: boolean }; error?: string }>;
     generateOutline: (topic: string, slideCount?: number, scenarioId?: string) => Promise<{ success: boolean; outline?: any; scenarioId?: string | null; error?: string }>;
+    generateAiDesign: (payload: { topic?: string; scenarioName?: string; slides?: any[]; fallbackThemeId?: string }) => Promise<{ success: boolean; design: { themeId: string; palette: { primary: string; secondary: string; accent: string; background: string }; fontFamily: string; visualStyle: string; rationale: string }; byLlm: boolean }>;
     scanWorkspace: (wsPath?: string) => Promise<WorkspaceScanSummary>;
     generateFromWorkspace: (opts?: { wsPath?: string; slideCount?: number; focus?: string }) => Promise<{ success: boolean; outline?: any; workspace?: WorkspaceScanSummary; error?: string }>;
     listScenarios: () => Promise<{ success: boolean; scenarios: Array<{ id: string; name: string; description: string; recommendedTheme: string; recommendedPages: [number, number] }> }>;
@@ -201,20 +240,16 @@ export interface CnkeAPI {
     getBrand: () => Promise<{ success: boolean; brand: { enabled: boolean; companyName: string; logoPath: string; primary: string; secondary: string; accent: string; fontFamily: string; footerText: string } }>;
     setBrand: (brand: any) => Promise<{ success: boolean; brand: any }>;
     listThemes: () => Promise<{ success: boolean; themes?: { id: string; name: string; description: string; colors: { primary: string; secondary: string; accent: string; background: string }; icon: string }[] }>;
-    generatePreview: (payload: { themeId: string; outline: { title: string; slides: any[] } }) => Promise<{ success: boolean; html?: string; error?: string }>;
+    generatePreview: (payload: { themeId: string; outline: { title: string; slides: any[] }; design?: { palette?: { primary?: string; secondary?: string; accent?: string; background?: string }; fontFamily?: string; artDirection?: string } }) => Promise<{ success: boolean; html?: string; error?: string }>;
     renderTheme: (payload: { themeId: string; outline: { title: string; slides: { title: string; bullets: string[]; chart?: { type: 'bar' | 'line' | 'pie'; labels: string[]; series: { name: string; values: number[] }[] } }[] }; extraInstruction?: string }) => Promise<{ success: boolean; html?: string; theme?: any; error?: string }>;
     saveHtml: (payload: { html: string; savePath: string }) => Promise<{ success: boolean; path?: string; error?: string }>;
     exportPdf: (payload: { html: string; savePath?: string; title?: string }) => Promise<{ success: boolean; path?: string; error?: string }>;
     onRenderProgress: (handler: (payload: { stage: 'render' | 'audit' | 'reflow' | 'finalize'; current: number; total: number; message: string }) => void) => () => void;
-    listRemoteTemplates: (payload?: { page?: number; pageSize?: number; category?: string; keyword?: string }) => Promise<{ success: boolean; index?: { version: string; updatedAt: string; templates: Array<{ id: string; name: string; category: string; pageCount: number; style: string; description: string; thumbnailUrl: string | null; downloadUrl: string | null; size: number; updatedAt: string }>; total?: number; page?: number; pageSize?: number; categories?: string[] }; error?: string }>;
-    listRemoteCategories: () => Promise<{ success: boolean; categories?: string[]; error?: string }>;
-    downloadTemplate: (payload: { id: string }) => Promise<{ success: boolean; path?: string; fromCache?: boolean; error?: string }>;
-    onTemplateProgress: (handler: (payload: { id: string; downloaded: number; total: number; ratio: number }) => void) => () => void;
     expandSlide: (payload: { slide: { title: string; bullets: string[] }; presentationTopic?: string; intensity?: 'light' | 'standard' | 'deep'; extraInstruction?: string }) => Promise<{ success: boolean; slide?: { title: string; bullets: string[] }; error?: string }>;
     expandAll: (payload: { outline: { title: string; slides: { title: string; bullets: string[] }[] }; intensity?: 'light' | 'standard' | 'deep'; extraInstruction?: string }) => Promise<{ success: boolean; outline?: { title: string; slides: { title: string; bullets: string[] }[] }; error?: string }>;
     onExpandProgress: (handler: (payload: { current: number; total: number; message: string }) => void) => () => void;
-    applyTemplate: (payload: { templateId: string; outline: { title: string; slides: { title: string; bullets: string[] }[] }; savePath?: string }) => Promise<{ success: boolean; path?: string; pageCount?: number; filledCount?: number; strategy?: 'placeholder' | 'inject'; capacity?: number; error?: string }>;
-    openWithTopic?: (topic: string) => void;
+    open: (topic?: string) => void;
+    onTopic: (handler: (topic: string) => void) => () => void;
   };
   /** PPT Master 原生 PPTX 流水线（替代旧 pptxgenjs 扁平导出） */
   pptMaster: {
@@ -274,6 +309,18 @@ export interface CnkeAPI {
     ) => () => void;
     onInstallOutput: (handler: (line: string) => void) => () => void;
   };
+}
+
+/** 工作区文件变更条目（主进程 fs:changed 广播） */
+export interface FsChange {
+  /** rename 覆盖新增/删除（Node fs.watch 不区分），change 为内容变化 */
+  type: 'rename' | 'change';
+  absolutePath: string;
+  /** 相对工作区根的路径，POSIX 分隔符 */
+  relativePath: string;
+  /** 变更所在目录绝对路径 */
+  dir: string;
+  at: number;
 }
 
 export interface WorkspaceScanSummary {

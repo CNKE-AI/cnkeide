@@ -14,6 +14,8 @@
  */
 
 import { findTheme, PptTheme, LayoutId } from './pptThemes';
+import { renderArtScene } from './pptArt';
+import type { AiPptArtDirection } from './pptDesign';
 import {
   getLayout, Slot, toPctX, toPctY, ptToPx, CANVAS_W, CANVAS_H, GRID, CONTENT_W,
 } from './pptLayout';
@@ -53,6 +55,10 @@ export interface RenderOptions {
   /** 兼容旧签名（新架构不再使用额外指令） */
   extraInstruction?: string;
   brandColors?: { primary?: string; secondary?: string; accent?: string; background?: string };
+  /** AI 原创设计选择的字体；企业品牌字体由上层优先覆盖。 */
+  fontFamily?: string;
+  /** AI 选择的主题化视觉场景。 */
+  artDirection?: AiPptArtDirection;
   onProgress?: (stage: 'render' | 'audit' | 'reflow' | 'finalize', current: number, total: number, message: string) => void;
 }
 
@@ -93,6 +99,8 @@ export function renderOutlineHtmlSync(
   themeId: string,
   outline: Outline,
   brandColors?: RenderOptions['brandColors'],
+  fontFamily?: string,
+  artDirection?: AiPptArtDirection,
 ): string {
   const theme = findTheme(themeId);
   const merged = { ...(theme?.colors || {
@@ -100,7 +108,7 @@ export function renderOutlineHtmlSync(
   }), ...(brandColors || {}) };
   const palette = buildPalette(merged);
   const slides = assignRolesIfMissing(outline.slides);
-  return buildDocument(outline.title, slides, palette, theme || ({ id: themeId } as PptTheme), brandColors);
+  return buildDocument(outline.title, slides, palette, theme || ({ id: themeId } as PptTheme), brandColors, fontFamily, artDirection);
 }
 
 /**
@@ -118,7 +126,7 @@ export async function renderOutlineToHtml(
   const total = Math.max(1, opts.outline.slides.length);
 
   onProgress('render', 1, total, '正在装配版式...');
-  const html = renderOutlineHtmlSync(opts.themeId, opts.outline, opts.brandColors);
+  const html = renderOutlineHtmlSync(opts.themeId, opts.outline, opts.brandColors, opts.fontFamily, opts.artDirection);
   onProgress('render', total, total, `完成 ${total} 页装配`);
   onProgress('finalize', 1, 1, '渲染完成');
 
@@ -176,9 +184,11 @@ function buildDocument(
   p: Palette,
   theme: PptTheme,
   brandColors?: RenderOptions['brandColors'],
+  fontFamily?: string,
+  artDirection: AiPptArtDirection = 'education',
 ): string {
   const total = slides.length;
-  const body = slides.map((s, i) => renderSlide(s, i, total, p, theme.id)).join('\n');
+  const body = slides.map((s, i) => renderSlide(s, i, total, p, theme.id, artDirection)).join('\n');
 
   return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -191,7 +201,7 @@ function buildDocument(
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html, body { width: 100%; height: 100%; }
 body {
-  font-family: 'Microsoft YaHei', 'PingFang SC', 'Source Han Sans SC', sans-serif;
+  font-family: '${esc(fontFamily || 'Microsoft YaHei')}', 'PingFang SC', 'Source Han Sans SC', sans-serif;
   background: #11131a; overflow: hidden;
   -webkit-font-smoothing: antialiased;
 }
@@ -201,7 +211,10 @@ body {
 }
 .stage.active { display: block; }
 .stage.dark { background: linear-gradient(135deg, ${p.primary} 0%, ${p.secondary} 100%); color: ${p.onPrimary}; }
-.stage.light { background: ${p.background}; }
+.stage.light { background: linear-gradient(180deg, #fff 0%, ${p.background} 100%); }
+.art-scene { position:absolute; inset:0; width:100%; height:100%; z-index:0; }
+.slot { z-index:1; }
+.stage.dark .art-scene { opacity:.28; mix-blend-mode:screen; }
 /* ===== slot：绝对定位 + 文本盒模型（与 pptxgenjs 文本框行为一致） ===== */
 .slot { position: absolute; display: flex; overflow: hidden; }
 .slot-content { width: 100%; }
@@ -282,15 +295,17 @@ ${body}
 
 // ===================== 单页装配 =====================
 
-function renderSlide(s: SlideDraft, index: number, total: number, p: Palette, themeId: string): string {
+function renderSlide(s: SlideDraft, index: number, total: number, p: Palette, themeId: string, artDirection: AiPptArtDirection): string {
   const role = s.role || 'content';
   const spec = getLayout(role);
+  const art = renderArtScene(artDirection, p, index);
   const slots = spec.slots
     .map((slot) => renderSlot(slot, s, index, total, p, role))
     .filter(Boolean)
     .join('\n');
 
   return `<section class="stage ${spec.scheme}" data-layout="${role}" data-theme="${esc(themeId)}">
+${art}
 ${slots}
 </section>`;
 }
@@ -325,9 +340,14 @@ function slotContent(slot: Slot, s: SlideDraft, index: number, total: number, p:
       if (!s.title) return null;
       // 封面/分节/结尾单行标题；内容页长标题折行
       return esc(s.title);
-    case 'subtitle':
+    case 'subtitle': {
+      const points = (s.bullets || []).map((item) => item.trim()).filter(Boolean).slice(0, 3);
+      if (role === 'cover') {
+        return [s.subtitle, ...points].filter((item): item is string => !!item).map((item) => esc(item)).join('<br>') || null;
+      }
       if (!s.subtitle) return null;
       return esc(s.subtitle);
+    }
     case 'eyebrow': {
       if (role === 'section') {
         // 分节页序号：SECTION 01 形式，字距拉开
@@ -337,7 +357,8 @@ function slotContent(slot: Slot, s: SlideDraft, index: number, total: number, p:
       return s.subtitle ? esc(s.subtitle) : null;
     }
     case 'bullets': {
-      const items = (s.bullets || []).filter((b) => b && b.trim());
+      const items = (s.bullets || []).map((b) => b.trim()).filter(Boolean);
+      if (items.length === 0 && s.subtitle) return `<div class="bullet">${esc(s.subtitle)}</div>`;
       if (items.length === 0) return null;
       // 数据页左侧空间窄，去项目符号改用紧凑行
       if (role === 'data') {

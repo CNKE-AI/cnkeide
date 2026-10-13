@@ -521,9 +521,10 @@ export class LLMProvider {
 
         for (const line of lines) {
           const trimmed = line.trim();
-          if (!trimmed || !trimmed.startsWith('data: ')) continue;
+          // SSE 规范允许 data: 后不带空格（部分代理会做规范化转发），两种都要兼容
+          if (!trimmed || !trimmed.startsWith('data:')) continue;
 
-          const jsonStr = trimmed.slice(6);
+          const jsonStr = trimmed.slice(5).trimStart();
           if (jsonStr === '[DONE]') continue;
 
           try {
@@ -545,7 +546,14 @@ export class LLMProvider {
               }
               if (delta.tool_calls) {
                 for (const tc of delta.tool_calls) {
-                  const idx = tc.index || 0;
+                  // 部分中转/兼容网关的 tool_calls 增量不携带 index 字段：
+                  // 原先 tc.index || 0 会把所有分片错误合并进 [0]（name 被最后一个覆盖、
+                  // arguments 拼成非法 JSON）。改为按 id 匹配已有分片，匹配不到则追加到尾部。
+                  let idx = typeof tc.index === 'number' ? tc.index : -1;
+                  if (idx === -1) {
+                    idx = toolCalls.findIndex((t) => t && tc.id && t.id === tc.id);
+                    if (idx === -1) idx = toolCalls.length;
+                  }
                   if (!toolCalls[idx]) {
                     toolCalls[idx] = { id: tc.id, name: '', arguments: '' };
                   }

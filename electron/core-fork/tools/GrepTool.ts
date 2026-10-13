@@ -3,12 +3,16 @@
  * 优先用 rg（ripgrep），回退到 Node 实现的简易 grep
  */
 
-import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { execFileSafe } from '../util/SafeSpawn';
 
-const execFileAsync = promisify(execFile);
+const execFileAsync = promisify(execFileSafe as any) as (
+  file: string,
+  args: string[],
+  options: Record<string, unknown>,
+) => Promise<{ stdout: string; stderr: string }>;
 
 export interface GrepMatch {
   file: string;

@@ -22,6 +22,7 @@ export interface PlanStep {
   id: string;
   title: string;
   status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
+  error?: string;
   /** 关联工具名（如 write_to_file），用于展示该步在做什么 */
   toolName?: string;
   /** 关联文件路径 */
@@ -123,6 +124,7 @@ function derivePlan(raw: any): PlanState | null {
       // 早期这里只读 title/description，导致计划项标题恒为空、面板只剩空白圆圈
       title: it.content || it.title || it.description || '',
       status: it.status || 'pending',
+      error: it.error || undefined,
       toolName: it.toolName || undefined,
       filePath: it.filePath || undefined,
     })),
@@ -177,6 +179,8 @@ export const useUiStore = create<UiState>((set, get) => ({
     try {
       await window.cnke.config.set('activeApiConfigId', id);
       set({ activeModelId: id });
+      // 切换后立即按官方列表清理已下线模型，避免旧模型继续出现在下拉框。
+      await get().refreshModels();
     } catch (e) {
       console.error('[switchModel] 切换模型失败:', e);
     }

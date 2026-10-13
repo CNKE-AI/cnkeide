@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
+import type { SkillView } from '../global';
 import { useApp } from '../store/AppProvider';
-import { X, Plus, Trash2, Save, KeyRound, Cpu, Info, RefreshCw, LayoutTemplate, Cloud, Megaphone, MessageSquarePlus, Send, Inbox, Pencil, ChevronDown, ChevronRight, Wrench, Sparkles, ShieldCheck, Zap, GitBranch, Layers, Boxes, Network, ScrollText, BrainCircuit, TerminalSquare } from 'lucide-react';
+import { X, Plus, Trash2, Save, KeyRound, Cpu, Info, RefreshCw, LayoutTemplate, Cloud, Megaphone, MessageSquarePlus, Send, Inbox, Pencil, ChevronDown, ChevronRight, Wrench, Sparkles, ShieldCheck, Zap, GitBranch, Layers, Boxes, Network, ScrollText, BrainCircuit, TerminalSquare, Loader2 } from 'lucide-react';
 
 type TabKey = 'models' | 'agent' | 'skills' | 'about';
 
@@ -14,13 +15,6 @@ const PROVIDERS = [
   { id: 'custom', label: '自定义/中转', baseUrl: '' },
 ];
 
-const BUILTIN_SKILLS = [
-  { id: 'code-review', name: '代码审查助手', desc: '逐行分析代码并提出改进建议', systemPrompt: '你是一名资深代码审查专家。请对用户提供的代码进行逐行审查，找出潜在 Bug、性能问题和风格改进点，给出明确建议。' },
-  { id: 'doc-gen', name: '文档生成器', desc: '为函数和类型自动生成中文/英文注释', systemPrompt: '你是一个技术文档专家。请为代码生成清晰的中文文档注释，包括功能说明、参数、返回值、异常和示例。' },
-  { id: 'test-gen', name: '单测生成器', desc: '根据代码生成单元测试用例', systemPrompt: '你是一个测试专家。请为给定代码生成完整的单元测试，覆盖正常路径、边界条件和异常情况。' },
-  { id: 'refactor', name: '重构大师', desc: '优化代码结构和可读性', systemPrompt: '你是一名重构专家。请对代码进行结构优化，提升可读性、可维护性，但不要改变外部行为。' },
-  { id: 'explain', name: '代码解释器', desc: '用通俗语言解释复杂代码', systemPrompt: '你是一名优秀的编程讲师。请用通俗易懂的中文解释代码的作用和关键逻辑，适合初学者理解。' },
-];
 
 interface ApiConfig {
   id: string;
@@ -52,18 +46,29 @@ const SettingsSheet: React.FC = () => {
 
   // Agent 设置
   const [agentCfg, setAgentCfg] = useState<any>({
+    mode: 'plan',
+    maxMode: false,
+    maxHistoryMessages: 20,
     systemPrompt: '',
     maxTurns: 50,
     temperature: 0.7,
     topP: 1,
     autoApproveTools: false,
     replyFormat: 'structured',
+    enableRouting: true,
+    toolConcurrency: 4,
+    maxRetries: 3,
+    llmTimeoutMs: 60000,
+    fallbackModelIds: [],
+    browserAutomation: { enabled: true },
+    imageGeneration: { enabled: false, apiConfigId: '' },
   });
 
   // MCP + 技能
   const [mcpServers, setMcpServers] = useState<any[]>([]);
   const [mcpEditing, setMcpEditing] = useState<McpServerForm | null>(null);
-  const [enabledSkills, setEnabledSkills] = useState<string[]>([]);
+  const [skills, setSkills] = useState<SkillView[]>([]);
+  const [skillsLoading, setSkillsLoading] = useState(false);
   // MCP 连接详情：展开的工具列表 / 刷新加载态
   const [mcpExpanded, setMcpExpanded] = useState<Record<string, boolean>>({});
   const [mcpTools, setMcpTools] = useState<Record<string, any[]>>({});
@@ -71,6 +76,15 @@ const SettingsSheet: React.FC = () => {
 
   const reloadMcpServers = async () => {
     setMcpServers(await window.cnke.mcp.listServers() || []);
+  };
+
+  const reloadSkills = async (refresh = false) => {
+    setSkillsLoading(true);
+    try {
+      setSkills(await (refresh ? window.cnke.skills.scan() : window.cnke.skills.list()));
+    } finally {
+      setSkillsLoading(false);
+    }
   };
 
   const mcpDotClass = (s: any) => {
@@ -121,6 +135,7 @@ const SettingsSheet: React.FC = () => {
   // 官方后台：内置模型 / 反馈
   const [officialModels, setOfficialModels] = useState<any[]>([]);
   const [officialLoading, setOfficialLoading] = useState(false);
+  const [officialError, setOfficialError] = useState('');
   const [feedbackMsg, setFeedbackMsg] = useState('');
   const [feedbackContact, setFeedbackContact] = useState('');
   const [feedbackSending, setFeedbackSending] = useState(false);
@@ -155,6 +170,9 @@ const SettingsSheet: React.FC = () => {
       } else if (!res.hasUpdate) {
         // 无更新时确保显示「已是最新」，与主进程推送保持一致
         setUpdateStatus((prev: any) => ({ ...prev, phase: 'not-available', version: res.version, message: '当前已是最新版本' }));
+      } else if (res.hasUpdate) {
+        // 有更新：自动开始下载（无需用户点击「下载」按钮），实现一键无感更新
+        void downloadUpdate();
       }
     } catch (e: any) {
       setUpdateStatus({ phase: 'error', error: e?.message, message: '检查更新失败' });
@@ -193,7 +211,17 @@ const SettingsSheet: React.FC = () => {
     setOfficialLoading(true);
     try {
       const res = await window.cnke.backend.getBuiltins();
-      if (res.success && res.builtins) setOfficialModels(res.builtins);
+      // 注意：res 可能因 IPC 通道未注册而整体不返回，这里必须显式捕获，
+      // 否则失败会被静默吞掉，界面只剩「暂时无法获取官方模型」，无法区分
+      // 「真的没网」和「通道/服务端异常」，排查成本极高。
+      if (res?.success && Array.isArray(res.builtins)) {
+        setOfficialModels(res.builtins);
+        setOfficialError('');
+      } else {
+        setOfficialError(res?.error || '官方服务器返回异常');
+      }
+    } catch (e: any) {
+      setOfficialError(e?.message || '无法连接官方服务器');
     } finally {
       setOfficialLoading(false);
     }
@@ -211,7 +239,7 @@ const SettingsSheet: React.FC = () => {
     window.cnke.config.get('activeApiConfigId').then((id) => { if (id) setActiveId(id); });
     window.cnke.config.get('agentConfig').then((cfg) => { if (cfg) setAgentCfg({ ...agentCfg, ...cfg }); });
     reloadMcpServers();
-    window.cnke.config.get('enabledSkills').then((s: string[] | null) => setEnabledSkills(s || []));
+    void reloadSkills();
   }, []);
 
   // 订阅 MCP 连接状态推送（后端主动推送，如启动恢复/连接结果/断线）
@@ -275,7 +303,34 @@ const SettingsSheet: React.FC = () => {
   };
 
   const saveAgentConfig = async () => {
-    await window.cnke.config.set('agentConfig', agentCfg);
+    const current = (await window.cnke.config.get('agentConfig')) || {};
+    const clamp = (value: unknown, min: number, max: number, fallback: number) => {
+      const n = Number(value);
+      return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n))) : fallback;
+    };
+    const next = {
+      ...current,
+      ...agentCfg,
+      mode: ['ask', 'craft', 'plan'].includes(agentCfg.mode) ? agentCfg.mode : 'plan',
+      maxMode: !!agentCfg.maxMode,
+      maxHistoryMessages: clamp(agentCfg.maxHistoryMessages, 2, 200, 20),
+      maxTurns: clamp(agentCfg.maxTurns, 1, 100, 50),
+      temperature: Math.min(2, Math.max(0, Number(agentCfg.temperature) || 0)),
+      topP: Math.min(1, Math.max(0, Number(agentCfg.topP) || 0)),
+      autoApproveTools: !!agentCfg.autoApproveTools,
+      enableRouting: agentCfg.enableRouting !== false,
+      toolConcurrency: clamp(agentCfg.toolConcurrency, 1, 8, 4),
+      maxRetries: clamp(agentCfg.maxRetries, 0, 5, 3),
+      llmTimeoutMs: clamp(agentCfg.llmTimeoutMs, 10000, 300000, 60000),
+      fallbackModelIds: Array.isArray(agentCfg.fallbackModelIds) ? agentCfg.fallbackModelIds : [],
+      browserAutomation: { enabled: agentCfg.browserAutomation?.enabled !== false },
+      imageGeneration: {
+        enabled: !!agentCfg.imageGeneration?.enabled,
+        apiConfigId: typeof agentCfg.imageGeneration?.apiConfigId === 'string' ? agentCfg.imageGeneration.apiConfigId : '',
+      },
+    };
+    await window.cnke.config.set('agentConfig', next);
+    setAgentCfg(next);
     alert('Agent 设置已保存');
   };
 
@@ -308,6 +363,8 @@ const SettingsSheet: React.FC = () => {
   const activateApiConfig = async (id: string) => {
     setActiveId(id);
     await window.cnke.config.set('activeApiConfigId', id);
+    await window.cnke.config.syncBuiltins();
+    setApiConfigs((await window.cnke.config.getApiKeyConfigs()) || []);
     // 切换模型后自动关闭设置弹窗，让焦点归还对话输入框，避免输入框被遮罩层挡住而"卡死"
     setSettingsOpen(false);
   };
@@ -336,17 +393,12 @@ const SettingsSheet: React.FC = () => {
     // 勾选「立即启用」时连接为异步过程，成功/失败结果会通过状态推送更新列表
   };
 
-  const toggleSkill = async (id: string) => {
-    const next = enabledSkills.includes(id)
-      ? enabledSkills.filter((s) => s !== id)
-      : [...enabledSkills, id];
-    setEnabledSkills(next);
-    await window.cnke.config.set('enabledSkills', next);
-    if (next.includes(id)) {
-      const skill = BUILTIN_SKILLS.find((s) => s.id === id);
-      if (skill) {
-        await window.cnke.config.set('agentConfig', { ...agentCfg, systemPrompt: skill.systemPrompt });
-      }
+  const toggleSkill = async (skill: SkillView) => {
+    const result = await window.cnke.skills.setEnabled(skill.id, !skill.enabled);
+    if (result.success) {
+      setSkills(result.skills);
+    } else {
+      alert(result.error || '更新技能状态失败');
     }
   };
 
@@ -405,7 +457,14 @@ const SettingsSheet: React.FC = () => {
                 {officialLoading && officialModels.length === 0 ? (
                   <div className="text-xs text-muted-foreground text-center py-4 border border-dashed border-border rounded-lg">正在从官方服务器加载…</div>
                 ) : officialModels.length === 0 ? (
-                  <div className="text-xs text-muted-foreground text-center py-4 border border-dashed border-border rounded-lg">暂时无法获取官方模型（需联网）</div>
+                  <div className="text-xs text-muted-foreground text-center py-4 border border-dashed border-border rounded-lg">
+                    暂时无法获取官方模型
+                    {officialError ? (
+                      <div className="mt-1 text-[10px] text-amber-400/90 break-all">{officialError}</div>
+                    ) : (
+                      <div className="mt-1 text-[10px] opacity-70">请检查网络后点击右上角「刷新」重试</div>
+                    )}
+                  </div>
                 ) : (
                   <div className="grid grid-cols-2 gap-2">
                     {officialModels.map((m) => (
@@ -518,6 +577,29 @@ const SettingsSheet: React.FC = () => {
           {tab === 'agent' && (
             <div className="space-y-3">
               <h3 className="text-sm font-semibold mb-3">Agent 行为设置</h3>
+              <div className="grid grid-cols-2 gap-2.5">
+                <div>
+                  <label className="text-[11px] text-muted-foreground">默认工作模式</label>
+                  <select value={agentCfg.mode ?? 'plan'} onChange={(e) => setAgentCfg({ ...agentCfg, mode: e.target.value })} className="mt-0.5 w-full bg-background border border-border rounded-md px-2 py-1.5 text-xs outline-none focus:border-primary">
+                    <option value="ask">问答：只读分析，不修改文件</option>
+                    <option value="craft">快速：直接执行修改</option>
+                    <option value="plan">深度：先规划再执行</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[11px] text-muted-foreground">备用模型（主模型失败后依次尝试）</label>
+                  <select
+                    multiple
+                    value={agentCfg.fallbackModelIds || []}
+                    onChange={(e) => setAgentCfg({ ...agentCfg, fallbackModelIds: Array.from(e.target.selectedOptions).map((option) => option.value).slice(0, 3) })}
+                    className="mt-0.5 h-[72px] w-full bg-background border border-border rounded-md px-2 py-1 text-xs outline-none focus:border-primary"
+                  >
+                    {apiConfigs.filter((cfg) => cfg.id !== activeId).map((cfg) => (
+                      <option key={cfg.id} value={cfg.id}>{cfg.name || cfg.model}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
               <div>
                 <label className="text-[11px] text-muted-foreground">回复格式（注入给模型的排版规范）</label>
                 <select value={agentCfg.replyFormat ?? 'structured'} onChange={(e) => setAgentCfg({ ...agentCfg, replyFormat: e.target.value })} className="mt-0.5 w-full bg-background border border-border rounded-md px-2 py-1.5 text-xs outline-none focus:border-primary">
@@ -528,6 +610,24 @@ const SettingsSheet: React.FC = () => {
               <div>
                 <label className="text-[11px] text-muted-foreground">自定义系统提示词（附加在角色提示词之后）</label>
                 <textarea value={agentCfg.systemPrompt} onChange={(e) => setAgentCfg({ ...agentCfg, systemPrompt: e.target.value })} rows={4} placeholder="附加的系统提示词..." className="mt-0.5 w-full bg-background border border-border rounded-md px-2 py-1.5 text-xs outline-none focus:border-primary resize-y" />
+              </div>
+              <div className="grid grid-cols-3 gap-2.5">
+                <div>
+                  <label className="text-[11px] text-muted-foreground">历史消息保留数</label>
+                  <input type="number" min="2" max="200" value={agentCfg.maxHistoryMessages ?? 20} onChange={(e) => setAgentCfg({ ...agentCfg, maxHistoryMessages: Number(e.target.value) })} className="mt-0.5 w-full bg-background border border-border rounded-md px-2 py-1.5 text-xs outline-none focus:border-primary" />
+                </div>
+                <div>
+                  <label className="text-[11px] text-muted-foreground">工具并发数</label>
+                  <input type="number" min="1" max="8" value={agentCfg.toolConcurrency ?? 4} onChange={(e) => setAgentCfg({ ...agentCfg, toolConcurrency: Number(e.target.value) })} className="mt-0.5 w-full bg-background border border-border rounded-md px-2 py-1.5 text-xs outline-none focus:border-primary" />
+                </div>
+                <div>
+                  <label className="text-[11px] text-muted-foreground">失败重试次数</label>
+                  <input type="number" min="0" max="5" value={agentCfg.maxRetries ?? 3} onChange={(e) => setAgentCfg({ ...agentCfg, maxRetries: Number(e.target.value) })} className="mt-0.5 w-full bg-background border border-border rounded-md px-2 py-1.5 text-xs outline-none focus:border-primary" />
+                </div>
+              </div>
+              <div>
+                <label className="text-[11px] text-muted-foreground">单次模型请求超时（秒）</label>
+                <input type="number" min="10" max="300" value={Math.round((agentCfg.llmTimeoutMs ?? 60000) / 1000)} onChange={(e) => setAgentCfg({ ...agentCfg, llmTimeoutMs: Number(e.target.value) * 1000 })} className="mt-0.5 w-full bg-background border border-border rounded-md px-2 py-1.5 text-xs outline-none focus:border-primary" />
               </div>
               <div className="grid grid-cols-3 gap-2.5">
                 <div>
@@ -543,10 +643,37 @@ const SettingsSheet: React.FC = () => {
                   <input type="number" step="0.1" min="0" max="1" value={agentCfg.topP} onChange={(e) => setAgentCfg({ ...agentCfg, topP: Number(e.target.value) })} className="mt-0.5 w-full bg-background border border-border rounded-md px-2 py-1.5 text-xs outline-none focus:border-primary" />
                 </div>
               </div>
-              <label className="flex items-center gap-2 cursor-pointer pt-1">
-                <input type="checkbox" checked={agentCfg.autoApproveTools} onChange={(e) => setAgentCfg({ ...agentCfg, autoApproveTools: e.target.checked })} className="accent-primary" />
-                <span className="text-xs">自动批准工具调用（不弹确认框）</span>
-              </label>
+              <div className="grid grid-cols-1 gap-1.5 rounded-lg border border-border bg-secondary/20 p-2.5">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={!!agentCfg.maxMode} onChange={(e) => setAgentCfg({ ...agentCfg, maxMode: e.target.checked })} className="accent-primary" />
+                  <span className="text-xs">Max 模式：保留完整对话历史（关闭时按上方条数裁剪）</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={agentCfg.enableRouting !== false} onChange={(e) => setAgentCfg({ ...agentCfg, enableRouting: e.target.checked })} className="accent-primary" />
+                  <span className="text-xs">智能模型路由：按任务自动选择合适模型</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={!!agentCfg.autoApproveTools} onChange={(e) => setAgentCfg({ ...agentCfg, autoApproveTools: e.target.checked })} className="accent-primary" />
+                  <span className="text-xs">自动批准工具调用（不弹确认框）</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={agentCfg.browserAutomation?.enabled !== false} onChange={(e) => setAgentCfg({ ...agentCfg, browserAutomation: { ...agentCfg.browserAutomation, enabled: e.target.checked } })} className="accent-primary" />
+                  <span className="text-xs">启用浏览器自动化（需本机已安装 Chromium）</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={!!agentCfg.imageGeneration?.enabled} onChange={(e) => setAgentCfg({ ...agentCfg, imageGeneration: { ...agentCfg.imageGeneration, enabled: e.target.checked } })} className="accent-primary" />
+                  <span className="text-xs">启用图片生成（DALL-E 兼容接口）</span>
+                </label>
+                {agentCfg.imageGeneration?.enabled && (
+                  <label className="flex items-center gap-2 text-xs">
+                    <span className="shrink-0">图片 API</span>
+                    <select value={agentCfg.imageGeneration?.apiConfigId || activeId || ''} onChange={(e) => setAgentCfg({ ...agentCfg, imageGeneration: { ...agentCfg.imageGeneration, apiConfigId: e.target.value } })} className="min-w-0 flex-1 bg-background border border-border rounded-md px-2 py-1.5 text-xs outline-none focus:border-primary">
+                      <option value="">当前启用模型</option>
+                      {apiConfigs.map((cfg) => <option key={cfg.id} value={cfg.id}>{cfg.name || cfg.model}</option>)}
+                    </select>
+                  </label>
+                )}
+              </div>
               <button onClick={saveAgentConfig} className="flex items-center gap-1 px-3 py-1.5 text-xs bg-primary text-primary-foreground rounded-md hover:bg-primary/80 transition-colors">
                 <Save className="w-3 h-3" /> 保存 Agent 设置
               </button>
@@ -557,25 +684,43 @@ const SettingsSheet: React.FC = () => {
           {tab === 'skills' && (
             <div className="space-y-4">
               <div>
-                <div className="flex items-center justify-between mb-2">
-                  <h3 className="text-sm font-semibold">内置技能市场</h3>
-                  <span className="text-[10px] text-muted-foreground">启用后覆盖 Agent 提示词</span>
+                <div className="flex items-center justify-between mb-2 gap-3">
+                  <div>
+                    <h3 className="text-sm font-semibold">技能市场</h3>
+                    <p className="text-[10px] text-muted-foreground mt-0.5">提示词技能会叠加；本地技能包仅按需提供入口指引。</p>
+                  </div>
+                  <button
+                    onClick={() => void reloadSkills(true)}
+                    disabled={skillsLoading}
+                    className="flex items-center gap-1 text-[11px] border border-border rounded px-2 py-1 hover:bg-accent disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${skillsLoading ? 'animate-spin' : ''}`} /> 刷新
+                  </button>
                 </div>
-                <div className="grid grid-cols-2 gap-2">
-                  {BUILTIN_SKILLS.map((skill) => (
-                    <div
-                      key={skill.id}
-                      onClick={() => toggleSkill(skill.id)}
-                      className={`border rounded-lg p-2.5 cursor-pointer transition-colors ${enabledSkills.includes(skill.id) ? 'border-primary bg-primary/10' : 'border-border hover:bg-accent/40'}`}
-                    >
-                      <div className="flex items-center gap-2">
-                        <div className={`w-2 h-2 rounded-full ${enabledSkills.includes(skill.id) ? 'bg-primary' : 'bg-muted-foreground'}`} />
-                        <span className="text-xs font-semibold">{skill.name}</span>
-                      </div>
-                      <p className="text-[10px] text-muted-foreground mt-1 leading-snug">{skill.desc}</p>
-                    </div>
-                  ))}
-                </div>
+                {skills.length === 0 ? (
+                  <div className="text-xs text-muted-foreground text-center py-5 border border-dashed border-border rounded-lg">未发现可用技能</div>
+                ) : (
+                  <div className="grid grid-cols-2 gap-2">
+                    {skills.map((skill) => (
+                      <button
+                        type="button"
+                        key={skill.id}
+                        onClick={() => void toggleSkill(skill)}
+                        disabled={skill.available === false}
+                        className={`text-left border rounded-lg p-2.5 transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${skill.enabled ? 'border-primary bg-primary/10' : 'border-border hover:bg-accent/40'}`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <div className={`w-2 h-2 rounded-full ${skill.enabled ? 'bg-primary' : 'bg-muted-foreground'}`} />
+                          <span className="text-xs font-semibold truncate">{skill.name}</span>
+                          <span className="ml-auto text-[9px] text-muted-foreground">{skill.kind === 'prompt' ? '提示词' : '本地包'}</span>
+                        </div>
+                        <p className="text-[10px] text-muted-foreground mt-1 leading-snug">{skill.description}</p>
+                        {skill.version && <p className="text-[9px] text-muted-foreground mt-1">v{skill.version} · {skill.source === 'bundled' ? '随应用安装' : '本地发现'}</p>}
+                        {skill.error && <p className="text-[9px] text-red-400 mt-1">{skill.error}</p>}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <div className="border-t border-border pt-3">
@@ -843,20 +988,16 @@ const SettingsSheet: React.FC = () => {
 
                     {updateStatus.phase === 'available' && (
                       <div>
-                        <div className="text-xs text-cyan-300 font-medium">发现新版本 v{updateStatus.version}</div>
+                        <div className="flex items-center gap-2 text-xs text-cyan-300 font-medium">
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                          正在自动下载更新 v{updateStatus.version}…
+                        </div>
                         {updateStatus.minimumRunVersion && (
-                          <div className="mt-1 text-[11px] text-amber-400 font-medium">⚠ 该版本为强制更新，旧版本将无法继续使用，请立即更新</div>
+                          <div className="mt-1 text-[11px] text-amber-400 font-medium">⚠ 该版本为强制更新，旧版本将无法继续使用</div>
                         )}
                         {updateStatus.releaseNotes && (
                           <div className="mt-1 text-[11px] text-muted-foreground whitespace-pre-wrap max-h-24 overflow-y-auto">{updateStatus.releaseNotes}</div>
                         )}
-                        <button
-                          onClick={downloadUpdate}
-                          disabled={updateDownloading}
-                          className="mt-2 w-full flex items-center justify-center gap-1 px-3 py-1.5 text-xs bg-gradient-to-r from-cyan-500 to-violet-500 text-white rounded-md hover:opacity-90 disabled:opacity-40"
-                        >
-                          <Cloud className="w-3 h-3" /> 下载并更新
-                        </button>
                       </div>
                     )}
 
@@ -877,13 +1018,11 @@ const SettingsSheet: React.FC = () => {
 
                     {updateStatus.phase === 'downloaded' && (
                       <div>
-                        <div className="text-xs text-emerald-400">更新包已下载完成（v{updateStatus.version}）</div>
-                        <button
-                          onClick={installUpdate}
-                          className="mt-2 w-full flex items-center justify-center gap-1 px-3 py-1.5 text-xs bg-gradient-to-r from-emerald-500 to-cyan-500 text-white rounded-md hover:opacity-90"
-                        >
-                          <Cloud className="w-3 h-3" /> 立即重启安装
-                        </button>
+                        <div className="flex items-center gap-2 text-xs text-emerald-400">
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                          v{updateStatus.version} 已下载，{updateStatus.message || '准备自动安装…'}
+                        </div>
+                        <div className="mt-1 text-[10px] text-muted-foreground">安装完成后将自动重启到新版本</div>
                       </div>
                     )}
 

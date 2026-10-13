@@ -60,8 +60,13 @@ const ModelSwitcher: React.FC = () => {
   return (
     <div ref={ref} className="relative">
       <button
-        onClick={() => setOpen(!open)}
-        className="flex items-center gap-1.5 px-2 py-1 rounded-md border border-border hover:bg-accent/60 transition-colors text-[11px] text-muted-foreground max-w-[180px]"
+        onClick={() => {
+          const next = !open;
+          setOpen(next);
+          // 每次展开都重新同步官方模型，确保已下线旧模型不会继续出现在输入框下拉列表。
+          if (next) void refreshModels();
+        }}
+        className="flex items-center gap-1.5 px-2 py-1 rounded-lg border border-border/70 bg-secondary/40 hover:bg-accent/60 hover:border-border transition-colors text-[11px] text-muted-foreground max-w-[170px]"
         title="切换模型"
       >
         <Cpu className="w-3 h-3 text-cyan-400 shrink-0" />
@@ -94,7 +99,7 @@ const ModelSwitcher: React.FC = () => {
               <button
                 key={m.id}
                 onClick={() => {
-                  switchModel(m.id);
+                  void switchModel(m.id);
                   setOpen(false);
                 }}
                 disabled={m.disabled}

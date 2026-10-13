@@ -8,7 +8,7 @@
  * - 检索：query embedding → cosine topK
  */
 
-import { EmbeddingProvider, EmbeddingConfig } from '../codebase/EmbeddingProvider';
+import { EmbeddingProvider, EmbeddingConfig, getEmbeddingProvider } from '../codebase/EmbeddingProvider';
 
 export interface DocChunk {
   id: string;
@@ -34,10 +34,8 @@ export class DocumentIndex {
   private provider: EmbeddingProvider;
 
   constructor(provider?: EmbeddingProvider) {
-    this.provider = provider || (() => {
-      const { getEmbeddingProvider } = require('../codebase/EmbeddingProvider');
-      return getEmbeddingProvider();
-    })();
+    // 同 RagManager：改用静态 import，避免打包后相对路径 require 解析失败
+    this.provider = provider || getEmbeddingProvider();
   }
 
   /** 添加或更新文档 */

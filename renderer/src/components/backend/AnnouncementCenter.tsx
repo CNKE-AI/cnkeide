@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import DOMPurify from 'dompurify';
 import { X, AlertTriangle, Info, AlertOctagon } from 'lucide-react';
 
 interface Announcement {
@@ -120,7 +121,7 @@ const AnnouncementCenter: React.FC = () => {
               </div>
               <div
                 className="mt-2.5 text-xs text-foreground/85 leading-relaxed max-h-[260px] overflow-y-auto pr-1 [&_a]:text-cyan-400 [&_a]:underline"
-                dangerouslySetInnerHTML={{ __html: current.content }}
+                dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(current.content) }}
               />
               <div className="flex items-center justify-end gap-2 mt-4">
                 {queue.length > 1 && (

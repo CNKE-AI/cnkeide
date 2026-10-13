@@ -11,8 +11,12 @@ import { ConfigAdapter } from '../../adapter/ConfigAdapter';
 import { CheckpointManager } from '../checkpoint/CheckpointManager';
 import { MemoryStore, MemoryType, MemoryScope, MEMORY_DEFAULT_SETTINGS, MEMORY_LIMITS } from '../memory/MemoryStore';
 import { PlanManager } from '../plan/PlanManager';
+import { SkillRegistry } from '../skills/SkillRegistry';
+import { BUILTIN_PROMPT_SKILLS } from '../skills/builtins';
 import { ApprovalPolicy, ApprovalRule, PolicyDecision } from '../checkpoint/ApprovalPolicy';
 import { ContextTracker, ContextState } from './ContextTracker';
+import { RagManager } from '../rag/RagManager';
+import { MockImageGenAdapter, OpenAIImageGenAdapter } from '../tools/ImageGenTools';
 import { randomUUID } from 'node:crypto';
 import { BrowserWindow } from 'electron';
 import { appendFileSync } from 'node:fs';
@@ -51,6 +55,10 @@ export interface AgentConfig {
   memoryStore?: MemoryStore;
   /** W3 新增：PlanManager（可选），未注入时 plan 工具不可用 */
   planManager?: PlanManager;
+  /** RAG 文档索引（可选）；由主进程创建并在全部会话中复用。 */
+  ragManager?: RagManager;
+  /** P0：统一的技能注册表，提供本地包扫描和提示词技能组合 */
+  skillRegistry: SkillRegistry;
 }
 
 export interface RunParams {
@@ -143,17 +151,51 @@ const SYSTEM_PROMPTS: Record<AgentMode, string> = {
 };
 
 // 结构化回复规范：让最终回复按美观的 Markdown 排版，类似 CodeBuddy
+//
+// 说明：这里的每一条都对应一个真实出现过的渲染缺陷，不是风格偏好。
+// 见 renderer/src/components/chat/Markdown.tsx 的 CodeBlock——单行内容若被
+// 包进围栏代码块，会渲染成占满宽度的空灰框（截图里的 create_file /
+// apply_diff / rename_file 就是这种退化形态）。
 const REPLY_FORMAT_STRUCTURED = `
 
-[回复格式要求] 你的最终回复请始终使用清晰、美观的结构化 Markdown（若只需一句简短确认则可例外）：
-1. 先给结论：开头用一两句话直接回答核心问题，不要铺垫和客套。
-2. 善用标题分层：内容较多时用 ## / ### 组织小节，避免一大段平铺文字。
-3. 要点用 - 无序列表或 1. 有序列表；需要对比时用 Markdown 表格。
-4. 代码与命令块（多行代码、脚本、配置、命令片段、JSON、YAML、日志）使用 \`\`\` 围栏代码块，并务必标注语言（如 \`\`\`bash、\`\`\`python、\`\`\`json）。
-5. 路径、文件名、对象名、参数、ID、术语、字段名、键名一律使用行内代码 \` \`（单个反引号）包裹，绝不要用 \`\`\` 代码块围栏，单行内容不应单独占一个代码框。
-6. 操作步骤分步编号，重要结果用加粗强调（不要滥用加粗）。
-7. 需要总结时在末尾用「小结」小节，最多 3 条。
-8. 长度适中：能列表不写长句，能表格不用段落。`;
+
+[回复格式要求] 你的最终回复请使用结构正确、语义合理、渲染稳定的 Markdown（若只需一句简短确认则可例外）：
+不出现标题层级混乱、列表嵌套错误、代码块未闭合、表格错位、加粗斜体滥用。
+
+一、代码块（最容易出错，重点遵守）
+1. 只有"多行代码、脚本、配置、命令片段、JSON、YAML、日志、目录树"才用 \`\`\` 围栏代码块，并务必标注语言（如 \`\`\`bash、\`\`\`python、\`\`\`json、\`\`\`text）。
+2. 单行内容一律不要用围栏代码块，包括：文件名、路径、工具名、函数名、参数、字段名、键名、命令名、枚举值。这些一律用行内代码 \` \`（单个反引号）包裹。
+   - 正确：用 \`apply_diff\` 做精确替换，涉及 \`AgentManager.ts\`。
+   - 错误：把 \`apply_diff\` 单独放进三反引号代码块（会渲染成一个占满宽度的空灰框）。
+3. 围栏必须成对闭合，开启与闭合的反引号数量一致；代码块内不要出现未转义的三反引号。
+4. 代码块前后各留一个空行，不要紧贴段落文字。
+5. 代码块内只放代码本身，不要写行号、不要写"输出："之类的前缀说明，说明文字放在代码块外面。
+
+二、标题
+6. 从 ## 起用（# 一级标题留给消息本身，不要使用）。层级严格递进，不要从 ## 直接跳到 ####，不要用标题代替普通强调。
+7. 一次回复内标题不超过两级；内容不足一个小节时，用加粗短句而不是标题。
+
+三、列表
+8. 要点用 - 无序列表或 1. 有序列表；同层级列表符号保持一致，不要混用 - 和 *。
+9. 嵌套必须缩进 2-4 个空格，不要用制表符；嵌套不超过 2 层，超过就考虑改用表格。
+10. 列表项内容较长时，续行统一缩进对齐到该项文字起始位置，避免被解析成新列表。
+11. 列表项内不要夹入空行（会被解析为松散列表，间距突变）；确需分段时改用小标题。
+
+四、表格
+12. 表格必须给出分隔行（| --- | --- |）且每行竖线数量与表头一致；单元格内容不要包含未转义的 |。
+13. 列数控制在 2-4 列；单元格文字简短，长内容改写成列表，避免错位与横向溢出。
+
+五、强调与其它
+14. 加粗只用于结论、关键参数、风险提示，一段内不超过 2-3 处；不要整段加粗，不要用加粗代替标题。
+15. 斜体、删除线原则上不用；不要用连续多个星号或下划线做装饰分隔线，章节之间用空行分隔。
+16. 引用外部链接用 [文字](url)，不要裸露长 URL。
+17. 路径、文件名、对象名、参数、ID、术语、字段名、键名一律使用行内代码 \` \` 包裹。
+
+六、整体
+18. 先给结论：开头用一两句话直接回答核心问题，不要铺垫和客套。
+19. 操作步骤分步编号；需要总结时在末尾用「小结」小节，最多 3 条。
+20. 长度适中：能列表不写长句，能表格不用段落；不要为凑结构而制造空标题或空列表。
+21. 输出前自查：围栏是否成对、表格列数是否一致、列表缩进是否规范、是否存在本该行内代码却被写成代码块的单行内容。`;
 
 // W3：plan 引导：让 LLM 在执行复杂任务时主动拆解为计划
 const PLAN_GUIDE = `
@@ -232,13 +274,18 @@ export class AgentManager {
   private runningSessions: Map<string, boolean> = new Map();
   /** W1 新增：每会话独立的 AbortController，abort 时中断 LLM 流与读流 */
   private abortControllers: Map<string, AbortController> = new Map();
-  private toolApprovals: Map<string, (approved: boolean) => void> = new Map();
+  /** 待审批工具请求：requestId → { sessionId, resolver }（按会话隔离，abort 时只拒绝本会话） */
+  private toolApprovals: Map<string, { sessionId: string; resolver: (approved: boolean) => void }> = new Map();
   /** W3 新增：PlanManager（可选） */
   private planManager?: PlanManager;
+  /** P0：本地/内置技能注册表 */
+  private skillRegistry: SkillRegistry;
   /** W7 新增：审批策略（信任规则） */
   private approvalPolicy: ApprovalPolicy = new ApprovalPolicy();
   /** W11 新增：上下文窗口实时追踪 */
   private contextTracker: ContextTracker = new ContextTracker();
+  /** 浏览器初始化只执行一次，图片适配器则会在每次运行前读取最新配置。 */
+  private browserInit?: Promise<void>;
 
   constructor(config: AgentConfig) {
     this.config = config.config;
@@ -247,6 +294,7 @@ export class AgentManager {
     this.checkpointManager = config.checkpointManager;
     this.memoryStore = config.memoryStore;
     this.planManager = config.planManager;
+    this.skillRegistry = config.skillRegistry;
     this.llmProvider = new LLMProvider(config.config);
     // W7：加载持久化的信任规则
     this.loadApprovalRules();
@@ -258,7 +306,31 @@ export class AgentManager {
       codebaseIndexer: config.codebaseIndexer,
       planManager: config.planManager,
       config: config.config,
+      ragManager: config.ragManager,
     });
+  }
+
+  /** 在工具列表发送给模型前准备可选运行时能力，失败时保留清晰的降级提示。 */
+  private async prepareOptionalTools(): Promise<void> {
+    if (this.config.get<boolean>('agentConfig.browserAutomation.enabled', true) && !this.browserInit) {
+      this.browserInit = this.toolManager.enablePlaywright().then(() => undefined).catch(() => undefined);
+    }
+    await this.browserInit;
+
+    const imageConfig = this.config.get<{ enabled?: boolean; apiConfigId?: string }>('agentConfig.imageGeneration', {});
+    if (!imageConfig?.enabled) {
+      this.toolManager.setImageGenAdapter(new MockImageGenAdapter());
+      return;
+    }
+
+    const apiConfigs = this.config.getApiKeyConfigs();
+    const id = imageConfig.apiConfigId || this.config.get<string>('activeApiConfigId', '');
+    const api = apiConfigs.find((item: any) => item.id === id);
+    if (api?.apiKey && api?.baseUrl) {
+      this.toolManager.setImageGenAdapter(new OpenAIImageGenAdapter(api.apiKey, api.baseUrl.replace(/\/$/, '')));
+    } else {
+      this.toolManager.setImageGenAdapter(new MockImageGenAdapter());
+    }
   }
 
   async run(params: RunParams, emit: (event: AgentEvent) => void): Promise<{ success: boolean; error?: string }> {
@@ -277,8 +349,20 @@ export class AgentManager {
     this.toolManager.setSessionContext(sessionId, workspaceId);
 
     try {
+      await this.prepareOptionalTools();
       const basePrompt = SYSTEM_PROMPTS[mode] || SYSTEM_PROMPTS.ask;
-      const customPrompt = this.config.get<string>('agentConfig.systemPrompt', '');
+      let customPrompt = this.config.get<string>('agentConfig.systemPrompt', '');
+      // 只读刷新本地技能目录。扫描失败不会影响普通对话，也绝不执行技能脚本。
+      await this.skillRegistry.scan();
+      const enabledSkills = this.config.get<unknown>('enabledSkills', []);
+      // 兼容旧版本：过去点选单个技能会将其完整提示词覆盖进用户自定义字段。
+      // 若当前字段与某个已启用内置技能完全相同，运行时去重而不改写用户配置。
+      const enabledIds = new Set(Array.isArray(enabledSkills) ? enabledSkills : []);
+      if (BUILTIN_PROMPT_SKILLS.some((skill) => enabledIds.has(skill.id) && customPrompt.trim() === skill.systemPrompt.trim())) {
+        customPrompt = '';
+      }
+      const skillPrompt = this.skillRegistry.getEnabledPrompt(enabledSkills);
+      const packageSkillGuidance = this.skillRegistry.getEnabledPackageGuidance(enabledSkills);
       // 注入运行时平台/Shell 信息，让 LLM 选对命令（避免在 Windows PowerShell 上跑 GNU date 等 Linux 专用命令）
       const isWin = process.platform === 'win32';
       const shellInfo = isWin
@@ -294,8 +378,9 @@ export class AgentManager {
       const replyRule = replyFormat === 'plain' ? '' : REPLY_FORMAT_STRUCTURED;
       // W3：当 PlanManager 启用时，注入任务规划引导
       const planGuide = this.planManager ? PLAN_GUIDE : '';
-      // 基础 Prompt = 核心身份准则 + 模式专属 Prompt + 用户自定义 Prompt
-      const fullBasePrompt = `${BASE_SYSTEM_PROMPT}\n\n${basePrompt}${customPrompt ? `\n\n${customPrompt}` : ''}`;
+      // 基础 Prompt = 核心身份准则 + 模式专属 Prompt + 用户自定义 Prompt + 全部启用提示词技能。
+      // 这避免旧实现“最后点击的技能覆盖前一个技能”的互斥行为。
+      const fullBasePrompt = `${BASE_SYSTEM_PROMPT}\n\n${basePrompt}${customPrompt ? `\n\n${customPrompt}` : ''}${skillPrompt}${packageSkillGuidance}`;
       // 工作区锚点：必须显式告知模型当前工作区根目录，否则模型只能靠猜
       // 相对路径（项目里最自然的写法），导致 read_file("src/a.ts") 直接 ENOENT。
       const workspaceInfo = this.buildWorkspaceInfo(workspaceId);
@@ -542,8 +627,12 @@ export class AgentManager {
       emit({ type: 'error', sessionId, data: { error: err.message } });
       return { success: false, error: err.message };
     } finally {
-      this.runningSessions.delete(sessionId);
-      this.abortControllers.delete(sessionId);
+      // 竞态防护：abort() 后立即重发消息时，旧 run 的 finally 不能清掉新 run 的状态。
+      // abort() 会同步删除 Map 条目，随后新 run 重新写入；此处仅当条目仍属于本次 run 时才清理。
+      if (this.abortControllers.get(sessionId) === abortController) {
+        this.runningSessions.delete(sessionId);
+        this.abortControllers.delete(sessionId);
+      }
     }
   }
 
@@ -558,10 +647,11 @@ export class AgentManager {
       }
       this.abortControllers.delete(sessionId);
     }
-    // 拒绝所有未响应的工具审批
-    for (const [requestId, resolver] of this.toolApprovals.entries()) {
+    // 拒绝本会话所有未响应的工具审批（不能波及其他会话的待审批请求）
+    for (const [requestId, entry] of this.toolApprovals.entries()) {
+      if (entry.sessionId !== sessionId) continue;
       try {
-        resolver(false);
+        entry.resolver(false);
       } catch {
         /* ignore */
       }
@@ -576,9 +666,9 @@ export class AgentManager {
   }
 
   resolveToolApproval(requestId: string, approved: boolean): void {
-    const resolver = this.toolApprovals.get(requestId);
-    if (resolver) {
-      resolver(approved);
+    const entry = this.toolApprovals.get(requestId);
+    if (entry) {
+      entry.resolver(approved);
       this.toolApprovals.delete(requestId);
     }
   }
@@ -906,15 +996,21 @@ export class AgentManager {
     }
     // ask：弹窗等用户决策
     const requestId = randomUUID();
-    // 用稳定主窗口引用，回退到焦点窗口/所有窗口，避免窗口失焦时审批请求发不出去导致工具卡死
+    // 用稳定主窗口引用，回退到焦点窗口/所有窗口，避免窗口失焦时审批请求发不出去导致工具卡死。
+    // getAllWindows()[0] 可能是 PPT 独立窗口（其页面无审批处理逻辑），优先选择非 PPT 主窗口。
+    const isMainWindow = (w: BrowserWindow) => {
+      try { return !w.webContents.getURL().includes('ppt.html'); } catch { return true; }
+    };
+    const allWins = BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed());
     const win = this.windowAdapter.getMainWindow()
       || BrowserWindow.getFocusedWindow()
-      || BrowserWindow.getAllWindows()[0];
+      || allWins.find(isMainWindow)
+      || allWins[0];
     if (win && !win.isDestroyed()) {
       win.webContents.send('tool:approve-request', { requestId, sessionId, toolCall });
     }
     return new Promise<boolean>((resolve) => {
-      this.toolApprovals.set(requestId, resolve);
+      this.toolApprovals.set(requestId, { sessionId, resolver: resolve });
       // 60秒超时自动拒绝
       setTimeout(() => {
         if (this.toolApprovals.has(requestId)) {

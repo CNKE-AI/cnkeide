@@ -68,6 +68,8 @@ export class ConfigAdapter {
       apiConfigs: [],
       activeApiConfigId: null,
       mcpServers: [],
+      // 已启用技能 ID；技能详情由本地扫描/内置注册表在运行时提供。
+      enabledSkills: [],
       agentConfig: {
         mode: 'plan',          // ask | craft | plan
         maxMode: false,
@@ -99,6 +101,9 @@ export class ConfigAdapter {
         },
         // W7 新增：工具调用信任规则（按 toolName / pathPattern / commandPattern 匹配）
         approvalRules: [],
+        // 可选运行时工具：浏览器默认尝试启用，图片生成必须由用户显式启用并绑定 API 配置。
+        browserAutomation: { enabled: true },
+        imageGeneration: { enabled: false, apiConfigId: '' },
       },
       workspace: {
         lastWorkspace: null,
@@ -109,6 +114,10 @@ export class ConfigAdapter {
         autoCheck: true,
         // 静默检测启动延迟（毫秒）
         autoCheckDelayMs: 8000,
+        // 下载完成后自动安装（无需用户点击「立即重启安装」按钮，实现真正无感更新）
+        autoInstall: true,
+        // 自动安装前等待秒数（给用户看「即将重启安装…」提示的时间，0 = 立即安装）
+        autoInstallDelaySec: 3,
         // 失败重试配置
         retry: {
           maxRetries: 3,
@@ -216,8 +225,11 @@ export class ConfigAdapter {
     const configs = this.getApiKeyConfigs();
     // 官方项本地 id 集合（含本次传入的全部官方项）
     const officialLocalIds = new Set<string>();
+    const officialFingerprints = new Set<string>();
     for (const b of builtins) {
-      if (b && b.id) officialLocalIds.add(`official_${b.id}`);
+      if (!b?.id) continue;
+      officialLocalIds.add(`official_${b.id}`);
+      officialFingerprints.add(this.apiFingerprint(b));
     }
 
     let added = 0;
@@ -260,11 +272,12 @@ export class ConfigAdapter {
       }
     }
 
-    // 2. 下线即删除：移除本地官方项中不在官方列表里的项
+    // 2. 下线即删除：移除已不在官方列表中的官方项，以及历史版本按名称/连接信息导入的旧模型。
     const before = configs.length;
-    const remaining = configs.filter(
-      (c) => !c.id.startsWith('official_') || officialLocalIds.has(c.id)
-    );
+    const remaining = configs.filter((c) => {
+      if (c.id.startsWith('official_')) return officialLocalIds.has(c.id);
+      return !officialFingerprints.has(this.apiFingerprint(c));
+    });
     const removed = before - remaining.length;
 
     // 若激活项是被删除的官方项，清理失效引用
@@ -278,6 +291,13 @@ export class ConfigAdapter {
     }
 
     return { added, updated, removed };
+  }
+
+  /** 用模型、地址和密钥识别同一官方配置，兼容历史版本未使用 official_ 前缀的导入项。 */
+  private apiFingerprint(config: { model?: string; baseUrl?: string; apiKey?: string }): string {
+    return [config.model, config.baseUrl, config.apiKey]
+      .map((value) => String(value || '').trim().toLowerCase())
+      .join('\0');
   }
 
   // ===== 工作区管理 =====

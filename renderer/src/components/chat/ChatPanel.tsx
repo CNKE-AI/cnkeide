@@ -416,7 +416,7 @@ const MessageBubble: React.FC<{
   if (msg.role === 'user') {
     return (
       <div className="flex justify-end mb-3">
-        <div className="max-w-[85%] bg-primary/15 border border-primary/20 rounded-xl rounded-tr-sm px-3.5 py-2.5 shadow-sm">
+        <div className="max-w-[85%] bg-primary/15 border border-primary/20 rounded-2xl rounded-tr-md px-3.5 py-2.5 shadow-sm">
           {msg.files && msg.files.length > 0 && (
             <div className="flex flex-wrap gap-1.5 mb-1.5">
               {msg.files.map((f) => (
@@ -478,7 +478,7 @@ const MessageBubble: React.FC<{
       )}
 
       {msg.toolCalls && msg.toolCalls.length > 0 && (
-        <div className="mb-1.5 space-y-1">
+        <div className="mb-3 space-y-2">
           {msg.toolCalls.map((tc, i) => (
             <ToolCallView key={`tc-${i}`} call={tc} />
           ))}
@@ -493,7 +493,7 @@ const MessageBubble: React.FC<{
 
       {/* AI 回复底部工具条：复制 + token 消耗（不加气泡包裹） */}
       {msg.content ? (
-        <div className="mt-1.5 flex items-center gap-2 text-[11px] text-muted-foreground/70">
+        <div className="mt-2 flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground/80">
           <button
             onClick={handleCopy}
             className="flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-accent hover:text-foreground transition-colors"
@@ -649,9 +649,7 @@ const ChatPanel: React.FC = () => {
     if (/^\/ppt(\s|$)/i.test(raw)) {
       const topic = raw.replace(/^\/ppt\s*/i, '').trim();
       setInput('');
-      // 通过 IPC 通知 PPT 窗口预填主题（如果已打开）
-      try { window.cnke.ppt.openWithTopic?.(topic); } catch {}
-      window.cnke.ppt.open();
+      window.cnke.ppt.open(topic);
       return;
     }
 
@@ -901,46 +899,53 @@ const ChatPanel: React.FC = () => {
   return (
     <div className="flex flex-col h-full bg-background">
       {/* 顶部：会话切换 + 模式切换 + 新建 */}
-      <div className="px-2 pt-2 pb-2 border-b border-border bg-secondary/10">
-        <div className="flex items-center justify-between mb-1.5">
-          <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-1 flex items-center gap-1.5">
+      <div className="px-3 pt-2.5 pb-2 border-b border-border/70 bg-secondary/10">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
             <MessageCircle className="w-3.5 h-3.5 text-primary" />
             对话
           </span>
-          <div className="flex items-center gap-0.5">
-            <button onClick={() => setMemoryOpen(true)} className="p-1.5 hover:bg-accent hover:text-foreground rounded-md transition-colors text-muted-foreground" title="本地记忆：查看 / 管理跨对话自动加载的上下文与偏好">
-              <BrainCircuit className="w-3.5 h-3.5" />
-            </button>
-            <div className="flex items-center">
-              <button onClick={handleNewChat} className="p-1.5 hover:bg-accent hover:text-foreground rounded-md transition-colors" title="新建对话（当前工作区）">
+          <div className="flex items-center gap-1">
+            {/* 主操作：新建对话 */}
+            <div className="flex items-center gap-0.5">
+              <button onClick={handleNewChat} className="icon-btn" title="新建对话（当前工作区）">
                 <Plus className="w-3.5 h-3.5" />
               </button>
-              <button onClick={handleNewChatNewWorkspace} className="p-1.5 hover:bg-accent hover:text-foreground rounded-md transition-colors" title="新建对话并选择新工作区目录">
+              <button onClick={handleNewChatNewWorkspace} className="icon-btn" title="新建对话并选择新工作区目录">
                 <FolderPlus className="w-3.5 h-3.5" />
               </button>
             </div>
+            {/* 分隔点 */}
+            <span className="w-px h-4 bg-border/70 mx-0.5" />
+            {/* 会话管理 */}
+            <SessionToolbar sessionId={sessionId} workspaceId={activeWorkspaceId || workspacePath} onImport={() => { refreshSessions(workspacePath || activeWorkspaceId || ''); }} onSummarized={() => { if (sessionId) refreshContext(sessionId); }} />
             <button
               onClick={() => { const ws = activeWorkspaceId || workspacePath; if (ws) rollback(ws); }}
               disabled={loading || messages.length === 0}
-              className="p-1.5 hover:bg-accent hover:text-foreground rounded-md transition-colors disabled:opacity-40"
+              className="icon-btn"
               title="回滚：撤销上一轮对话"
             >
               <RotateCcw className="w-3.5 h-3.5" />
             </button>
-            <button onClick={handleDeleteCurrent} disabled={loading} className="p-1.5 hover:bg-red-500/20 hover:text-red-400 rounded-md transition-colors disabled:opacity-40" title="删除当前对话">
+            <button onClick={handleDeleteCurrent} disabled={loading} className="icon-btn hover:!bg-red-500/20 hover:!text-red-400" title="删除当前对话">
               <Trash2 className="w-3.5 h-3.5" />
             </button>
-            <button onClick={() => setCheckpointOpen(true)} className="p-1.5 hover:bg-accent hover:text-foreground rounded-md transition-colors text-muted-foreground" title="文件快照（Checkpoint）查看/恢复">
+            {/* 分隔点 */}
+            <span className="w-px h-4 bg-border/70 mx-0.5" />
+            {/* 高级功能 */}
+            <button onClick={() => setMemoryOpen(true)} className="icon-btn" title="本地记忆：查看 / 管理跨对话自动加载的上下文与偏好">
+              <BrainCircuit className="w-3.5 h-3.5" />
+            </button>
+            <button onClick={() => setCheckpointOpen(true)} className="icon-btn" title="文件快照（Checkpoint）查看/恢复">
               <History className="w-3.5 h-3.5" />
             </button>
-            <button onClick={() => setApprovalRulesOpen(true)} className="p-1.5 hover:bg-accent hover:text-foreground rounded-md transition-colors text-muted-foreground" title="工具审批信任规则">
+            <button onClick={() => setApprovalRulesOpen(true)} className="icon-btn" title="工具审批信任规则">
               <ShieldCheck className="w-3.5 h-3.5" />
             </button>
-            <SessionToolbar sessionId={sessionId} workspaceId={activeWorkspaceId || workspacePath} onImport={() => { refreshSessions(workspacePath || activeWorkspaceId || ''); }} onSummarized={() => { if (sessionId) refreshContext(sessionId); }} />
           </div>
         </div>
         {/* 多会话标签栏：点击切换，删除在右侧按钮 */}
-        <div className="flex items-center gap-1 overflow-x-auto pb-1" style={{ scrollbarWidth: 'none' }}>
+        <div className="flex items-center gap-1 overflow-x-auto pb-1 no-scrollbar">
           {sessions.length === 0 ? (
             <span className="text-[10px] text-muted-foreground/50 px-1">暂无历史对话，发送消息后自动保存为可切换的会话</span>
           ) : (
@@ -949,10 +954,10 @@ const ChatPanel: React.FC = () => {
               return (
                 <div
                   key={s.id}
-                  className={`group flex items-center gap-1 px-2.5 py-1 rounded-lg border text-[11px] whitespace-nowrap transition-colors shrink-0 ${
+                  className={`group flex items-center gap-1 px-2 py-[5px] rounded-lg border text-[11px] whitespace-nowrap transition-all shrink-0 ${
                     active
                       ? 'bg-primary/15 border-primary/40 text-foreground glow-primary'
-                      : 'border-border text-muted-foreground hover:bg-accent/60'
+                      : 'border-border/60 text-muted-foreground hover:bg-accent/60 hover:border-border'
                   } ${loading ? 'opacity-50 pointer-events-none' : 'cursor-pointer'}`}
                 >
                   <button
@@ -993,13 +998,13 @@ const ChatPanel: React.FC = () => {
       <ContextBar />
 
       {/* 计划面板 */}
-      <PlanPanel />
+      <PlanPanel sessionId={sessionId || undefined} />
 
       {/* 消息列表 */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-3">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4">
         {messages.length === 0 && (
-          <div className="flex flex-col items-center justify-center h-full text-center gap-3 text-muted-foreground">
-            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-violet-500/20 to-fuchsia-500/20 border border-primary/20 flex items-center justify-center">
+          <div className="empty-state">
+            <div className="empty-state__icon">
               <Sparkles className="w-7 h-7 text-primary/60" />
             </div>
             <p className="text-sm font-medium text-foreground/80">开始你的 AI 编程之旅</p>
@@ -1034,14 +1039,14 @@ const ChatPanel: React.FC = () => {
       </div>
 
       {/* 输入区 */}
-      <div className="p-2.5 border-t border-border bg-secondary/20">
+      <div className="p-3 pt-2 border-t border-border/70 bg-secondary/15">
         {/* 顶部拖动手柄：上下拖动调整下方输入框高度 */}
         <div
           onMouseDown={handleResizeMouseDown}
-          className="flex items-center justify-center -mt-2.5 mb-1 h-3 cursor-ns-resize group select-none"
+          className="flex items-center justify-center mb-1.5 -mt-0.5 h-3 cursor-ns-resize group select-none"
           title="上下拖动调整输入框高度"
         >
-          <div className="h-1 w-12 rounded-full bg-border group-hover:bg-primary/50 transition-colors" />
+          <div className="h-1 w-14 rounded-full bg-border/80 group-hover:bg-primary/60 transition-colors" />
         </div>
         {images.length > 0 && (
           <div className="flex flex-wrap gap-1.5 mb-2">
@@ -1079,9 +1084,9 @@ const ChatPanel: React.FC = () => {
           </div>
         )}
         {/* 整体输入卡片：顶部附件工具条 + 主输入区（统一边框） */}
-        <div className="bg-card border border-border rounded-xl focus-within:ring-1 focus-within:ring-primary/50 focus-within:border-primary/40 transition-all overflow-hidden">
+        <div className="brand-ring bg-card border border-transparent rounded-xl overflow-hidden shadow-md">
           {/* 顶部工具条：附件 / 引用 / PPT 等"给输入注入内容"的入口 */}
-          <div className="flex items-center gap-0.5 px-1.5 py-1 border-b border-border/50">
+          <div className="flex items-center gap-0.5 px-2 py-[5px] border-b border-border/50 bg-secondary/30">
             <button
               onClick={() => fileInputRef.current?.click()}
               className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition-colors"
@@ -1115,7 +1120,7 @@ const ChatPanel: React.FC = () => {
           </div>
 
           {/* 主输入框行：模式 + 输入 + 增强 + 发送 */}
-          <div className="flex items-end gap-2 p-1.5">
+          <div className="flex items-end gap-1.5 p-2">
             <button
               onClick={() => setAutoMode(!autoMode)}
               className={
@@ -1174,16 +1179,16 @@ const ChatPanel: React.FC = () => {
             )}
           </div>
         </div>
-        <div className="flex items-center justify-between gap-2 mt-1.5 px-0.5">
+        <div className="flex items-center justify-between gap-2 mt-2 px-0.5">
           {/* 模型切换 */}
           <ModelSwitcher />
           {/* Agent 模式切换 */}
-          <div className="flex items-center gap-1">
+          <div className="segmented">
             {MODES.map((m) => (
               <button
                 key={m.id}
                 onClick={() => setMode(m.id)}
-                className={`flex items-center justify-center gap-1 px-2 py-1 rounded-md text-[11px] transition-colors ${
+                className={`segmented__item flex items-center justify-center gap-1 ${
                   mode === m.id
                     ? `bg-primary/15 border border-primary/30 ${m.color}`
                     : 'text-muted-foreground hover:bg-accent/60 border border-transparent'
@@ -1196,38 +1201,31 @@ const ChatPanel: React.FC = () => {
             ))}
           </div>
         </div>
-        <p className="text-[10px] text-muted-foreground/60 mt-1 px-1">
-          模式：{MODES.find((m) => m.id === mode)?.label}
-          {autoMode && <span className="text-amber-500/90"> · 全自动运行</span>} · 支持上传文件/图片 · 会话自动保存
+        {/* 状态提示行：模式 / 全自动 / 会话保存 */}
+        <p className="text-[10px] text-muted-foreground/50 mt-1.5 px-1 flex items-center gap-1.5 truncate">
+          <span>{MODES.find((m) => m.id === mode)?.label} 模式</span>
+          {autoMode && (
+            <span className="text-amber-500/80 flex items-center gap-0.5 shrink-0">
+              <Zap className="w-2.5 h-2.5 fill-amber-400 text-amber-400" />
+              全自动运行
+            </span>
+          )}
+          <span className="text-muted-foreground/30 shrink-0">·</span>
+          <span className="truncate">支持上传文件/图片 · 会话自动保存</span>
         </p>
       </div>
 
-      {/* 工具审批弹窗 */}
+      {/* 工具审批条：固定在输入区上方，避免悬浮按钮遮挡消息 */}
       {approval && (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-          <div className="bg-card border border-border rounded-xl p-4 w-[380px] shadow-2xl">
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-primary text-sm font-semibold">工具调用确认</span>
+        <div className="mx-3 mb-2 rounded-xl border border-amber-500/30 bg-card/95 shadow-lg backdrop-blur p-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-xs font-semibold text-amber-300">需要确认工具调用</div>
+              <div className="mt-0.5 truncate font-mono text-[11px] text-cyan-300">{approval.toolCall?.name}</div>
             </div>
-            <div className="bg-secondary/40 rounded-lg p-2.5 mb-3 font-mono text-[12px] break-all">
-              <div className="text-cyan-300 mb-1">{approval.toolCall?.name}</div>
-              <pre className="text-foreground/80 whitespace-pre-wrap text-[11px] max-h-32 overflow-y-auto">
-                {JSON.stringify(approval.toolCall?.arguments ?? {}, null, 2)}
-              </pre>
-            </div>
-            <div className="flex justify-end gap-2">
-              <button
-                onClick={() => { window.cnke.toolApprove.respond(approval.requestId, false); setApproval(null); }}
-                className="px-3 py-1.5 text-xs border border-border rounded-lg hover:bg-accent transition-colors"
-              >
-                拒绝
-              </button>
-              <button
-                onClick={() => { window.cnke.toolApprove.respond(approval.requestId, true); setApproval(null); }}
-                className="px-3 py-1.5 text-xs btn-gradient rounded-lg transition-colors"
-              >
-                允许
-              </button>
+            <div className="flex shrink-0 gap-2">
+              <button onClick={() => { window.cnke.toolApprove.respond(approval.requestId, false); setApproval(null); }} className="rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-accent">拒绝</button>
+              <button onClick={() => { window.cnke.toolApprove.respond(approval.requestId, true); setApproval(null); }} className="rounded-lg btn-gradient px-3 py-1.5 text-xs">允许</button>
             </div>
           </div>
         </div>

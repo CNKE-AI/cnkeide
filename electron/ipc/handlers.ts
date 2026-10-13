@@ -11,19 +11,20 @@ import { MemoryStore, MemoryItem, MemoryItemInput } from '../core-fork/memory/Me
 import { CheckpointManager } from '../core-fork/checkpoint/CheckpointManager';
 import { CodebaseIndexer } from '../core-fork/codebase/CodebaseIndexer';
 import { BackendAdapter } from '../adapter/BackendAdapter';
+import { WorkspaceWatcher } from '../adapter/WorkspaceWatcher';
 import { UpdateManager } from '../updater/UpdateManager';
 import { PlanManager } from '../core-fork/plan/PlanManager';
+import { RagManager } from '../core-fork/rag/RagManager';
 import { LLMProvider } from '../core-fork/llm/LLMProvider';
 import { createPptxAdapter, PptxAdapter } from '../core-fork/tools/PptxTools';
 import { renderOutlineToHtml } from '../core-fork/ppt/pptRenderer';
 import { PPT_THEMES, findTheme } from '../core-fork/ppt/pptThemes';
 import { exportHtmlToPdf } from '../core-fork/ppt/pptPdf';
-import { PptTemplateClient } from '../core-fork/ppt/pptTemplateClient';
 import { expandSlide, expandAll } from '../core-fork/ppt/pptOutlineExpand';
-import { applyTemplate } from '../core-fork/ppt/pptApply';
 import { generatePreviewHtml } from '../core-fork/ppt/pptPreview';
 import { PPT_SCENARIOS, getScenario, detectScenarioByKeyword, detectScenarioByLlm, buildScenarioOutlinePrompt, buildGenericOutlinePrompt } from '../core-fork/ppt/pptScenarios';
 import { DEFAULT_BRAND, normalizeBrand, PptBrand } from '../core-fork/ppt/pptBrand';
+import { buildAiPptDesignPrompt, normalizeAiPptDesign } from '../core-fork/ppt/pptDesign';
 import { auditOutline, summarizeIssues, AuditIssue } from '../core-fork/ppt/pptAudit';
 import { promises as fsp } from 'node:fs';
 import { existsSync } from 'node:fs';
@@ -39,6 +40,28 @@ import {
   PptMasterService,
 } from '../core-fork/pptmaster';
 import { installDependencies } from '../core-fork/pptmaster';
+import { SkillRegistry } from '../core-fork/skills/SkillRegistry';
+
+/** 未配置模型或模型不可用时的本地保底大纲，保证 PPT 基础导出可用。 */
+function buildFallbackPptOutline(topic: string, slideCount: number) {
+  const title = String(topic || '演示文稿').trim() || '演示文稿';
+  const sections = [
+    ['封面', [`${title}`, '核心观点与行动方案']],
+    ['背景与目标', [`说明「${title}」的业务背景与当前需求`, '明确本次沟通的目标、范围与成功标准', '聚焦最需要优先解决的问题']],
+    ['现状与挑战', ['梳理现有流程、资源与关键约束', '识别影响推进效率的主要风险', '确定需要优先验证的假设']],
+    ['核心方案', [`围绕「${title}」提出可执行的解决思路`, '将方案拆分为清晰的工作模块', '明确每个模块的产出与责任边界']],
+    ['实施路径', ['按阶段安排调研、试点与推广', '为关键节点设置验收与复盘机制', '根据反馈及时调整优先级']],
+    ['资源与协作', ['明确所需人员、时间与工具支持', '建立跨团队沟通和决策机制', '提前协调依赖事项与交付节奏']],
+    ['风险与应对', ['持续跟踪范围、进度与质量风险', '为关键风险准备替代方案', '定期同步问题与处理进展']],
+    ['预期成果', ['形成可复用的方法与交付物', '提升协作效率与过程可见性', '沉淀后续迭代所需的反馈数据']],
+    ['下一步计划', ['确认负责人和近期行动项', '制定首个里程碑与复盘时间', '根据执行结果持续优化方案']],
+  ];
+  const slides = Array.from({ length: Math.max(1, slideCount) }, (_, index) => {
+    const section = sections[Math.min(index, sections.length - 1)];
+    return { title: section[0], bullets: section[1] };
+  });
+  return { title, slides };
+}
 
 export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => void } {
   // 官方后台客户端（远程配置 / 公告 / 反馈）
@@ -47,6 +70,8 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
   const terminalAdapter = new TerminalAdapter();
   const storageAdapter = new StorageAdapter();
   const windowAdapter = new WindowAdapter();
+  // 工作区文件监听：变更广播到渲染层，驱动资源管理器/编辑器/终端三视图同步
+  const workspaceWatcher = new WorkspaceWatcher();
 
   storageAdapter.init();
 
@@ -55,10 +80,26 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
 
   // 安全发送：窗口销毁后 webContents.send 会抛 "Object has been destroyed"，
   // 导致主进程崩溃（典型场景：关闭开发版时子进程 exit 事件仍被转发）。
+  // 同时动态解析目标窗口：上方捕获的 mainWindow 引用在窗口销毁重建后会失效
+  // （托盘唤起 / macOS activate 重建窗口），发往旧窗口会导致新窗口收不到任何推送
+  // （终端无输出、AI 无流式事件、审批弹窗不出现）。每次发送时按 URL 排除 PPT
+  // 独立窗口，动态取当前主窗口；无可用窗口时静默跳过。
   const sendToWindow = (channel: string, payload?: unknown): void => {
     try {
-      if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
-        mainWindow.webContents.send(channel, payload);
+      const isMainWindow = (w: BrowserWindow) => {
+        try {
+          return !w.webContents.getURL().includes('ppt.html');
+        } catch {
+          return true;
+        }
+      };
+      const all = BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed());
+      const win =
+        (mainWindow && !mainWindow.isDestroyed() && isMainWindow(mainWindow) ? mainWindow : undefined) ||
+        all.find((w) => isMainWindow(w)) ||
+        all[0];
+      if (win && !win.webContents.isDestroyed()) {
+        win.webContents.send(channel, payload);
       }
     } catch {
       // 窗口销毁竞态下静默忽略，避免主进程崩溃
@@ -85,6 +126,16 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
     sendToWindow('terminal:exit', data);
   });
 
+  // 工作区文件变更 → 批量广播到渲染进程（fs:changed）
+  workspaceWatcher.on('changes', (payload: { root: string; changes: any[] }) => {
+    sendToWindow('fs:changed', payload);
+  });
+  // 启动时自动恢复上次工作区的监听
+  {
+    const lastWs = config.getLastWorkspace();
+    if (lastWs && existsSync(lastWs)) workspaceWatcher.watch(lastWs);
+  }
+
   // 初始化会话存储
   const sessionStore = new SessionStore(storageAdapter, config);
   // 初始化 MCP Hub
@@ -99,11 +150,16 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
   checkpointManager.init();
   // W3：任务规划状态机（注入 AgentManager，启用 plan_* 工具与计划引导）
   const planManager = new PlanManager();
+  // RAG 索引在整个应用生命周期内复用，避免每轮 Agent 会话丢失已导入文档。
+  const ragManager = new RagManager();
   const codebaseIndexer = new CodebaseIndexer({ rootPath: config.getLastWorkspace() || process.cwd() });
   // 本地记忆存储：跨多次模型调用持久化上下文（偏好/项目事实/对话摘要）
   const memoryStore = new MemoryStore(storageAdapter);
   void memoryStore.warmUp();
-  const agentManager = new AgentManager({ config, fsAdapter, terminalAdapter, mcpHub, windowAdapter, checkpointManager, codebaseIndexer, memoryStore, planManager });
+  // 技能扫描是只读操作：只检查候选 skills 目录的直接子目录及其 SKILL.md。
+  const skillRegistry = new SkillRegistry();
+  void skillRegistry.scan();
+  const agentManager = new AgentManager({ config, fsAdapter, terminalAdapter, mcpHub, windowAdapter, checkpointManager, codebaseIndexer, memoryStore, planManager, ragManager, skillRegistry });
 
   // ===== 文件系统 IPC =====
   ipcMain.handle('fs:openFolder', async () => {
@@ -113,6 +169,8 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
       // 立即落盘，避免 scheduleWrite 的 300ms 延迟期间用户关闭/崩溃导致工作区配置丢失
       await config.flush();
       codebaseIndexer.setRootPath(result);
+      // 切换文件监听到新工作区（内部会自动释放旧监听）
+      workspaceWatcher.watch(result);
     }
     return result;
   });
@@ -151,6 +209,20 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
 
   ipcMain.handle('fs:searchFiles', async (_e, rootPath: string, pattern: string) => {
     return fsAdapter.searchFiles(rootPath, pattern);
+  });
+
+  // 切换监听的工作区根目录（打开/切换文件夹时调用）
+  ipcMain.handle('fs:watchWorkspace', async (_e, rootPath: string) => {
+    return workspaceWatcher.watch(rootPath);
+  });
+
+  ipcMain.handle('fs:unwatchWorkspace', async () => {
+    workspaceWatcher.unwatch();
+    return { success: true };
+  });
+
+  ipcMain.handle('fs:watchStatus', async () => {
+    return { watching: workspaceWatcher.watching, root: workspaceWatcher.root };
   });
 
   // ===== 终端 IPC =====
@@ -256,8 +328,13 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
       if (!data || typeof data !== 'object' || !Array.isArray(data.messages)) {
         return { success: false, error: '无效的会话数据' };
       }
-      // 生成新 id，避免与现有会话冲突
-      const imported = { ...data, id: data.id || randomUUID() };
+      // id 冲突处理：导入数据自带 id 且已存在同 id 会话时，生成新 id，
+      // 避免静默覆盖现有会话（原实现复用 id 会直接替换掉既有内容且无任何提示）
+      let importId = data.id || randomUUID();
+      if (data.id && (await sessionStore.load(data.id))) {
+        importId = randomUUID();
+      }
+      const imported = { ...data, id: importId };
       await sessionStore.save(imported);
       return { success: true, session: imported };
     } catch (err: any) {
@@ -293,6 +370,19 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
   });
 
   // ===== Plan 查询（W3）：读取当前会话的计划状态 =====
+  ipcMain.handle('plan:skip', async (_e, sessionId: string, itemId: string) => {
+    return { success: planManager.skipItem(sessionId, itemId), plan: planManager.getPlan(sessionId), progress: planManager.progress(sessionId) };
+  });
+
+  ipcMain.handle('plan:retry', async (_e, sessionId: string, itemId: string) => {
+    return { success: planManager.retryItem(sessionId, itemId), plan: planManager.getPlan(sessionId), progress: planManager.progress(sessionId) };
+  });
+
+  ipcMain.handle('plan:abandon', async (_e, sessionId: string) => {
+    planManager.abandon(sessionId);
+    return { success: true, plan: planManager.getPlan(sessionId), progress: planManager.progress(sessionId) };
+  });
+
   ipcMain.handle('plan:get', async (_e, sessionId: string) => {
     const plan = planManager.getPlan(sessionId);
     const progress = planManager.progress(sessionId);
@@ -319,6 +409,34 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
 
   ipcMain.handle('config:deleteApiConfig', async (_e, id: string) => {
     return config.deleteApiConfig(id);
+  });
+
+  // ===== 技能市场 IPC（P0：内置提示词 + 本地 SKILL.md 扫描） =====
+  ipcMain.handle('skills:list', async () => {
+    await skillRegistry.scan();
+    return skillRegistry.list(config.get<unknown>('enabledSkills', []));
+  });
+
+  ipcMain.handle('skills:scan', async () => {
+    await skillRegistry.scan();
+    return skillRegistry.list(config.get<unknown>('enabledSkills', []));
+  });
+
+  ipcMain.handle('skills:setEnabled', async (_e, id: unknown, enabled: unknown) => {
+    if (typeof id !== 'string' || typeof enabled !== 'boolean') {
+      return { success: false, error: '技能参数无效', skills: skillRegistry.list(config.get<unknown>('enabledSkills', [])) };
+    }
+    await skillRegistry.scan();
+    const available = new Set(skillRegistry.list([]).map((skill) => skill.id));
+    if (!available.has(id)) {
+      return { success: false, error: '未找到该技能', skills: skillRegistry.list(config.get<unknown>('enabledSkills', [])) };
+    }
+    const current = config.get<unknown>('enabledSkills', []);
+    const ids = Array.isArray(current) ? current.filter((value): value is string => typeof value === 'string' && available.has(value)) : [];
+    const next = enabled ? [...new Set([...ids, id])] : ids.filter((value) => value !== id);
+    config.set('enabledSkills', next);
+    await config.flush();
+    return { success: true, skills: skillRegistry.list(next) };
   });
 
   // 同步官方内置 API 到本地配置（强一致：下线即删除、字段强制刷新；用户自定义配置不动）
@@ -521,6 +639,16 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
     return updateManager.getUpdateLogs(limit || 100);
   });
 
+  // 更新公告：检测是否刚完成更新，若是则返回版本号（渲染层据此弹出公告窗口）
+  ipcMain.handle('update:checkAnnouncement', async () => {
+    return updateManager.checkPostUpdateAnnouncement();
+  });
+
+  // 获取远程 releasenotes.txt 内容（更新公告正文）
+  ipcMain.handle('update:getReleaseNotes', async () => {
+    return updateManager.fetchReleaseNotes();
+  });
+
   // ===== PPT 生成 IPC（W14）=====
   let pptAdapter: PptxAdapter | null = null;
   const getPptAdapter = async (): Promise<PptxAdapter> => {
@@ -566,11 +694,17 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
     const configs = config.getApiKeyConfigs();
     const activeId = config.get<string>('activeApiConfigId');
     const apiConfig = configs.find((c: any) => c.id === activeId) || configs[0];
-    if (!apiConfig) {
-      return { success: false, error: '未配置 API，无法生成大纲。请先在设置中配置模型 API。' };
-    }
     const n = Math.max(1, Math.min(20, Number(slideCount) || 8));
     const scenario = scenarioId ? getScenario(scenarioId) : null;
+    if (!apiConfig) {
+      return {
+        success: true,
+        outline: buildFallbackPptOutline(topic, n),
+        scenarioId: scenario?.id || null,
+        byFallback: true,
+        notice: '未配置模型，已使用本地大纲生成 PPT。配置模型后可获得更贴合主题的内容。',
+      };
+    }
     try {
       const llm = new LLMProvider();
       const prompt = scenario
@@ -588,7 +722,51 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
       const parsed = JSON.parse(text);
       return { success: true, outline: parsed, scenarioId: scenario?.id || null };
     } catch (err: any) {
-      return { success: false, error: err?.message || String(err) };
+      console.warn('[ppt] AI 大纲生成失败，改用本地保底大纲:', err?.message || err);
+      return {
+        success: true,
+        outline: buildFallbackPptOutline(topic, n),
+        scenarioId: scenario?.id || null,
+        byFallback: true,
+        notice: '模型暂不可用，已使用本地大纲生成 PPT。',
+      };
+    }
+  });
+
+  // AI 原创视觉设计：只返回受校验的本地绘制参数，绝不下载或套用外部 PPT 模板。
+  ipcMain.handle('ppt:generateAiDesign', async (_e, payload: {
+    topic?: string;
+    scenarioName?: string;
+    slides?: Array<{ title?: string; role?: string; bullets?: string[]; chart?: unknown }>;
+    fallbackThemeId?: string;
+  }) => {
+    const fallbackThemeId = payload?.fallbackThemeId || 'business';
+    const fallback = normalizeAiPptDesign(null, fallbackThemeId);
+    const configs = config.getApiKeyConfigs();
+    const activeId = config.get<string>('activeApiConfigId');
+    const apiConfig = configs.find((c: any) => c.id === activeId) || configs[0];
+    if (!apiConfig) return { success: true, design: fallback, byLlm: false };
+    try {
+      const llm = new LLMProvider();
+      const response = await llm.chat({
+        apiConfig,
+        messages: [{
+          role: 'user',
+          content: buildAiPptDesignPrompt({
+            topic: String(payload?.topic || '演示文稿'),
+            scenarioName: payload?.scenarioName,
+            slides: (payload?.slides || []) as any,
+          }),
+        }],
+        temperature: 0.45,
+      });
+      let text = String(response.content || '').trim();
+      const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+      if (fenced) text = fenced[1].trim();
+      return { success: true, design: normalizeAiPptDesign(JSON.parse(text), fallbackThemeId), byLlm: true };
+    } catch {
+      // 设计建议失败不阻断生成；用受控默认方案继续保证可导出。
+      return { success: true, design: fallback, byLlm: false };
     }
   });
 
@@ -658,15 +836,25 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
   ipcMain.handle('ppt:generatePreview', async (_e, payload: {
     themeId: string;
     outline: { title: string; slides: any[] };
+    design?: { palette?: { primary?: string; secondary?: string; accent?: string; background?: string }; fontFamily?: string; artDirection?: string };
   }) => {
     try {
       const theme = findTheme(payload.themeId);
       if (!theme) return { success: false, error: `未知主题：${payload.themeId}` };
       const brand = config.get<PptBrand>('ppt.brand', DEFAULT_BRAND);
-      const html = generatePreviewHtml({
+      const aiDesign = normalizeAiPptDesign({
         themeId: payload.themeId,
+        palette: payload.design?.palette,
+        fontFamily: payload.design?.fontFamily,
+        artDirection: payload.design?.artDirection,
+      }, payload.themeId);
+      const html = generatePreviewHtml({
+        themeId: aiDesign.themeId,
         outline: payload.outline,
         brand: brand?.enabled ? brand : undefined,
+        colors: aiDesign.palette,
+        fontFamily: brand?.enabled && brand.fontFamily ? brand.fontFamily : aiDesign.fontFamily,
+        artDirection: aiDesign.artDirection,
       });
       return { success: true, html };
     } catch (err: any) {
@@ -751,49 +939,6 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
     },
   );
 
-  // ===== 远程 PPT 模板（服务器内置 + 本地 mock）=====
-  const tplClient = new PptTemplateClient();
-
-  // 列出远程模板索引（支持分页/分类/搜索）
-  ipcMain.handle(
-    'ppt:listRemoteTemplates',
-    async (_e, payload?: { page?: number; pageSize?: number; category?: string; keyword?: string }) => {
-      try {
-        const idx = await tplClient.fetchIndex(payload || {});
-        return { success: true, index: idx };
-      } catch (err: any) {
-        return { success: false, error: err?.message || String(err) };
-      }
-    },
-  );
-
-  // 列出分类（一次性拉所有分类）
-  ipcMain.handle('ppt:listRemoteCategories', async () => {
-    try {
-      const r = await fetch(`${tplClient.getBaseUrl()}/api/categories`);
-      if (!r.ok) return { success: false, error: `HTTP ${r.status}` };
-      const data = await r.json() as { categories: string[] };
-      return { success: true, categories: data.categories || [] };
-    } catch (err: any) {
-      return { success: false, error: err?.message || String(err) };
-    }
-  });
-
-  // 下载远程模板到本地缓存
-  ipcMain.handle(
-    'ppt:downloadTemplate',
-    async (e, payload: { id: string }) => {
-      const sender = e.sender;
-      try {
-        const res = await tplClient.downloadTemplate(payload.id, (p) => {
-          try { sender.send('ppt:templateProgress', { id: payload.id, ...p }); } catch {}
-        });
-        return res;
-      } catch (err: any) {
-        return { success: false, error: err?.message || String(err) };
-      }
-    },
-  );
 
   // 大纲细化扩写（单页）
   ipcMain.handle(
@@ -858,36 +1003,6 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
     },
   );
 
-  // 套用模板 + 大纲 → 生成最终 .pptx
-  ipcMain.handle(
-    'ppt:applyTemplate',
-    async (
-      _e,
-      payload: {
-        templateId: string;
-        outline: { title: string; slides: { title: string; bullets: string[] }[] };
-        savePath?: string;
-      },
-    ) => {
-      try {
-        const templatePath = tplClient.getCachedPath(payload.templateId);
-        const dl = await tplClient.downloadTemplate(payload.templateId);
-        if (!dl.success || !dl.path) return { success: false, error: dl.error || '模板下载失败' };
-        const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-        const safeTitle = (payload.outline.title || '演示文稿').replace(/[\\/:*?"<>|]/g, '_').slice(0, 40);
-        const filename = `${safeTitle}-模板${payload.templateId}-${ts}.pptx`;
-        const finalPath = payload.savePath || templatePath.replace(/\.pptx$/, `-applied-${ts}.pptx`);
-        const result = await applyTemplate({
-          templatePath: dl.path,
-          outline: payload.outline,
-          savePath: finalPath,
-        });
-        return result;
-      } catch (err: any) {
-        return { success: false, error: err?.message || String(err) };
-      }
-    },
-  );
 
   // ===== 工作区内容扫描（供 PPT 从当前项目自动生成内容）=====
 
@@ -1052,14 +1167,20 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
     const configs = config.getApiKeyConfigs();
     const activeId = config.get<string>('activeApiConfigId');
     const apiConfig = configs.find((c: any) => c.id === activeId) || configs[0];
-    if (!apiConfig) {
-      return { success: false, error: '未配置 API，无法生成大纲。请先在设置中配置模型 API。' };
-    }
     const n = Math.max(1, Math.min(20, Number(opts?.slideCount) || 8));
 
     const summary = await scanWorkspaceSummary(wsPath);
     if (!summary.success) {
       return { success: false, error: summary.error };
+    }
+    if (!apiConfig) {
+      return {
+        success: true,
+        outline: buildFallbackPptOutline(summary.projectName || '项目介绍', n),
+        workspace: summary,
+        byFallback: true,
+        notice: '未配置模型，已根据工作区生成本地 PPT 大纲。',
+      };
     }
 
     try {
@@ -1094,7 +1215,14 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
       const parsed = JSON.parse(text);
       return { success: true, outline: parsed, workspace: summary };
     } catch (err: any) {
-      return { success: false, error: err?.message || String(err) };
+      console.warn('[ppt] 工作区 AI 大纲生成失败，改用本地保底大纲:', err?.message || err);
+      return {
+        success: true,
+        outline: buildFallbackPptOutline(summary.projectName || '项目介绍', n),
+        workspace: summary,
+        byFallback: true,
+        notice: '模型暂不可用，已根据工作区生成本地 PPT 大纲。',
+      };
     }
   });
 
@@ -1313,6 +1441,8 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
     dispose: () => {
       mcpHub.dispose();
       terminalAdapter.dispose?.();
+      // 释放工作区文件监听
+      workspaceWatcher.dispose();
       // 落盘尚未持久化的记忆变更
       void memoryStore.flushNow().catch(() => {});
       // 落盘更新日志并清理 autoUpdater 监听

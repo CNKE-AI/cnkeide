@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Briefcase, GraduationCap, Mountain, Smile, Sparkles, RefreshCw, Eye, Save,
-  Wand2, FolderOpen, Check, FileDown, Rocket, Building2, Layers, ShieldCheck,
-  ChevronRight, ChevronLeft, Palette, Pencil, Download, FileText, Globe,
+  Wand2, FolderOpen, FileDown, Rocket, Building2, Layers, ShieldCheck,
+  ChevronRight, ChevronLeft, Pencil, Download, FileText,
 } from 'lucide-react';
 import { useApp } from '../store/AppProvider';
+import { PptMasterWorkspace } from '../components/ppt/PptMasterWorkspace';
 
 interface SlideDraft {
   title: string;
@@ -29,6 +30,15 @@ interface Outline {
   slides: SlideDraft[];
 }
 
+interface AiDesign {
+  themeId: string;
+  artDirection?: 'education' | 'culture' | 'technology' | 'healthcare' | 'business';
+  palette: { primary: string; secondary: string; accent: string; background: string };
+  fontFamily: string;
+  visualStyle: string;
+  rationale: string;
+}
+
 /** 已确定版式角色的页（assignRoles 的输出） */
 type SlideWithRole = SlideDraft & { role: NonNullable<SlideDraft['role']>; tocItems?: string[] };
 
@@ -42,14 +52,6 @@ interface ThemeMeta {
 
 const ICONS: Record<string, React.ComponentType<any>> = {
   Briefcase, GraduationCap, Mountain, Smile,
-};
-
-/** 字节数 → 人类可读（下载进度显示用） */
-const formatBytes = (n: number): string => {
-  if (!Number.isFinite(n) || n <= 0) return '0 B';
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
-  return `${(n / 1024 / 1024).toFixed(1)} MB`;
 };
 
 const cnke = window.cnke;
@@ -151,6 +153,7 @@ const PptPage: React.FC = () => {
   const [outline, setOutline] = useState<Outline | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showPptMaster, setShowPptMaster] = useState(false);
 
   // 一键生成：自动串起「场景检测 → AI 大纲 → AI 渲染 → 导出 PPTX」四步，
   // step 标记当前进行到的阶段（null = 空闲）
@@ -180,6 +183,8 @@ const PptPage: React.FC = () => {
   // 主题相关
   const [themes, setThemes] = useState<ThemeMeta[]>([]);
   const [selectedThemeId, setSelectedThemeId] = useState<string>('business');
+  const [aiDesign, setAiDesign] = useState<AiDesign | null>(null);
+  const [designing, setDesigning] = useState(false);
   const [rendering, setRendering] = useState(false);
   const [renderedHtml, setRenderedHtml] = useState<string | null>(null);
   const [extraInstruction, setExtraInstruction] = useState('');
@@ -198,6 +203,18 @@ const PptPage: React.FC = () => {
     return off;
   }, []);
 
+  // 从聊天 /ppt 指令打开时，将主题带入当前窗口。
+  useEffect(() => cnke.ppt.onTopic((nextTopic) => {
+    const normalizedTopic = nextTopic.trim();
+    if (!normalizedTopic) return;
+    setTopic(normalizedTopic);
+    setError(null);
+    setOutline(null);
+    setRenderedHtml(null);
+    setSavedPath(null);
+    setWizardStep('input');
+  }), []);
+
   // 大纲变化 / 渲染完成 → 跳到第 1 页
   useEffect(() => {
     setPreviewIdx(0);
@@ -215,9 +232,6 @@ const PptPage: React.FC = () => {
   const [wsSummary, setWsSummary] = useState<any>(null);
   const [wsFocus, setWsFocus] = useState('');
 
-  // Tab 切换：'generate' AI主题生成 / 'templates' 服务器模板库
-  const [activeTab, setActiveTab] = useState<'generate' | 'templates'>('generate');
-
   // ===== AiPPT 式分步向导：input → outline → theme → preview，steps 可点击回退 =====
   const [wizardStep, setWizardStep] = useState<'input' | 'outline' | 'theme' | 'preview'>('input');
   /** 高级选项折叠态（页数/场景/批量/工作区等企业能力收进这里） */
@@ -226,45 +240,15 @@ const PptPage: React.FC = () => {
   const [inputMode, setInputMode] = useState<'topic' | 'text' | 'workspace'>('topic');
   const [pastedText, setPastedText] = useState('');
 
-  // 模板库状态
-  const [remoteIndex, setRemoteIndex] = useState<{ version: string; updatedAt: string; templates: any[] } | null>(null);
-  const [templateLoading, setTemplateLoading] = useState(false);
-  const [templateError, setTemplateError] = useState<string | null>(null);
-  const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
-  const [downloadedTemplateIds, setDownloadedTemplateIds] = useState<Set<string>>(new Set());
-  const [applyingTemplate, setApplyingTemplate] = useState(false);
-  // 套用完成后的结果提示（成功态，非错误）
+  // 生成完成后的结果提示（成功态，非错误）
   const [applyNotice, setApplyNotice] = useState<string | null>(null);
-  // 模板下载进度：id → { downloaded, total, ratio }
-  const [templateProgress, setTemplateProgress] = useState<Record<string, { downloaded: number; total: number; ratio: number }>>({});
 
   // 扩写进度
   const [expandProgress, setExpandProgress] = useState<{ current: number; total: number; message: string } | null>(null);
   const [expandingSlideIdx, setExpandingSlideIdx] = useState<number | null>(null);
 
-  // 监听模板下载 / 扩写进度
-  useEffect(() => {
-    const off1 = cnke.ppt.onTemplateProgress?.((p) => {
-      // 实时进度写入 state，供卡片上的进度条渲染
-      setTemplateProgress((prev) => ({
-        ...prev,
-        [p.id]: { downloaded: p.downloaded, total: p.total, ratio: p.ratio },
-      }));
-      if (p.ratio >= 1) {
-        setDownloadedTemplateIds((s) => new Set([...s, p.id]));
-        // 完成后延迟清掉进度条，避免闪烁
-        setTimeout(() => {
-          setTemplateProgress((prev) => {
-            const next = { ...prev };
-            delete next[p.id];
-            return next;
-          });
-        }, 800);
-      }
-    });
-    const off2 = cnke.ppt.onExpandProgress?.(setExpandProgress);
-    return () => { off1?.(); off2?.(); };
-  }, []);
+  // 监听全文扩写进度
+  useEffect(() => cnke.ppt.onExpandProgress?.(setExpandProgress), []);
 
   // 场景推荐主题自动跟随：用户选场景后切到推荐主题（除非已手动改过主题）
   useEffect(() => {
@@ -436,12 +420,23 @@ const PptPage: React.FC = () => {
       if (outlineRes.workspace) setWsSummary(outlineRes.workspace);
       setOutline(ol);
 
-      // ② 纯代码生成 HTML 预览（不调 LLM，确定性输出，与 PPTX 视觉一致）
+      // ② AI 先设计原创视觉方案，再由本地代码绘制；不下载、不套用外部模板。
       setOneClickStep('render');
+      setDesigning(true);
       const slidesWithRole = assignRoles(ol.slides);
+      const designRes = await cnke.ppt.generateAiDesign({
+        topic: t || ol.title,
+        scenarioName: scenarios.find((s) => s.id === sid)?.name,
+        slides: slidesWithRole,
+        fallbackThemeId: selectedThemeId,
+      });
+      const design = designRes.design as AiDesign;
+      setAiDesign(design);
+      setSelectedThemeId(design.themeId);
       const previewRes = await cnke.ppt.generatePreview({
-        themeId: selectedThemeId,
+        themeId: design.themeId,
         outline: { title: ol.title, slides: slidesWithRole },
+        design: { palette: design.palette, fontFamily: design.fontFamily, artDirection: design.artDirection },
       });
       if (!previewRes.success || !previewRes.html) {
         throw new Error(previewRes.error || '预览生成失败');
@@ -450,7 +445,7 @@ const PptPage: React.FC = () => {
 
       // ③ 导出原生 PPTX：品牌元素 + 切换动画 + 生成前智能审校（主进程内完成）
       setOneClickStep('export');
-      const theme = themes.find((x) => x.id === selectedThemeId);
+      const theme = themes.find((x) => x.id === design.themeId);
       const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
       const safeTitle = (ol.title || '演示文稿').replace(/[\\/:*?"<>|]/g, '_').slice(0, 40);
       const filename = `${safeTitle}-${ts}.pptx`;
@@ -463,12 +458,14 @@ const PptPage: React.FC = () => {
           author: 'CnkeIDE',
           subject: t || ol.title,
           size: '16x9' as const,
-          theme: theme ? {
-            primary: theme.colors.primary,
-            secondary: theme.colors.secondary,
-            accent: theme.colors.accent,
-            background: theme.colors.background,
-          } : undefined,
+          // AI 原创配色优先；企业品牌启用时由品牌色覆盖（主进程内处理）
+          theme: {
+            primary: design.palette.primary,
+            secondary: design.palette.secondary,
+            accent: design.palette.accent,
+            background: design.palette.background,
+          },
+          fontFamily: design.fontFamily,
           brand: brand || undefined,
           transition: true,
           slides: toExportSlides(slidesWithRole),
@@ -484,7 +481,7 @@ const PptPage: React.FC = () => {
       if (genRes.audit) setAuditReport(genRes.audit);
       const warnCount = genRes.audit?.issues.filter((i: any) => i.level === 'warning').length ?? 0;
       setApplyNotice(
-        `一键生成完成：${ol.slides.length} 页 PPT 已保存${genRes.audit ? `，${genRes.audit.summary}` : ''}${warnCount > 0 ? '（详见下方审校报告）' : ''}。`,
+        `AI 已原创设计「${design.visualStyle}」：${ol.slides.length} 页 PPT 已保存${genRes.audit ? `，${genRes.audit.summary}` : ''}${warnCount > 0 ? '（详见下方审校报告）' : ''}。${design.rationale}`,
       );
       // 全自动完成后直达导出步骤
       setWizardStep('preview');
@@ -492,6 +489,7 @@ const PptPage: React.FC = () => {
       setError(e?.message || String(e));
     } finally {
       setOneClickStep(null);
+      setDesigning(false);
     }
   };
 
@@ -537,24 +535,27 @@ const PptPage: React.FC = () => {
           }));
           const slidesWithRoleBatch = assignRoles(slidesRaw);
           const slides = toExportSlides(slidesWithRoleBatch);
+          // 每份 PPT 独立调用 AI 原创设计，避免批量结果视觉雷同。
+          const designRes = await cnke.ppt.generateAiDesign({
+            topic: tp,
+            scenarioName: scenarios.find((s) => s.id === sid)?.name,
+            slides: slidesWithRoleBatch,
+            fallbackThemeId: selectedThemeId,
+          });
+          const design = designRes.design as AiDesign;
           // 导出 PPTX（审校 + 品牌 + 动画在主进程完成）
           const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
           const safeTitle = (outlineRes.outline.title || tp).replace(/[\\/:*?"<>|]/g, '_').slice(0, 40);
           const filename = `${safeTitle}-${ts}.pptx`;
           const savePath = `${workspacePath.replace(/[\\/]+$/, '')}\\${filename}`;
-          const theme = themes.find((x) => x.id === selectedThemeId);
           const genRes = await cnke.ppt.generate(
             {
               title: outlineRes.outline.title || tp,
               author: 'CnkeIDE',
               subject: tp,
               size: '16x9' as const,
-              theme: theme ? {
-                primary: theme.colors.primary,
-                secondary: theme.colors.secondary,
-                accent: theme.colors.accent,
-                background: theme.colors.background,
-              } : undefined,
+              theme: design.palette,
+              fontFamily: design.fontFamily,
               brand: brand || undefined,
               transition: true,
               slides,
@@ -681,22 +682,33 @@ const PptPage: React.FC = () => {
     setOutline({ ...outline, slides: outline.slides.filter((_, i) => i !== idx) });
   };
 
-  /** 第 2 轮：把大纲 + 主题 → HTML 预览（纯代码生成，不调 LLM） */
+  /** 第 2 轮：把大纲交给 AI 现场设计视觉方案 → 生成 HTML 预览 */
   const handleRenderTheme = async () => {
     if (!outline) { setError('请先生成大纲'); return; }
     setRendering(true);
+    setDesigning(true);
     setError(null);
     setSavedPath(null);
     try {
       const slidesWithRole = assignRoles(outline.slides);
+      const designRes = await cnke.ppt.generateAiDesign({
+        topic: outline.title,
+        scenarioName: scenarios.find((s) => s.id === scenarioId)?.name,
+        slides: slidesWithRole,
+        fallbackThemeId: selectedThemeId,
+      });
+      const design = designRes.design as AiDesign;
+      setAiDesign(design);
+      setSelectedThemeId(design.themeId);
       const res = await cnke.ppt.generatePreview({
-        themeId: selectedThemeId,
+        themeId: design.themeId,
         outline: { title: outline.title, slides: slidesWithRole },
+        design: { palette: design.palette, fontFamily: design.fontFamily, artDirection: design.artDirection },
       });
       if (res.success && res.html) setRenderedHtml(res.html);
       else setError(res.error || '预览生成失败');
     } catch (e: any) { setError(e?.message || String(e)); }
-    finally { setRendering(false); }
+    finally { setRendering(false); setDesigning(false); }
   };
 
   /** 保存 HTML 到工作区 */
@@ -740,14 +752,27 @@ const PptPage: React.FC = () => {
     finally { setSaving(false); }
   };
 
-  /** 导出 PPTX：大纲 + 主题配色 → pptxgenjs 原生文件 */
+  /** 导出 PPTX：优先使用 AI 原创设计；若尚未设计则现场生成。 */
   const handleExportPptx = async () => {
     if (!outline) { setError('请先生成大纲'); return; }
     setSaving(true);
     setError(null);
     setSavedPath(null);
     try {
-      const theme = themes.find((t) => t.id === selectedThemeId);
+      const slidesWithRole = assignRoles(outline.slides);
+      let design = aiDesign;
+      if (!design) {
+        setDesigning(true);
+        const designRes = await cnke.ppt.generateAiDesign({
+          topic: topic.trim() || outline.title,
+          scenarioName: scenarios.find((s) => s.id === scenarioId)?.name,
+          slides: slidesWithRole,
+          fallbackThemeId: selectedThemeId,
+        });
+        design = designRes.design as AiDesign;
+        setAiDesign(design);
+        setSelectedThemeId(design.themeId);
+      }
       const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
       const safeTitle = (outline.title || '演示文稿').replace(/[\\/:*?"<>|]/g, '_').slice(0, 40);
       const filename = `${safeTitle}-${ts}.pptx`;
@@ -760,134 +785,22 @@ const PptPage: React.FC = () => {
           author: 'CnkeIDE',
           subject: topic.trim() || outline.title,
           size: '16x9' as const,
-          theme: theme ? {
-            primary: theme.colors.primary,
-            secondary: theme.colors.secondary,
-            accent: theme.colors.accent,
-            background: theme.colors.background,
-          } : undefined,
+          theme: design.palette,
+          fontFamily: design.fontFamily,
           brand: brand || undefined,
           transition: true,
-          slides: toExportSlides(assignRoles(outline.slides)),
+          slides: toExportSlides(slidesWithRole),
         },
         savePath,
       );
       if (res.success && res.path) setSavedPath(res.path);
       else setError(res.error || 'PPTX 导出失败');
     } catch (e: any) { setError(e?.message || String(e)); }
-    finally { setSaving(false); }
+    finally { setSaving(false); setDesigning(false); }
   };
 
   const slideCountPreview = useMemo(() => outline?.slides.length ?? 0, [outline]);
 
-  // ===== 模板库相关 =====
-  const PAGE_SIZE = 12;
-  const [tplPage, setTplPage] = useState(1);
-  const [tplTotal, setTplTotal] = useState(0);
-  const [tplCategory, setTplCategory] = useState<string>('');
-  const [tplKeyword, setTplKeyword] = useState<string>('');
-  const [tplCategories, setTplCategories] = useState<string[]>([]);
-  const [tplVisibleIds, setTplVisibleIds] = useState<Set<string>>(new Set()); // 懒加载：当前已渲染缩略图的 id
-
-  const loadRemoteIndex = async (page = 1, category = '', keyword = '') => {
-    setTemplateLoading(true);
-    setTemplateError(null);
-    try {
-      const res = await cnke.ppt.listRemoteTemplates({ page, pageSize: PAGE_SIZE, category, keyword });
-      if (res.success && res.index) {
-        setRemoteIndex(res.index);
-        setTplPage(res.index.page || page);
-        setTplTotal(res.index.total || res.index.templates.length);
-        if (res.index.categories) setTplCategories(res.index.categories);
-      } else setTemplateError(res.error || '拉取模板索引失败');
-    } catch (e: any) { setTemplateError(e?.message || String(e)); }
-    finally { setTemplateLoading(false); }
-  };
-
-  // 首次切到模板库：拉分类 + 第 1 页
-  useEffect(() => {
-    if (activeTab === 'templates' && !remoteIndex && !templateLoading) {
-      cnke.ppt.listRemoteCategories().then((r) => {
-        if (r.success && r.categories) setTplCategories(r.categories);
-      });
-      loadRemoteIndex(1, tplCategory, tplKeyword);
-    }
-  }, [activeTab]);
-
-  // IntersectionObserver 懒加载缩略图
-  const tplGridRef = React.useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (activeTab !== 'templates') return;
-    const root = tplGridRef.current;
-    if (!root) return;
-    const io = new IntersectionObserver((entries) => {
-      const next = new Set(tplVisibleIds);
-      let changed = false;
-      for (const entry of entries) {
-        if (entry.isIntersecting) {
-          const id = (entry.target as HTMLElement).dataset.tplId;
-          if (id && !next.has(id)) { next.add(id); changed = true; }
-        }
-      }
-      if (changed) setTplVisibleIds(next);
-    }, { rootMargin: '200px' });
-    root.querySelectorAll('[data-tpl-id]').forEach((el) => io.observe(el));
-    return () => io.disconnect();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [remoteIndex, activeTab]);
-
-  // 切分类 / 搜索时回到第 1 页
-  const handleCategoryChange = (c: string) => {
-    setTplCategory(c);
-    setTplVisibleIds(new Set());
-    loadRemoteIndex(1, c, tplKeyword);
-  };
-  // 搜索防抖：用 ref 保存 timer 才能真正取消上一次待发请求
-  // （原来把 cleanup 从 onChange 返回，React 不会调用，等于没有防抖）
-  const searchTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => () => { if (searchTimerRef.current) clearTimeout(searchTimerRef.current); }, []);
-  const handleSearch = (k: string) => {
-    setTplKeyword(k);
-    setTplVisibleIds(new Set());
-    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
-    searchTimerRef.current = setTimeout(() => {
-      searchTimerRef.current = null;
-      loadRemoteIndex(1, tplCategory, k);
-    }, 350);
-  };
-  const handlePageChange = (p: number) => {
-    setTplVisibleIds(new Set());
-    loadRemoteIndex(p, tplCategory, tplKeyword);
-    // 滚到顶部
-    requestAnimationFrame(() => {
-      const grid = tplGridRef.current;
-      if (grid) grid.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
-  };
-
-  const handleDownloadTemplate = async (id: string) => {
-    setError(null);
-    // 预置一个 0 进度，按钮立刻切到进度态（IPC 首包回来前也有反馈）
-    setTemplateProgress((prev) => ({ ...prev, [id]: { downloaded: 0, total: 0, ratio: 0 } }));
-    try {
-      const res = await cnke.ppt.downloadTemplate({ id });
-      if (res.success) {
-        setDownloadedTemplateIds((s) => new Set([...s, id]));
-      } else {
-        setError(res.error || '下载失败');
-      }
-    } catch (e: any) {
-      setError(e?.message || String(e));
-    } finally {
-      // 无论成功失败都清掉进度条，避免卡死
-      setTemplateProgress((prev) => {
-        if (!prev[id]) return prev;
-        const next = { ...prev };
-        delete next[id];
-        return next;
-      });
-    }
-  };
 
   /** 单页细化扩写 */
   const handleExpandSlide = async (idx: number, intensity: 'light' | 'standard' | 'deep' = 'standard') => {
@@ -918,91 +831,39 @@ const PptPage: React.FC = () => {
     } finally { setExpandProgress(null); }
   };
 
-  /**
-   * 套用服务器模板 + 大纲 → 生成 pptx + 同步产出 HTML 预览
-   *
-   * 合并要点：套用不再只写一个看不见的 pptx 文件，而是与「AI 渲染美化」共用
-   * 同一套预览管线（renderedHtml + 缩略图 + iframe + 导出 PDF）。
-   * 先渲染 HTML 让用户立刻看到效果，再在后台落盘 pptx。
-   */
-  const handleApplyTemplate = async () => {
-    if (!outline || !selectedTemplateId) { setError('请先选择模板并生成大纲'); return; }
-    setApplyingTemplate(true);
-    setError(null);
-    setApplyNotice(null);
-    setSavedPath(null);
-    try {
-      // 1) 先把大纲渲染成 HTML，复用 AI 渲染美化管线（主题取当前所选主题）
-      const htmlRes = await cnke.ppt.renderTheme({
-        themeId: selectedThemeId,
-        outline: {
-          title: outline.title,
-          slides: outline.slides.map((s) => ({
-            title: s.title,
-            bullets: s.bullets.filter((b) => b.trim()),
-            chart: s.chart,
-          })),
-        },
-        extraInstruction: extraInstruction.trim() || undefined,
-      });
-      if (!htmlRes.success || !htmlRes.html) {
-        setError(htmlRes.error || '渲染预览失败');
-        return;
-      }
-      setRenderedHtml(htmlRes.html);
 
-      // 2) 再落盘套用模板后的 pptx（保留模板母版/样式）
-      const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-      const safeTitle = outline.title.replace(/[\\/:*?"<>|]/g, '_').slice(0, 40);
-      const filename = `${safeTitle}-模板${selectedTemplateId}-${ts}.pptx`;
-      const savePath = workspacePath ? `${workspacePath.replace(/[\\/]+$/, '')}\\${filename}` : undefined;
-      const res = await cnke.ppt.applyTemplate({ templateId: selectedTemplateId, outline, savePath });
-      if (res.success && res.path) {
-        setSavedPath(res.path);
-        // 明确告知改写结果，避免用户「看不出变化」而误以为没生效
-        const n = res.filledCount ?? 0;
-        const total = outline.slides.length;
-        const via = res.strategy === 'placeholder' ? '占位符' : '文字注入';
-        const cap = typeof res.capacity === 'number' ? res.capacity : null;
-        setApplyNotice(
-          cap !== null && total > cap
-            ? `已套用（${via}）并生成预览：模板为 ${res.pageCount ?? '?'} 页，可容纳 ${cap} 页正文，改写了 ${n} 页。大纲有 ${total} 页，超出 ${total - cap} 页未写入，请换页数更多的模板。`
-            : `已套用（${via}）并生成预览：改写了 ${n} 页，共 ${res.pageCount ?? '?'} 页。`,
-        );
-      } else {
-        // pptx 落盘失败但预览已成功 → 保留预览，仅提示 pptx 失败
-        setApplyNotice('预览已生成，但 pptx 落盘失败：' + (res.error || '未知错误'));
-      }
-    } catch (e: any) { setError(e?.message || String(e)); }
-    finally { setApplyingTemplate(false); }
-  };
-
-  /** 仅渲染预览（不落盘 pptx），供模板库里的「预览效果」按钮使用 */
+  /** 生成当前内置主题的确定性草稿预览。 */
   const handlePreviewTemplate = async () => {
     if (!outline) { setError('请先生成大纲'); return; }
     setRendering(true);
     setError(null);
     setApplyNotice(null);
     try {
-      const res = await cnke.ppt.renderTheme({
+      const res = await cnke.ppt.generatePreview({
         themeId: selectedThemeId,
-        outline: {
-          title: outline.title,
-          slides: outline.slides.map((s) => ({
-            title: s.title,
-            bullets: s.bullets.filter((b) => b.trim()),
-            chart: s.chart,
-          })),
-        },
-        extraInstruction: extraInstruction.trim() || undefined,
+        outline: { title: outline.title, slides: assignRoles(outline.slides) },
       });
       if (res.success && res.html) {
         setRenderedHtml(res.html);
-        setActiveTab('generate');
-      } else setError(res.error || '渲染预览失败');
+      } else setError(res.error || '草稿预览生成失败');
     } catch (e: any) { setError(e?.message || String(e)); }
     finally { setRendering(false); }
   };
+
+  if (showPptMaster) {
+    return (
+      <div className="flex h-full flex-col bg-[hsl(var(--background))] text-[hsl(var(--foreground))]">
+        <div className="flex h-11 shrink-0 items-center justify-between border-b border-border bg-secondary/20 px-4" style={{ WebkitAppRegion: 'drag' } as any}>
+          <span className="text-sm font-semibold" style={{ WebkitAppRegion: 'no-drag' } as any}>AI 智能 PPT / 原生 PPTX</span>
+          <div className="flex gap-1" style={{ WebkitAppRegion: 'no-drag' } as any}>
+            <button onClick={() => cnke.ppt.minimize()} className="w-9 h-8 rounded-md hover:bg-secondary text-muted-foreground" title="最小化">−</button>
+            <button onClick={() => cnke.ppt.close()} className="w-9 h-8 rounded-md hover:bg-red-500/80 text-muted-foreground hover:text-white" title="关闭">×</button>
+          </div>
+        </div>
+        <PptMasterWorkspace initialTopic={topic} initialSlideCount={slideCount} onBack={() => setShowPptMaster(false)} />
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-full bg-[hsl(var(--background))] text-[hsl(var(--foreground))]">
@@ -1015,6 +876,7 @@ const PptPage: React.FC = () => {
           </span>
         </div>
         <div className="flex items-center gap-1" style={{ WebkitAppRegion: 'no-drag' } as any}>
+          <button onClick={() => setShowPptMaster(true)} className="mr-2 rounded-md border border-violet-500/40 bg-violet-500/10 px-2.5 py-1.5 text-xs font-medium text-violet-300 hover:bg-violet-500/20" title="使用母版和版式生成原生可编辑 PPTX">PPT Master</button>
           <button onClick={() => cnke.ppt.minimize()} className="w-9 h-8 rounded-md hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors" title="最小化">
             <svg className="w-4 h-4 mx-auto" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="5" y1="12" x2="19" y2="12" /></svg>
           </button>
@@ -1064,20 +926,6 @@ const PptPage: React.FC = () => {
             </React.Fragment>
           );
         })}
-        <div className="ml-auto flex items-center gap-1">
-          <button
-            onClick={() => { setActiveTab('generate'); setWizardStep(outline ? 'theme' : 'input'); }}
-            className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors ${activeTab === 'generate' ? 'bg-secondary text-foreground' : 'text-muted-foreground hover:bg-secondary/60'}`}
-          >
-            AI 生成
-          </button>
-          <button
-            onClick={() => { setActiveTab('templates'); if (!remoteIndex && !templateLoading) loadRemoteIndex(); }}
-            className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors ${activeTab === 'templates' ? 'bg-secondary text-foreground' : 'text-muted-foreground hover:bg-secondary/60'}`}
-          >
-            模板库
-          </button>
-        </div>
       </div>
 
       <div className="flex flex-1 overflow-hidden">
@@ -1085,11 +933,6 @@ const PptPage: React.FC = () => {
         {/* 左侧：向导步骤面板 */}
         <div className="w-[330px] shrink-0 border-r border-border flex flex-col">
         <div className="p-4 space-y-4 overflow-y-auto flex-1">
-          {activeTab === 'templates' ? (
-            <div className="text-xs text-muted-foreground">
-              请从右侧模板库选择模板；选中后会自动套用并跳到「AI 生成」步骤。
-            </div>
-          ) : (
           <>
           {/* ===== 步骤 1：输入内容 ===== */}
           {wizardStep === 'input' && (
@@ -1214,11 +1057,11 @@ const PptPage: React.FC = () => {
               >
                 <Rocket className="w-4 h-4" />
                 {oneClickStep
-                  ? oneClickStep === 'scenario' ? '⓪ 匹配模板类型…'
+                  ? oneClickStep === 'scenario' ? '⓪ 匹配场景类型…'
                     : oneClickStep === 'outline' ? '① AI 生成大纲中…'
-                      : oneClickStep === 'render' ? '② AI 渲染美化中…'
+                      : oneClickStep === 'render' ? '② AI 原创设计中…'
                         : '③ 导出 PPTX 中…'
-                  : '一键生成 PPT'}
+                  : '一键 AI 生成 PPT（原创设计）'}
               </button>
             )}
             {wizardStep === 'input' && !batchMode && oneClickStep && (
@@ -1226,7 +1069,7 @@ const PptPage: React.FC = () => {
                 {([
                   ['scenario', '⓪ 场景'],
                   ['outline', '① 大纲'],
-                  ['render', '② 渲染'],
+                  ['render', '② 原创设计'],
                   ['export', '③ 导出'],
                 ] as const).map(([step, label]) => {
                   const order = { scenario: 0, outline: 1, render: 2, export: 3 } as const;
@@ -1353,13 +1196,34 @@ const PptPage: React.FC = () => {
             {wizardStep === 'theme' && outline && (
               <div>
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">选择主题</span>
+                  <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">AI 原创设计（可选覆盖）</span>
                   {renderedHtml && (
                     <span className="text-[10px] text-emerald-400 inline-flex items-center gap-1">
                       <Check className="w-3 h-3" /> 已渲染
                     </span>
                   )}
                 </div>
+                {/* AI 现场设计结果：配色、字体、风格说明；用户仍可手动覆盖 */}
+                {aiDesign && (
+                  <div className="mb-2 rounded-lg border border-violet-500/40 bg-violet-500/10 px-2.5 py-2 text-[10px] text-violet-200 leading-relaxed">
+                    <div className="flex items-center gap-1.5 font-semibold mb-1">
+                      <Sparkles className="w-3.5 h-3.5" />
+                      AI 原创设计：{aiDesign.visualStyle}
+                      <span className="ml-auto font-mono text-[9px] text-violet-300/80">{aiDesign.fontFamily}</span>
+                    </div>
+                    <div className="flex items-center gap-1.5 mb-1">
+                      {(['primary', 'secondary', 'accent', 'background'] as const).map((k) => (
+                        <span
+                          key={k}
+                          className="h-3 w-6 rounded border border-white/20"
+                          style={{ background: aiDesign.palette[k] }}
+                          title={`${k} ${aiDesign.palette[k]}`}
+                        />
+                      ))}
+                    </div>
+                    {aiDesign.rationale}
+                  </div>
+                )}
                 <div className="grid grid-cols-2 gap-2">
                   {themes.map((t) => {
                     const Icon = ICONS[t.icon] || Sparkles;
@@ -1415,7 +1279,7 @@ const PptPage: React.FC = () => {
                     className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-lg btn-gradient py-2.5 text-sm font-semibold disabled:opacity-50 transition-all"
                   >
                     <Wand2 className="w-4 h-4" />
-                    {rendering ? 'AI 渲染美化中…' : renderedHtml ? '重新渲染' : 'AI 渲染美化'}
+                    {rendering ? (designing ? 'AI 原创设计中…' : '渲染中…') : renderedHtml ? '重新生成设计' : 'AI 原创设计并渲染'}
                   </button>
                 </div>
                 {renderedHtml && (
@@ -1573,10 +1437,9 @@ const PptPage: React.FC = () => {
             )}
 
             <div className="text-xs text-muted-foreground leading-relaxed pt-2 border-t border-border">
-              流程：输入主题/材料 → 生成大纲 → 选主题渲染 → 导出 PPTX。「一键生成（全自动）」可跳过中间步骤。
+              流程：输入主题/材料 → AI 生成大纲 → AI 原创设计视觉方案 → 导出 PPTX。「一键 AI 生成」会全自动完成并直接产出原始可编辑文件。
             </div>
           </>
-          )}
         </div>
         </div>
 
@@ -1643,227 +1506,7 @@ const PptPage: React.FC = () => {
               )}
             </div>
           </div>
-
-          {activeTab === 'templates' ? (
-            /* 模板库视图 */
-            <div className="flex-1 overflow-y-auto p-6">
-              {/* 实验性提示：模板注入对复杂版式的兼容有限 */}
-              <div className="mb-4 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-300/90 leading-relaxed">
-                <span className="font-semibold">模板套用为实验性功能：</span>
-                向真实模板注入文字依赖版式识别，遇到竖排文字、装饰诗句、多文本框等复杂版式时可能出现文字溢出或错位。追求稳定效果请使用左侧「一键生成 PPT」（按内置主题原生排版，版式可控）。
-              </div>
-              {/* 工具栏：搜索 + 分类筛选 */}
-              <div className="flex items-center gap-2 mb-4 sticky top-0 bg-background/95 backdrop-blur py-2 z-10">
-                <input
-                  value={tplKeyword}
-                  onChange={(e) => handleSearch(e.target.value)}
-                  placeholder="搜索名称 / 描述 / 编号…"
-                  className="flex-1 px-3 py-1.5 rounded-lg border border-border bg-secondary/40 text-sm outline-none focus:ring-1 focus:ring-primary/50 placeholder:text-muted-foreground/60"
-                />
-                <span className="text-[10px] text-muted-foreground shrink-0">
-                  {tplTotal > 0 ? `共 ${tplTotal} 套` : ''}
-                </span>
-              </div>
-              {tplCategories.length > 0 && (
-                <div className="flex items-center gap-1.5 mb-4 flex-wrap">
-                  <button
-                    onClick={() => handleCategoryChange('')}
-                    className={`px-2.5 py-1 rounded-full text-[11px] transition-colors ${!tplCategory ? 'bg-primary text-primary-foreground' : 'bg-secondary/60 text-muted-foreground hover:bg-secondary'}`}
-                  >全部</button>
-                  {tplCategories.map((c) => (
-                    <button
-                      key={c}
-                      onClick={() => handleCategoryChange(c)}
-                      className={`px-2.5 py-1 rounded-full text-[11px] transition-colors ${tplCategory === c ? 'bg-primary text-primary-foreground' : 'bg-secondary/60 text-muted-foreground hover:bg-secondary'}`}
-                    >{c}</button>
-                  ))}
-                </div>
-              )}
-              {templateLoading && (
-                <div className="flex items-center justify-center py-8 text-muted-foreground text-sm">
-                  <svg className="animate-spin w-4 h-4 mr-2" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" /></svg>
-                  正在加载模板…
-                </div>
-              )}
-              {templateError && (
-                <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-400 mb-4">
-                  模板服务器不可达：{templateError}
-                  <button onClick={() => loadRemoteIndex(1, tplCategory, tplKeyword)} className="ml-2 underline">重试</button>
-                </div>
-              )}
-              {remoteIndex && (
-                <>
-                  <div ref={tplGridRef} className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                    {remoteIndex.templates.map((t: any) => {
-                      const downloaded = downloadedTemplateIds.has(t.id);
-                      const selected = selectedTemplateId === t.id;
-                      const missing = !t.downloadUrl;
-                      const visible = tplVisibleIds.has(t.id);
-                      const dlState = templateProgress[t.id];
-                      const dlPct = dlState && dlState.total > 0
-                        ? Math.min(100, Math.round(dlState.ratio * 100))
-                        : null;
-                      return (
-                        <div
-                          key={t.id}
-                          data-tpl-id={t.id}
-                          className={`relative rounded-xl border p-3 transition-all ${
-                            selected ? 'border-primary ring-2 ring-primary/40' : 'border-border hover:border-primary/40'
-                          } ${missing ? 'opacity-50' : ''}`}
-                        >
-                          <div className="aspect-[16/10] rounded-lg mb-2 overflow-hidden bg-secondary/50 flex items-center justify-center relative">
-                            {missing ? (
-                              <span className="text-xs text-muted-foreground">未上传</span>
-                            ) : visible ? (
-                              <img
-                                src={t.thumbnailUrl}
-                                alt={t.name}
-                                loading="lazy"
-                                className="w-full h-full object-cover"
-                                onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
-                              />
-                            ) : (
-                              <div className="w-full h-full bg-secondary/30 animate-pulse flex items-center justify-center">
-                                <span className="text-[10px] text-muted-foreground/50">加载中…</span>
-                              </div>
-                            )}
-                            {/* 下载中：缩略图上覆盖一层进度遮罩 */}
-                            {dlState && !downloaded && (
-                              <div className="absolute inset-0 bg-black/60 backdrop-blur-[1px] flex flex-col items-center justify-center gap-2 px-4">
-                                <span className="text-[10px] text-white/90">
-                                  {dlPct !== null ? `下载中 ${dlPct}%` : '下载中…'}
-                                </span>
-                                <div className="w-full h-1 rounded-full bg-white/25 overflow-hidden">
-                                  <div
-                                    className="h-full bg-sky-400 transition-all duration-150"
-                                    style={{ width: dlPct !== null ? `${dlPct}%` : '15%' }}
-                                  />
-                                </div>
-                                {dlState.total > 0 && (
-                                  <span className="text-[9px] text-white/60">
-                                    {formatBytes(dlState.downloaded)} / {formatBytes(dlState.total)}
-                                  </span>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                          <div className="flex items-start justify-between gap-2 mb-1">
-                            <div className="font-semibold text-sm truncate" title={t.name}>{t.name}</div>
-                            <div className="text-[10px] text-muted-foreground shrink-0 font-mono">#{t.id}</div>
-                          </div>
-                          <div className="text-[10px] text-muted-foreground mb-2 line-clamp-2 min-h-[28px]">{t.description}</div>
-                          <div className="flex items-center gap-1 text-[10px] text-muted-foreground mb-2">
-                            <span className="px-1.5 py-0.5 rounded bg-secondary/80">{t.category}</span>
-                            <span>·</span>
-                            <span>{t.pageCount} 页</span>
-                            <span>·</span>
-                            <span>{(t.size / 1024).toFixed(1)} KB</span>
-                          </div>
-                          <div className="flex items-center gap-1">
-                            {downloaded ? (
-                              <span className="text-[10px] text-emerald-400 inline-flex items-center gap-1">
-                                <Check className="w-3 h-3" /> 已缓存
-                              </span>
-                            ) : dlState ? (
-                              <span className="text-[10px] text-sky-400 inline-flex items-center gap-1">
-                                <svg className="animate-spin w-3 h-3" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" /></svg>
-                                {dlState.total > 0
-                                  ? `${Math.min(100, Math.round(dlState.ratio * 100))}%`
-                                  : dlState.downloaded > 0
-                                    ? formatBytes(dlState.downloaded)
-                                    : '开始…'}
-                              </span>
-                            ) : (
-                              <button
-                                onClick={() => handleDownloadTemplate(t.id)}
-                                disabled={missing}
-                                className="text-[10px] px-2 py-1 rounded bg-secondary hover:bg-accent transition-colors disabled:opacity-50"
-                              >下载模板</button>
-                            )}
-                            {/* 一键合并：套用模板 = 生成 pptx + 渲染 HTML 预览 */}
-                            <button
-                              onClick={() => { setSelectedTemplateId(t.id); handleApplyTemplate(); }}
-                              disabled={!downloaded || !outline || applyingTemplate}
-                              className="text-[10px] px-2 py-1 ml-auto rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50"
-                              title={
-                                !outline ? '请先生成大纲'
-                                  : !downloaded ? '请先下载模板'
-                                    : '套用此模板：生成 pptx 并渲染预览'
-                              }
-                            >
-                              {applyingTemplate && selected ? '套用中…' : selected ? '✓ 重新套用' : '套用'}
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                  {/* 分页 */}
-                  {tplTotal > PAGE_SIZE && (
-                    <div className="flex items-center justify-center gap-2 mt-6 pb-2">
-                      <button
-                        onClick={() => handlePageChange(Math.max(1, tplPage - 1))}
-                        disabled={tplPage <= 1}
-                        className="px-3 py-1 rounded border border-border text-xs hover:bg-secondary disabled:opacity-50"
-                      >上一页</button>
-                      <span className="text-xs text-muted-foreground">
-                        第 <span className="text-foreground font-semibold">{tplPage}</span> / {Math.ceil(tplTotal / PAGE_SIZE)} 页
-                      </span>
-                      <button
-                        onClick={() => handlePageChange(tplPage + 1)}
-                        disabled={tplPage >= Math.ceil(tplTotal / PAGE_SIZE)}
-                        className="px-3 py-1 rounded border border-border text-xs hover:bg-secondary disabled:opacity-50"
-                      >下一页</button>
-                    </div>
-                  )}
-                </>
-              )}
-              {/* 套用栏：选中已下载模板后常驻显示，避免用户不知道为何无按钮 */}
-              {selectedTemplateId && downloadedTemplateIds.has(selectedTemplateId) && (
-                <div className="sticky bottom-0 mt-4 -mx-6 -mb-6 px-6 py-3 bg-background/95 backdrop-blur border-t border-border space-y-2">
-                  {/* 就地反馈：套用结果 / 错误都显示在按钮旁边 */}
-                  {error && (
-                    <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-400">{error}</div>
-                  )}
-                  {applyNotice && !error && (
-                    <div className="rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-xs text-sky-300">{applyNotice}</div>
-                  )}
-                  {savedPath && (
-                    <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-400">
-                      已保存到工作区：<span className="break-all font-mono">{savedPath}</span>
-                    </div>
-                  )}
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="text-xs text-muted-foreground">
-                      已选模板 <span className="text-primary font-semibold">#{selectedTemplateId}</span>
-                      {!outline
-                        ? '，请先在左侧生成大纲后再套用。'
-                        : '，套用 = 按模板样式生成 pptx + 渲染 HTML 预览（两者结果一致）。'}
-                    </span>
-                    <div className="flex items-center gap-2 shrink-0">
-                      <button
-                        onClick={handlePreviewTemplate}
-                        disabled={rendering || !outline}
-                        className="px-3 py-2 rounded-lg border border-border text-xs hover:bg-secondary transition-colors disabled:opacity-50 inline-flex items-center gap-1.5"
-                        title={!outline ? '请先生成大纲' : '仅渲染预览，不生成 pptx'}
-                      >
-                        <Eye className="w-3.5 h-3.5" />
-                        {rendering ? '渲染中…' : '仅预览'}
-                      </button>
-                      <button
-                        onClick={handleApplyTemplate}
-                        disabled={applyingTemplate || !outline}
-                        className="px-4 py-2 rounded-lg btn-gradient text-sm font-semibold disabled:opacity-50 inline-flex items-center gap-1.5"
-                      >
-                        <Save className="w-4 h-4" />
-                        {applyingTemplate ? '套用中…' : '套用模板并保存到工作区'}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-          ) : !outline ? (
+          {!outline ? (
             <div className="flex-1 flex flex-col items-center justify-center text-center px-8">
               <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-violet-500/20 to-fuchsia-500/20 flex items-center justify-center mb-4">
                 <Sparkles className="w-8 h-8 text-violet-400" />

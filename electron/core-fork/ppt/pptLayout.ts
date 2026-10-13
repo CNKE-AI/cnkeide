@@ -96,11 +96,11 @@ export const LAYOUT_SPECS: Record<LayoutId, LayoutSpecV2> = {
     scheme: 'dark',
     slots: [
       // 左上角品牌小字（作者/日期）
-      { role: 'eyebrow', x: GRID.marginX, y: 0.7, w: 6, h: 0.32, fontSize: 11, colorRole: 'onPrimary', align: 'left', valign: 'middle' },
-      // 主标题左对齐（比居中更专业；宽度留出右侧呼吸区）
-      { role: 'title', x: GRID.marginX, y: 2.55, w: CONTENT_W * 0.82, h: 1.7, fontSize: 40, bold: true, colorRole: 'onPrimary', align: 'left', valign: 'middle', lineHeight: 1.15 },
-      // 副标题
-      { role: 'subtitle', x: GRID.marginX, y: 4.35, w: CONTENT_W * 0.7, h: 0.6, fontSize: 16, colorRole: 'onPrimary', align: 'left', valign: 'middle' },
+      { role: 'eyebrow', x: GRID.marginX, y: 0.7, w: 8, h: 0.36, fontSize: 12, colorRole: 'onPrimary', align: 'left', valign: 'middle' },
+      // 主标题左对齐，预留足够高度避免中文长标题被裁切。
+      { role: 'title', x: GRID.marginX, y: 1.85, w: CONTENT_W * 0.9, h: 2.35, fontSize: 34, bold: true, colorRole: 'onPrimary', align: 'left', valign: 'middle', lineHeight: 1.18 },
+      // 副标题与封面要点共用下方信息区。
+      { role: 'subtitle', x: GRID.marginX, y: 4.35, w: CONTENT_W * 0.82, h: 1.35, fontSize: 15, colorRole: 'onPrimary', align: 'left', valign: 'top', lineHeight: 1.45 },
       // 左下竖条（唯一装饰）
       { role: 'brandBar', x: GRID.marginX, y: 6.1, w: 0.05, h: 0.72, fontSize: 0, colorRole: 'accent' },
       // 底部公司名

@@ -65,7 +65,7 @@ CnkeIDE 是一款从零构建的桌面 AI 编程工具。它的 AI 内核（Agen
 
 ### 特色功能
 
-- **AI 演示文稿生成** — 扫描工作区 README 与目录结构自动提炼大纲，内置商业 / 学术 / 中国风 / 插画 4 套主题 × 6 种版式（封面/目录/分节/内容/数据/结尾），支持在线模板库套用与 PPTX / PDF 导出
+- **AI 演示文稿生成** — 扫描工作区 README 与目录结构自动提炼大纲，内置商业 / 学术 / 中国风 / 插画 4 套主题 × 6 种版式（封面/目录/分节/内容/数据/结尾），支持 PPTX / PDF 导出
 - **代码库语义检索** — 关键词 + 语义向量 + 符号三路召回加权融合，增量索引避免重复计算
 - **智能模型路由** — 内置 DeepSeek / 通义千问 / GLM / Kimi / 文心 / Gemini 等能力矩阵（旗舰 / 标准 / 快速 / 推理四档），按任务特征自动选型，支持 `@模型名` 手动覆盖
 - **文档问答 RAG** — 本地解析 PDF / DOCX / Markdown / HTML / CSV / XLSX 后切块建索引，问答附带来源引用
@@ -106,7 +106,7 @@ CnkeIDE 是一款从零构建的桌面 AI 编程工具。它的 AI 内核（Agen
 │  │  codebase/ SemanticRetriever · SemanticIndex   │  │
 │  │            EmbeddingProvider · CodebaseIndexer │  │
 │  │  rag/      RagManager · DocumentParser         │  │
-│  │  ppt/      pptRenderer · pptApply · pptThemes  │  │
+│  │  ppt/      pptRenderer · pptThemes             │  │
 │  │  extension/ McpHub · memory/ MemoryStore       │  │
 │  └────────────────────────────────────────────────┘  │
 │  adapter/    Config · FileSystem · Terminal · Window │
@@ -228,7 +228,7 @@ npm run pack:linux   # Linux — AppImage + deb
 
 - **项目一键成稿** — 扫描工作区 README 与目录结构，自动提炼大纲
 - **一句话生成** — 输入演示主题，从零生成
-- **在线模板库** — 分类筛选或搜索，下载真实模板后一键套用
+- **内置主题设计** — 选择商业、学术、中国风或插画主题，生成可编辑的演示文稿
 
 生成后可在左侧逐页编辑标题与要点，支持单页 / 全部 AI 细化扩写，最终导出 PPTX 或 PDF。
 
@@ -274,8 +274,8 @@ cnke-claw/
 │       ├── codebase/            # SemanticRetriever · SemanticIndex
 │       │                        # EmbeddingProvider · CodebaseIndexer
 │       ├── rag/                 # RagManager · DocumentParser · DocumentIndex
-│       ├── ppt/                 # pptRenderer · pptApply · pptThemes
-│       │                        # pptOutlineExpand · pptPdf · pptTemplateClient
+│       ├── ppt/                 # pptRenderer · pptThemes · pptOutlineExpand
+│       │                        # pptPdf · pptPreview
 │       ├── extension/McpHub.ts  # extension 协议客户端
 │       ├── memory/MemoryStore.ts
 │       └── util/AgentError.ts   # 标准化错误类型
@@ -380,24 +380,6 @@ npx tsc --noEmit -p tsconfig.json
 4. 重新启动客户端触发更新
 
 若 `installer.exe` 无法结束（被系统 Job Object 锁定），需重启电脑后再操作。
-</details>
-
-<details>
-<summary><b>套用 PPT 模板时提示「请先生成大纲」</b></summary>
-
-模板套用需要先有大纲作为填充内容。请先在「AI 主题生成」中生成并确认大纲，再切换到模板库操作。
-</details>
-
-<details>
-<summary><b>生成的 PPT 文字位置错乱</b></summary>
-
-说明该模板版式较特殊，程序已退化为占位符替换策略。建议换用同分类下版式更规整的模板，或改用内置主题生成。
-</details>
-
-<details>
-<summary><b>模板库加载不出来</b></summary>
-
-模板库需联网访问服务器。请检查网络连通性与代理设置。缩略图较大时首屏加载稍慢，属正常现象。
 </details>
 
 <details>

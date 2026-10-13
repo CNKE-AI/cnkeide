@@ -1,6 +1,25 @@
 import { create } from 'zustand';
 import { nanoid } from 'nanoid';
 
+/**
+ * agent 事件订阅管理（模块级单例）：
+ * sendMessage / regenerateMessage 每次都会订阅 agent:event，但退订仅在收到
+ * done/error 事件或 agent.run reject 时执行。若主进程重启 / 窗口重建导致
+ * 终止事件丢失，旧订阅会永久残留；下一次发消息再叠加一个 —— 同一事件被
+ * N 个监听器各处理一次（重复 set、内容互相覆盖）。
+ * 这里保证任意时刻最多只有一个活跃订阅：新订阅前自动清掉上一个。
+ */
+let activeAgentEventUnsub: (() => void) | null = null;
+function subscribeAgentEvents(handler: (event: any) => void): () => void {
+  activeAgentEventUnsub?.();
+  const unsub = window.cnke.agent.onEvent(handler);
+  activeAgentEventUnsub = unsub;
+  return () => {
+    if (activeAgentEventUnsub === unsub) activeAgentEventUnsub = null;
+    unsub();
+  };
+}
+
 /** 用户上传的文本文件附件（content 为可读文本，已按 MAX_FILE_TEXT_CHARS 截断） */
 export interface UploadedFile {
   id: string;
@@ -203,7 +222,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const assistantMsg: ChatMessage = { id: nanoid(), role: 'assistant', content: '', timestamp: Date.now() };
     set((s) => ({ messages: [...s.messages, userMsg, assistantMsg], loading: true, streamingContent: '' }));
 
-    const removeEvent = window.cnke.agent.onEvent((event) => {
+    const removeEvent = subscribeAgentEvents((event) => {
       const s = get();
       const msgs = [...s.messages];
       const last = msgs[msgs.length - 1];
@@ -229,6 +248,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         set({ messages: msgs });
       } else if (event.type === 'done' || event.type === 'error') {
         set({ loading: false, streamingContent: '' });
+        // 任务结束：解除窗口保护（允许正常最小化 / 直接关闭）
+        window.cnke.window.setAgentBusy(false);
         if (event.type === 'error') {
           msgs[msgs.length - 1] = { ...last, content: `Error: ${event.data.error}` };
           set({ messages: msgs });
@@ -248,9 +269,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
     });
 
     const history = messages.map((m) => ({ role: m.role, content: m.content }));
+    // 任务开始：通知主进程启用窗口保护（防误最小化 / 关闭需二次确认）
+    window.cnke.window.setAgentBusy(true);
     try {
       await window.cnke.agent.run({ sessionId: sid, workspaceId, prompt, history, mode, images, files, autoApprove: autoMode });
     } catch (err: any) {
+      // agent.run 抛异常：同样要解除保护，否则窗口将无法最小化
+      window.cnke.window.setAgentBusy(false);
       // agent.run 抛出（如 IPC 断开 / 主进程崩溃后 invoke reject）：
       // 兜底重置 loading 并向用户提示，避免输入框永久卡死
       const msgs = get().messages;
@@ -309,7 +334,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set({ sessionId: sid });
     }
 
-    const removeEvent = window.cnke.agent.onEvent((event) => {
+    const removeEvent = subscribeAgentEvents((event) => {
       const s = get();
       const msgs = [...s.messages];
       const last = msgs[msgs.length - 1];
@@ -335,6 +360,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         set({ messages: msgs });
       } else if (event.type === 'done' || event.type === 'error') {
         set({ loading: false, streamingContent: '' });
+        // 任务结束：解除窗口保护
+        window.cnke.window.setAgentBusy(false);
         if (event.type === 'error') {
           msgs[msgs.length - 1] = { ...last, content: `Error: ${event.data.error}` };
           set({ messages: msgs });
@@ -354,9 +381,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
     });
 
     const historyForRun = history.map((m) => ({ role: m.role, content: m.content }));
+    // 任务开始：启用窗口保护
+    window.cnke.window.setAgentBusy(true);
     try {
       await window.cnke.agent.run({ sessionId: sid, workspaceId, prompt, history: historyForRun, mode, images, files, autoApprove: autoMode });
     } catch (err: any) {
+      window.cnke.window.setAgentBusy(false);
       const msgs = get().messages;
       const last = msgs[msgs.length - 1];
       if (last && last.role === 'assistant') {
@@ -375,6 +405,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (sessionId) {
       window.cnke.agent.abort(sessionId);
       set({ loading: false, streamingContent: '' });
+      // 用户主动中断：立即解除窗口保护
+      window.cnke.window.setAgentBusy(false);
     }
   },
 }));

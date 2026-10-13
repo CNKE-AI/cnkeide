@@ -81,6 +81,8 @@ export interface PptxCreateRequest {
   };
   /** 企业品牌（可选：品牌色优先于 theme 色渲染色；Logo/页脚/字体注入） */
   brand?: PptBrand;
+  /** AI 原创设计选择的字体；启用企业品牌字体时品牌字体优先。 */
+  fontFamily?: string;
   /** 是否给每页加切换动画（淡入），默认 false */
   transition?: boolean;
   /** 初始幻灯片列表 */
@@ -175,8 +177,8 @@ export class PptxGenAdapter implements PptxAdapter {
       const cTitle = bgLuminance > 0.6 ? cPrimary : 'FFFFFF';
       const cText = bgLuminance > 0.6 ? '374151' : 'E5E7EB';
       const cSubtitle = bgLuminance > 0.6 ? '6B7280' : '9CA3AF';
-      // 企业字体（空则用 pptxgenjs 默认）
-      const fontFace = brand?.fontFamily || undefined;
+      // 企业字体优先；否则使用 AI 原创设计选择的字体。
+      const fontFace = brand?.fontFamily || req.fontFamily || undefined;
 
       const slides = req.slides ?? [];
       const totalSlides = slides.length;

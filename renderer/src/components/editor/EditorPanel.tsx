@@ -23,9 +23,10 @@ import { cpp } from '@codemirror/lang-cpp';
 import { php } from '@codemirror/lang-php';
 import { yaml } from '@codemirror/lang-yaml';
 import { useEditorStore } from '../../store/editorStore';
+import { useAgentActivityStore } from '../../store/agentActivityStore';
 import { useUiStore } from '../../store/uiStore';
 import { useLayoutStore } from '../../store/layoutStore';
-import { FileCode2, X, Save, SaveAll, MessageSquarePlus } from 'lucide-react';
+import { FileCode2, X, Save, SaveAll, MessageSquarePlus, RefreshCw, Bot, AlertTriangle } from 'lucide-react';
 
 /** CodeMirror 编辑器主题 - 深色背景，匹配 IDE 整体风格 */
 const editorTheme = EditorView.theme({
@@ -33,7 +34,7 @@ const editorTheme = EditorView.theme({
     backgroundColor: '#0a0a0c',
     color: '#d4d4d8',
     height: '100%',
-    fontSize: '13px',
+    fontSize: '12px',
   },
   '.cm-content': {
     fontFamily: "'JetBrains Mono', 'Cascadia Code', 'Consolas', monospace",
@@ -92,7 +93,7 @@ const lightTheme = EditorView.theme({
     backgroundColor: '#f6f4fb',
     color: '#000000',
     height: '100%',
-    fontSize: '13px',
+    fontSize: '12px',
   },
   '.cm-content': {
     fontFamily: "'JetBrains Mono', 'Cascadia Code', 'Consolas', monospace",
@@ -224,6 +225,19 @@ function langLabelOf(name: string): string {
   return ext || 'plaintext';
 }
 
+/** 规范化路径比较（Windows 大小写不敏感） */
+function samePath(a: string, b: string): boolean {
+  return a.replace(/\\/g, '/').toLowerCase() === b.replace(/\\/g, '/').toLowerCase();
+}
+
+/**
+ * 编辑器面板
+ *
+ * 与 Agent 的联动：
+ * - 标签上显示「Agent 修改」标记（该文件被 Agent 写入过）；
+ * - 无本地修改时，Agent 写入后编辑器**自动重载**，做到实时跟随；
+ * - 有本地修改时显示 stale 提示条，提供「重新加载 / 保留我的改动」选择，避免覆盖用户编辑。
+ */
 const EditorPanel: React.FC = () => {
   const { tabs, activePath, closeTab, updateContent, saveFile, saveAll } = useEditorStore();
   const theme = useThemeStore((s) => s.theme);
@@ -236,7 +250,13 @@ const EditorPanel: React.FC = () => {
   const isUpdatingRef = useRef(false);
   const [hasSelection, setHasSelection] = useState(false);
 
-  const active = tabs.find((t) => t.path === activePath) ?? null;
+  // Agent 触碰过的文件（跨视图共享，标记"Agent 改过"）
+  const modifiedFiles = useAgentActivityStore((s) => s.modifiedFiles);
+  const agentPhase = useAgentActivityStore((s) => s.phase);
+  const phaseBusy = agentPhase === 'thinking' || agentPhase === 'streaming' || agentPhase === 'tool';
+
+  const active = tabs.find((t) => samePath(t.path, activePath ?? '')) ?? null;
+  const activeModifiedByAgent = active ? modifiedFiles.has(active.path) : false;
 
   // 创建/更新编辑器
   useEffect(() => {
@@ -315,9 +335,9 @@ const EditorPanel: React.FC = () => {
       view.destroy();
       viewRef.current = null;
     };
-  }, [activePath]); // 只在切换文件时重建编辑器
+  }, [activePath]);
 
-  // 当文件内容从外部变更时（如另存为、自动格式化），同步到编辑器
+  // 当文件内容从外部变更时（Agent 写入 / 磁盘变化 / 自动格式化），同步到编辑器
   useEffect(() => {
     if (!viewRef.current || !active) return;
     const view = viewRef.current;
@@ -361,7 +381,10 @@ const EditorPanel: React.FC = () => {
     if (!code.trim()) return;
     const filePath = active.path;
     const lang = langLabelOf(active.name);
-    const prompt = `请帮我分析/解释以下代码（来自 ${filePath}）：\n\n\`\`\`${lang}\n${code}\n\`\`\``;
+    const fence = '```';
+    const prompt =
+      '请帮我分析/解释以下代码（来自 ' + filePath + '）：\n\n' +
+      fence + lang + '\n' + code + '\n' + fence;
     useUiStore.getState().setPendingPrompt(prompt);
   }, [active]);
 
@@ -379,9 +402,18 @@ const EditorPanel: React.FC = () => {
   }, []);
 
   const handleClose = (path: string) => {
-    const tab = tabs.find((t) => t.path === path);
-    if (tab?.dirty && !window.confirm(`「${tab.name}」有未保存的修改，确定关闭？`)) return;
+    const tab = tabs.find((t) => samePath(t.path, path));
+    const msg = tab ? '「' + tab.name + '」有未保存的修改，确定关闭？' : '确定关闭？';
+    if (tab?.dirty && !window.confirm(msg)) return;
     closeTab(path);
+  };
+
+  const handleReload = (path: string) => {
+    void useEditorStore.getState().reloadFile(path);
+  };
+
+  const handleKeepLocal = (path: string) => {
+    useEditorStore.getState().clearStale(path);
   };
 
   return (
@@ -393,18 +425,22 @@ const EditorPanel: React.FC = () => {
             <span className="px-3 py-2 text-[11px] text-muted-foreground/50">暂无打开的文件，点击资源管理器中的文件打开</span>
           ) : (
             tabs.map((t) => {
-              const isActive = t.path === activePath;
+              const isActive = samePath(t.path, activePath ?? '');
+              const agentTouched = modifiedFiles.has(t.path);
               return (
                 <div
                   key={t.path}
                   onClick={() => useEditorStore.setState({ activePath: t.path })}
-                  className={`group flex items-center gap-1.5 px-3 py-2 text-[12px] border-r border-border cursor-pointer whitespace-nowrap transition-colors shrink-0 ${
+                  className={`group flex items-center gap-1 px-2 py-1.5 text-[11px] border-r border-border cursor-pointer whitespace-nowrap transition-colors shrink-0 ${
                     isActive ? 'bg-background text-foreground border-t-2 border-t-violet-500' : 'text-muted-foreground hover:bg-accent/50'
                   }`}
                   title={t.path}
                 >
-                  <FileCode2 className="w-3.5 h-3.5 text-violet-400/80 shrink-0" />
-                  <span className="max-w-[140px] truncate">{t.name}</span>
+                  {agentTouched
+                    ? <Bot className="w-3 h-3 text-amber-400 shrink-0" />
+                    : <FileCode2 className="w-3 h-3 text-violet-400/80 shrink-0" />}
+                  <span className="max-w-[120px] truncate">{t.name}</span>
+                  {t.stale && <AlertTriangle className="w-3 h-3 text-amber-400 shrink-0" />}
                   {t.dirty && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" title="未保存" />}
                   <button
                     onClick={(e) => { e.stopPropagation(); handleClose(t.path); }}
@@ -419,33 +455,32 @@ const EditorPanel: React.FC = () => {
           )}
         </div>
         {/* 保存按钮 */}
-        <div className="flex items-center gap-0.5 px-2 shrink-0">
+        <div className="flex items-center gap-0.5 px-1.5 shrink-0">
           <button
             onClick={() => activePath && saveFile(activePath)}
             disabled={!active}
-            className="p-1.5 hover:bg-accent hover:text-foreground rounded-md transition-colors text-muted-foreground disabled:opacity-40"
+            className="p-1 hover:bg-accent hover:text-foreground rounded-md transition-colors text-muted-foreground disabled:opacity-40"
             title="保存当前文件 (Ctrl+S)"
           >
-            <Save className="w-3.5 h-3.5" />
+            <Save className="w-3 h-3" />
           </button>
           <button
             onClick={saveAll}
             disabled={tabs.length === 0}
-            className="p-1.5 hover:bg-accent hover:text-foreground rounded-md transition-colors text-muted-foreground disabled:opacity-40"
+            className="p-1 hover:bg-accent hover:text-foreground rounded-md transition-colors text-muted-foreground disabled:opacity-40"
             title="保存全部"
           >
-            <SaveAll className="w-3.5 h-3.5" />
+            <SaveAll className="w-3 h-3" />
           </button>
           <button
             onClick={sendSelectionToChat}
             disabled={!hasSelection}
-            className="p-1.5 hover:bg-primary/15 hover:text-primary rounded-md transition-colors text-muted-foreground disabled:opacity-30"
+            className="p-1 hover:bg-primary/15 hover:text-primary rounded-md transition-colors text-muted-foreground disabled:opacity-30"
             title="发送选中代码到对话"
           >
-            <MessageSquarePlus className="w-3.5 h-3.5" />
+            <MessageSquarePlus className="w-3 h-3" />
           </button>
           <div className="w-px h-4 bg-border mx-0.5" />
-          {/* 隐藏编辑器：与资源管理器面板的 × 行为一致，隐藏后左侧留窄边栏可恢复 */}
           <button
             onClick={() => setPanelVisible('editor', false)}
             className="p-1 hover:bg-muted-foreground/20 hover:text-foreground rounded transition-colors text-muted-foreground"
@@ -455,6 +490,41 @@ const EditorPanel: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {/* stale 提示条：磁盘内容已被 Agent 改动且本地有未保存编辑 */}
+      {active?.stale && (
+        <div className="flex items-center justify-between gap-2 px-2.5 py-1 bg-amber-500/10 border-b border-amber-500/30 shrink-0">
+          <span className="flex items-center gap-1.5 text-[10px] text-amber-300">
+            <AlertTriangle className="w-3 h-3" />
+            磁盘内容已被 Agent 修改，本地有未保存编辑
+          </span>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => handleReload(active.path)}
+              className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 transition-colors"
+              title="放弃本地修改，加载磁盘最新内容"
+            >
+              <RefreshCw className="w-2.5 h-2.5" />
+              重新加载
+            </button>
+            <button
+              onClick={() => handleKeepLocal(active.path)}
+              className="px-1.5 py-0.5 rounded text-[10px] text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+              title="保留本地编辑（保存时会覆盖磁盘内容）"
+            >
+              保留我的改动
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Agent 正在处理当前文件：实时提示，无需切换到终端查看 */}
+      {active && activeModifiedByAgent && phaseBusy && !active.stale && (
+        <div className="flex items-center gap-1.5 px-2.5 py-0.5 bg-violet-500/10 border-b border-violet-500/25 shrink-0">
+          <Bot className="w-3 h-3 text-violet-400 animate-pulse" />
+          <span className="text-[10px] text-violet-300">Agent 正在修改此文件，内容已自动同步</span>
+        </div>
+      )}
 
       {/* 编辑器主体 - CodeMirror 6 */}
       <div className="flex-1 overflow-hidden">

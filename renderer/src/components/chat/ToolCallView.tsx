@@ -6,10 +6,10 @@ const ToolCallView: React.FC<{ call: any }> = ({ call }) => {
   const args = call.arguments ?? {};
 
   return (
-    <div className="bg-secondary/30 border border-border rounded-md text-[11.5px] font-mono overflow-hidden">
+    <div className="bg-card/80 border border-border/80 rounded-lg text-[11.5px] font-mono overflow-hidden shadow-sm">
       <button
         onClick={() => setOpen(!open)}
-        className="flex items-center gap-2 px-2 py-1.5 w-full hover:bg-secondary/60 transition-colors text-left"
+        className="flex items-center gap-2 px-3 py-2 w-full hover:bg-accent/40 transition-colors text-left"
       >
         <Wrench className="w-3 h-3 text-primary shrink-0" />
         <span className="text-cyan-300 font-semibold">{call.name}</span>

@@ -1,10 +1,14 @@
 import * as fs from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { execFileSafe } from '../core-fork/util/SafeSpawn';
 
-const execFileAsync = promisify(execFile);
+const execFileAsync = promisify(execFileSafe as any) as (
+  file: string,
+  args: string[],
+  options: Record<string, unknown>,
+) => Promise<{ stdout: string; stderr: string }>;
 
 export interface DirEntry {
   name: string;
@@ -110,6 +114,15 @@ export class FileSystemAdapter {
   }
 
   async deletePath(targetPath: string): Promise<{ success: boolean; error?: string }> {
+    // 优先移入系统回收站/废纸篓：误删可恢复。原先直接 rm/unlink 永久删除，
+    // 叠加 IPC 层无路径边界校验时存在全盘误删风险。
+    try {
+      const { shell } = await import('electron');
+      await shell.trashItem(targetPath);
+      return { success: true };
+    } catch {
+      /* 回收站不可用（网络盘/权限等）：回退到原删除逻辑 */
+    }
     try {
       const stat = await fs.stat(targetPath);
       if (stat.isDirectory()) {

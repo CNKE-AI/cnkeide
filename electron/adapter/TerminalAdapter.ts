@@ -1,5 +1,6 @@
-import { spawn, ChildProcess } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { spawnSafe, sanitizeEnv } from '../core-fork/util/SafeSpawn';
 
 export interface TerminalSession {
   pid: number;
@@ -64,6 +65,8 @@ export class TerminalAdapter extends EventEmitter {
   private sessions: Map<number, TerminalSession> = new Map();
   private outputBuffer: Map<number, string[]> = new Map();
   private flushTimer: NodeJS.Timeout | null = null;
+  /** 合成会话键计数器：spawn 失败无 pid 时使用负数，避免与真实 OS pid 冲突或同毫秒碰撞 */
+  private syntheticIdCounter = 0;
 
   spawn(cmd: string, args: string[], cwd: string): { success: boolean; pid?: number; error?: string } {
     try {
@@ -72,24 +75,27 @@ export class TerminalAdapter extends EventEmitter {
         ? (process.env.COMSPEC || 'powershell.exe')
         : (process.env.SHELL || '/bin/bash');
 
-      const env: Record<string, string> = { ...process.env, TERM: 'xterm-256color' } as any;
-      if (isWin) {
+      // env 统一经 sanitizeEnv 处理：剔除 Electron 注入变量，避免 electron.exe 子进程
+      const env = sanitizeEnv({
+        TERM: 'xterm-256color',
         // PowerShell 7+ 认此变量；配合启动前导命令强制 UTF-8
-        env.PYTHONIOENCODING = 'utf-8';
-      }
+        ...(isWin ? { PYTHONIOENCODING: 'utf-8' } : {}),
+      });
 
-      // Windows: 用 cmd /c chcp 65001 包裹，确保后续输出为 UTF-8
+      // Windows: 用 chcp 65001 前导命令，确保后续输出为 UTF-8
       const child = isWin
         ? (cmd
-          ? spawn(cmd, args, { cwd, env: { ...process.env, TERM: 'xterm-256color' }, shell: true, windowsHide: false })
-          : spawn(shell, isWin && /powershell/i.test(shell)
+          ? spawnSafe(cmd, args, { cwd, env, shell: true, windowsHide: false })
+          : spawnSafe(shell, isWin && /powershell/i.test(shell)
             ? ['-NoProfile', '-Command', 'chcp 65001 | Out-Null; [Console]::OutputEncoding=[Text.Encoding]::UTF8; [Console]::InputEncoding=[Text.Encoding]::UTF8']
             : [], { cwd, env, shell: true, windowsHide: false }))
         : (cmd
-          ? spawn(cmd, args, { cwd, env, shell: true, windowsHide: false })
-          : spawn(shell, [], { cwd, env, shell: true, windowsHide: false }));
+          ? spawnSafe(cmd, args, { cwd, env, shell: true, windowsHide: false })
+          : spawnSafe(shell, [], { cwd, env, shell: true, windowsHide: false }));
 
-      const pid = child.pid || Date.now();
+      // 会话键：优先用子进程真实 pid；无 pid（spawn 异常）时用负数合成键，
+      // 避免原先 Date.now() 造成的同毫秒碰撞，以及与 OS 复用的真实 pid 混淆。
+      const pid = child.pid ?? -(++this.syntheticIdCounter);
       const session: TerminalSession = { pid, child, cwd, cols: 80, rows: 24 };
       this.sessions.set(pid, session);
       this.outputBuffer.set(pid, []);
@@ -204,7 +210,7 @@ export class TerminalAdapter extends EventEmitter {
         shell = '/bin/bash';
         shellArgs = ['-c', cmd];
       }
-      const child = spawn(shell, shellArgs, { cwd, env: { ...process.env }, windowsHide: true });
+      const child = spawnSafe(shell, shellArgs, { cwd, windowsHide: true });
 
       let stdout = '';
       let stderr = '';

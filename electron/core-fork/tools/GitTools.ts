@@ -4,10 +4,14 @@
  * 全部走 git 子进程，cwd 必须是 git 仓库
  */
 
-import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { execFileSafe } from '../util/SafeSpawn';
 
-const execFileAsync = promisify(execFile);
+const execFileAsync = promisify(execFileSafe as any) as (
+  file: string,
+  args: string[],
+  options: Record<string, unknown>,
+) => Promise<{ stdout: string; stderr: string }>;
 
 const GIT_TIMEOUT_MS = 30_000;
 const GIT_DIFF_MAX_BYTES = 500_000; // 500KB 上限

@@ -57,9 +57,11 @@ async function test4_settingsSheet() {
 
 // ===== 5) package.json 版本 =====
 async function test5_packageVersion() {
-  console.log('\n[5] package.json 版本 1.2.3');
+  console.log('\n[5] package.json 与锁文件版本一致');
   const pkg = JSON.parse(await fs.readFile('package.json', 'utf-8'));
-  log(pkg.version === '1.2.3', 'version=1.2.3', `v=${pkg.version}`);
+  const lock = JSON.parse(await fs.readFile('package-lock.json', 'utf-8'));
+  log(/^\d+\.\d+\.\d+$/.test(pkg.version), 'package.json 使用语义化版本', `v=${pkg.version}`);
+  log(lock.version === pkg.version && lock.packages?.['']?.version === pkg.version, 'package-lock 版本一致', `lock=${lock.version}`);
 }
 
 // ===== 6) 扫整个 renderer 看是否还有硬编码 =====

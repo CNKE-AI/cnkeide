@@ -68,7 +68,8 @@ export class BackendAdapter {
   async ping(): Promise<{ success: boolean; latency?: number; error?: string }> {
     const start = Date.now();
     try {
-      const resp = await fetch(`${CONFIG_API}?action=ping`, { method: 'GET', timeout: 8000 } as any);
+      // 原生 fetch 不识别 timeout 选项，须用 AbortSignal 实现真实超时
+      const resp = await fetch(`${CONFIG_API}?action=ping`, { method: 'GET', signal: AbortSignal.timeout(8000) } as any);
       const data: any = await resp.json();
       return { success: !!data?.success, latency: Date.now() - start };
     } catch (err: any) {
@@ -79,12 +80,13 @@ export class BackendAdapter {
   /** 拉取官方内置 API 列表（公开） */
   async getBuiltins(): Promise<{ success: boolean; builtins?: BuiltinApi[]; error?: string }> {
     try {
-      const resp = await fetch(`${CONFIG_API}?action=get`, { method: 'GET', timeout: 10000 } as any);
+      const resp = await fetch(`${CONFIG_API}?action=get`, { method: 'GET', signal: AbortSignal.timeout(10000) } as any);
       const data: any = await resp.json();
       if (!data?.success) return { success: false, error: data?.error || '拉取失败' };
       return { success: true, builtins: data.builtins || [] };
     } catch (err: any) {
-      return { success: false, error: err.message };
+      // 网络异常统一转成结构化失败，调用方（渲染层）据此提示，避免抛出未处理 rejection
+      return { success: false, error: err?.message || '网络请求失败' };
     }
   }
 
@@ -92,7 +94,7 @@ export class BackendAdapter {
   async getAnnouncements(): Promise<{ success: boolean; announcements?: RemoteAnnouncement[]; error?: string }> {
     const url = `${CONFIG_API}?action=announcements&version=${encodeURIComponent(this.version)}&platform=${encodeURIComponent(this.getPlatform())}`;
     try {
-      const resp = await fetch(url, { method: 'GET', timeout: 10000 } as any);
+      const resp = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(10000) } as any);
       const data: any = await resp.json();
       if (!data?.success) return { success: false, error: data?.error || '拉取失败' };
       return { success: true, announcements: data.announcements || [] };
@@ -201,7 +203,7 @@ export class BackendAdapter {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: body.toString(),
-        timeout: 10000,
+        signal: AbortSignal.timeout(10000),
       } as any);
       const data: any = await resp.json();
       if (!data?.success) return { success: false, error: data?.error || '提交失败' };
@@ -215,7 +217,7 @@ export class BackendAdapter {
   async listFeedback(since = 0): Promise<{ success: boolean; items?: FeedbackItem[]; newReplyCount?: number; serverTime?: number; error?: string }> {
     const url = `${FEEDBACK_API}?action=list&device=${encodeURIComponent(this.deviceId)}&since=${Number(since) || 0}`;
     try {
-      const resp = await fetch(url, { method: 'GET', timeout: 10000 } as any);
+      const resp = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(10000) } as any);
       const data: any = await resp.json();
       if (!data?.success) return { success: false, error: data?.error || '拉取失败' };
       return { success: true, items: data.items || [], newReplyCount: data.newReplyCount || 0, serverTime: data.serverTime };

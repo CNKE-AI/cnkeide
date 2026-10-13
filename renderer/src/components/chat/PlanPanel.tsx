@@ -14,8 +14,12 @@ const STATUS_META: Record<PlanStep['status'], { icon: React.ReactNode; cls: stri
 };
 
 /** 计划面板：可视化展示 AI 的任务计划步骤与执行进度 */
-const PlanPanel: React.FC = () => {
-  const { plan } = useUiStore();
+const PlanPanel: React.FC<{ sessionId?: string }> = ({ sessionId }) => {
+  const { plan, setPlan } = useUiStore();
+  const applyPlan = (result: any) => { if (result?.plan) setPlan({ ...result, plan: result.plan, progress: result.progress }); };
+  const skipStep = async (id: string) => sessionId && applyPlan(await window.cnke.plan.skip(sessionId, id));
+  const retryStep = async (id: string) => sessionId && applyPlan(await window.cnke.plan.retry(sessionId, id));
+  const abandonPlan = async () => sessionId && applyPlan(await window.cnke.plan.abandon(sessionId));
   // 默认展开；步骤多时用户可手动收起，避免长计划占满对话区
   const [collapsed, setCollapsed] = useState(false);
 
@@ -29,7 +33,7 @@ const PlanPanel: React.FC = () => {
   const donePct = total > 0 ? Math.round((doneCount / total) * 100) : 0;
 
   return (
-    <div className="mx-3 mt-2 rounded-xl border border-border bg-secondary/20 overflow-hidden">
+    <div className="mx-3 mt-3 rounded-xl border border-border/80 bg-card/70 shadow-sm overflow-hidden">
       <button
         type="button"
         onClick={() => setCollapsed((v) => !v)}
@@ -45,6 +49,7 @@ const PlanPanel: React.FC = () => {
         </div>
         <div className="flex items-center gap-2 text-[11px] text-muted-foreground shrink-0">
           {failedCount > 0 && <span className="text-rose-400">失败 {failedCount}</span>}
+          {sessionId && <span onClick={(e) => { e.stopPropagation(); void abandonPlan(); }} className="text-rose-300 hover:text-rose-200">中止</span>}
           <span className="tabular-nums font-medium">
             {doneCount}/{total}
           </span>
@@ -84,6 +89,13 @@ const PlanPanel: React.FC = () => {
                   {detail && (
                     <span className="block text-[10px] text-muted-foreground/70 truncate" title={detail}>
                       {detail}
+                    </span>
+                  )}
+                  {step.error && <span className="block text-[10px] text-rose-300/80 truncate" title={step.error}>{step.error}</span>}
+                  {sessionId && (step.status === 'pending' || step.status === 'failed' || step.status === 'skipped') && (
+                    <span className="mt-1 flex gap-2 text-[10px]">
+                      {step.status === 'pending' && <button type="button" onClick={() => void skipStep(step.id)} className="text-amber-300 hover:text-amber-200">跳过</button>}
+                      {step.status !== 'pending' && <button type="button" onClick={() => void retryStep(step.id)} className="text-cyan-300 hover:text-cyan-200">重试</button>}
                     </span>
                   )}
                 </span>
