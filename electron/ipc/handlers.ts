@@ -25,6 +25,8 @@ import { UpdateManager } from '../updater/UpdateManager';
 import { PlanManager } from '../core-fork/plan/PlanManager';
 import { RagManager } from '../core-fork/rag/RagManager';
 import { LLMProvider } from '../core-fork/llm/LLMProvider';
+import { InlineCompletionService } from '../core-fork/completion/InlineCompletionService';
+import type { InlineCompletionRequest } from '../core-fork/completion/InlineCompletionService';
 import { createPptxAdapter, PptxAdapter } from '../core-fork/tools/PptxTools';
 import { renderOutlineToHtml } from '../core-fork/ppt/pptRenderer';
 import { PPT_THEMES, findTheme } from '../core-fork/ppt/pptThemes';
@@ -435,6 +437,15 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
 
   ipcMain.handle('config:getApiKeyConfigs', () => {
     return config.getApiKeyConfigs();
+  });
+
+  // ===== AI 行内补全 IPC（独立轻量通道，不经过 AgentManager）=====
+  const inlineCompletionService = new InlineCompletionService(new LLMProvider(), config);
+  ipcMain.handle('completion:inline', (_e, payload: { requestId?: string; req: InlineCompletionRequest }) => {
+    return inlineCompletionService.complete(payload.req, payload.requestId);
+  });
+  ipcMain.handle('completion:cancel', (_e, requestId: string) => {
+    inlineCompletionService.cancel(requestId);
   });
 
   ipcMain.handle('config:saveApiConfig', (_e, apiConfig: Record<string, unknown>) => {

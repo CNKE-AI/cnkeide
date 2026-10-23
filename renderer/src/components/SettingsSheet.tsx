@@ -324,6 +324,7 @@ const SettingsSheet: React.FC = () => {
       maxRetries: clamp(agentCfg.maxRetries, 0, 5, 3),
       llmTimeoutMs: clamp(agentCfg.llmTimeoutMs, 10000, 300000, 60000),
       fallbackModelIds: Array.isArray(agentCfg.fallbackModelIds) ? agentCfg.fallbackModelIds : [],
+      enableInlineCompletion: agentCfg.enableInlineCompletion !== false,
       browserAutomation: { enabled: agentCfg.browserAutomation?.enabled !== false },
       imageGeneration: {
         enabled: !!agentCfg.imageGeneration?.enabled,
@@ -656,6 +657,10 @@ const SettingsSheet: React.FC = () => {
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input type="checkbox" checked={!!agentCfg.autoApproveTools} onChange={(e) => setAgentCfg({ ...agentCfg, autoApproveTools: e.target.checked })} className="accent-primary" />
                   <span className="text-xs">自动批准工具调用（不弹确认框）</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={agentCfg.enableInlineCompletion !== false} onChange={(e) => setAgentCfg({ ...agentCfg, enableInlineCompletion: e.target.checked })} className="accent-primary" />
+                  <span className="text-xs">AI 行内补全：编辑器内光标停顿给出续写建议（Tab 接受 / Esc 拒绝）</span>
                 </label>
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input type="checkbox" checked={agentCfg.browserAutomation?.enabled !== false} onChange={(e) => setAgentCfg({ ...agentCfg, browserAutomation: { ...agentCfg.browserAutomation, enabled: e.target.checked } })} className="accent-primary" />

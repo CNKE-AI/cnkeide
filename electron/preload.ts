@@ -9,6 +9,7 @@ import type { PreviewSlide } from './core-fork/ppt/pptPreview';
 import type { PptxCreateRequest } from './core-fork/tools/PptxTools';
 import type { ChatSession } from './store/SessionStore';
 import type { UpdateStatus } from './updater/UpdateManager';
+import type { InlineCompletionRequest } from './core-fork/completion/InlineCompletionService';
 
 // ===== 窗口控制 API =====
 const windowApi = {
@@ -130,6 +131,15 @@ const configApi = {
   saveApiConfig: (config: Record<string, unknown>) => ipcRenderer.invoke('config:saveApiConfig', config),
   deleteApiConfig: (id: string) => ipcRenderer.invoke('config:deleteApiConfig', id),
   syncBuiltins: () => ipcRenderer.invoke('config:syncBuiltins'),
+};
+
+// ===== AI 行内补全 API（独立轻量通道，不污染聊天会话）=====
+const completionApi = {
+  /** 请求一次行内补全；requestId 用于取消 */
+  inline: (req: InlineCompletionRequest, requestId?: string) =>
+    ipcRenderer.invoke('completion:inline', { requestId, req }),
+  /** 取消进行中的补全请求 */
+  cancel: (requestId: string) => ipcRenderer.invoke('completion:cancel', requestId),
 };
 
 // ===== 本地记忆 API =====
@@ -428,6 +438,7 @@ contextBridge.exposeInMainWorld('cnke', {
   session: sessionApi,
   skills: skillApi,
   config: configApi,
+  completion: completionApi,
   memory: memoryApi,
   mcp: mcpApi,
   dialog: dialogApi,

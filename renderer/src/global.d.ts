@@ -96,6 +96,14 @@ export interface PptOutlineLike {
   [key: string]: any;
 }
 
+/** AI 行内补全请求（renderer 已截好前后文） */
+export interface InlineCompletionRequest {
+  filePath: string;
+  language: string;
+  prefix: string;
+  suffix: string;
+}
+
 export interface CnkeAPI {
   window: {
     minimize: () => void;
@@ -164,6 +172,11 @@ export interface CnkeAPI {
     saveApiConfig: (config: unknown) => Promise<{ success: boolean; error?: string }>;
     deleteApiConfig: (id: string) => Promise<{ success: boolean; error?: string }>;
     syncBuiltins: () => Promise<{ success: boolean; added: number; updated: number; removed: number; error?: string }>;
+  };
+  /** AI 行内补全（独立轻量通道，不污染聊天会话） */
+  completion: {
+    inline: (req: InlineCompletionRequest, requestId?: string) => Promise<{ text: string } | { error: string }>;
+    cancel: (requestId: string) => Promise<void>;
   };
   /** 本地记忆：跨多次模型调用持久化的上下文/偏好/摘要 */
   memory: {

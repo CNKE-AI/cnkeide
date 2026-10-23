@@ -26,6 +26,7 @@ import { useEditorStore } from '../../store/editorStore';
 import { useAgentActivityStore } from '../../store/agentActivityStore';
 import { useUiStore } from '../../store/uiStore';
 import { useLayoutStore } from '../../store/layoutStore';
+import { inlineCompletion, inlineSuggestionTheme } from './inlineCompletion';
 import { FileCode2, X, Save, SaveAll, MessageSquarePlus, RefreshCw, Bot, AlertTriangle } from 'lucide-react';
 
 /** CodeMirror 编辑器主题 - 深色背景，匹配 IDE 整体风格 */
@@ -248,7 +249,17 @@ const EditorPanel: React.FC = () => {
   const themeCompartmentRef = useRef(new Compartment());
   const activePathRef = useRef<string | null>(null);
   const isUpdatingRef = useRef(false);
+  const completionEnabledRef = useRef(true);
   const [hasSelection, setHasSelection] = useState(false);
+
+  // 读取行内补全开关（agentConfig.enableInlineCompletion，默认开），一次性即可
+  useEffect(() => {
+    void window.cnke.config.get('agentConfig').then((cfg) => {
+      if (cfg && typeof cfg === 'object' && 'enableInlineCompletion' in cfg) {
+        completionEnabledRef.current = (cfg as { enableInlineCompletion?: boolean }).enableInlineCompletion !== false;
+      }
+    });
+  }, []);
 
   // Agent 触碰过的文件（跨视图共享，标记"Agent 改过"）
   const modifiedFiles = useAgentActivityStore((s) => s.modifiedFiles);
@@ -320,6 +331,16 @@ const EditorPanel: React.FC = () => {
         langCompartmentRef.current.of(langExtensionOf(active?.name ?? '')),
         updateListener,
         EditorView.editable.of(!!active),
+        inlineSuggestionTheme,
+        inlineCompletion({
+          getFilePath: () => activePathRef.current ?? '',
+          getLanguage: () => {
+            const p = activePathRef.current ?? '';
+            const tab = useEditorStore.getState().tabs.find((t) => samePath(t.path, p));
+            return langLabelOf(tab?.name ?? '');
+          },
+          enabled: () => completionEnabledRef.current && !!activePathRef.current,
+        }),
       ],
     });
 
