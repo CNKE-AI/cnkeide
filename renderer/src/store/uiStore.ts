@@ -111,7 +111,7 @@ function deriveUsage(raw: any): ContextUsage | null {
 }
 
 /** 从 plan:get 返回的 { plan, progress } 推导 PlanState */
-function derivePlan(raw: any): PlanState | null {
+export function derivePlan(raw: any): PlanState | null {
   if (!raw) return null;
   const plan = raw.plan || raw;
   if (!plan || !Array.isArray(plan.items)) return null;

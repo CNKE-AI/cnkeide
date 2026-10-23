@@ -18,6 +18,7 @@
 
 import { promises as fsp } from 'node:fs';
 import AdmZip from 'adm-zip';
+import PptxGenJS from 'pptxgenjs';
 import type { PptBrand } from '../ppt/pptBrand';
 import { mergeBrandColors } from '../ppt/pptBrand';
 import { getLayout, CANVAS_W, CANVAS_H, GRID, CONTENT_W, Slot } from '../ppt/pptLayout';
@@ -113,15 +114,16 @@ export class MockPptxAdapter implements PptxAdapter {
   readonly available = false;
   readonly provider = 'mock';
 
-  async generate(_req: PptxCreateRequest, _savePath: string): Promise<PptxSaveResult> {
-    return {
+  generate(_req: PptxCreateRequest, _savePath: string): Promise<PptxSaveResult> {
+    return Promise.resolve({
       success: false,
       error: 'PPT 生成未就绪：缺少 pptxgenjs 依赖，请运行 npm install pptxgenjs',
-    };
+    });
   }
 }
 
 // ===== 真实实现（pptxgenjs）=====
+// pptxgenjs 在 dependencies 中，直接静态 import（顶部已导入）
 
 export class PptxGenAdapter implements PptxAdapter {
   readonly available = true;
@@ -129,20 +131,15 @@ export class PptxGenAdapter implements PptxAdapter {
 
   async generate(req: PptxCreateRequest, savePath: string): Promise<PptxSaveResult> {
     try {
-      // 动态 import，规避 vite 静态分析（与 PlaywrightTools 一致）
-      const dynamicImport = new Function('m', 'return import(m)') as (m: string) => Promise<any>;
-      const Pptxgen = await dynamicImport('pptxgenjs');
-      const Pptx = (Pptxgen.default ?? Pptxgen) as any;
-
-      const pptx = new Pptx();
+      const pptx = new PptxGenJS();
       pptx.layout = req.size === '4x3' ? 'LAYOUT_4x3' : 'LAYOUT_WIDE';
       if (req.author) pptx.author = req.author;
       if (req.subject) pptx.subject = req.subject;
       if (req.title) pptx.title = req.title;
 
-      // 定义 16:9 布局尺寸（英寸）
-      const SW = 13.333;
-      const SH = 7.5;
+      // 定义 16:9 布局尺寸（英寸）——代码内联了具体值，常量保留作为语义注释
+      const _SW = 13.333;
+      const _SH = 7.5;
 
       // 企业品牌：品牌色优先于主题色；Logo / 页脚 / 字体注入
       const brand = req.brand?.enabled ? req.brand : null;
@@ -168,7 +165,7 @@ export class PptxGenAdapter implements PptxAdapter {
       const cPrimary = merged.primary;
       const cAccent = merged.accent;
       const cBg = merged.background;
-      const hasTheme = !!req.theme || !!brand;
+      const _hasTheme = !!req.theme || !!brand;
       // 背景过深时正文改浅色，保证可读性（简单亮度判断）
       const bgLuminance = (() => {
         const r = parseInt(cBg.slice(0, 2), 16), g = parseInt(cBg.slice(2, 4), 16), b = parseInt(cBg.slice(4, 6), 16);
@@ -211,7 +208,7 @@ export class PptxGenAdapter implements PptxAdapter {
             case 'metric':
             case 'metricLabel':
             case 'note':
-              return (s as any)[slotRole] || null;
+              return ((s as Record<string, unknown>)[slotRole] ?? null) as string | null;
             case 'footer':
               return footerParts || null;
             case 'pageNum':
@@ -267,7 +264,7 @@ export class PptxGenAdapter implements PptxAdapter {
               options: { fontSize: slot.fontSize, color: colorOf(slot), fontFace, breakLine: true, align: 'left' as const },
             }));
             if (!rows.length) continue;
-            slide.addText(rows as any, {
+            slide.addText(rows, {
               x, y, w, h, valign: 'top',
               lineSpacing: Math.round(slot.fontSize * 1.55),
             });
@@ -281,7 +278,7 @@ export class PptxGenAdapter implements PptxAdapter {
             const chart = s.chart!;
             const chartType = { bar: 'bar', line: 'line', pie: 'pie' }[chart.type] || 'bar';
             const chartData = chart.series.map((ser) => ({ name: ser.name, labels: chart.labels, values: ser.values }));
-            slide.addChart(chartType as any, chartData, {
+            slide.addChart(chartType as never, chartData, {
               x, y, w, h,
               showLegend: chart.series.length > 1,
               showTitle: false,
@@ -301,8 +298,8 @@ export class PptxGenAdapter implements PptxAdapter {
             fontSize: slot.fontSize || 12,
             bold: !!slot.bold,
             color: colorOf(slot),
-            align: (slot.align || 'left') as any,
-            valign: (slot.valign === 'middle' ? 'middle' : slot.valign === 'bottom' ? 'bottom' : 'top') as any,
+            align: (slot.align || 'left') as never,
+            valign: (slot.valign === 'middle' ? 'middle' : slot.valign === 'bottom' ? 'bottom' : 'top') as never,
             fontFace,
           });
         }
@@ -322,6 +319,7 @@ export class PptxGenAdapter implements PptxAdapter {
         if (s.table) {
           const headers = s.table.headers;
           const rows = s.table.rows;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- addTable 的 TableRow 类型复杂，构造时允许 any 数组
           const tableRows: any[] = [
             headers.map((h) => ({ text: h, options: { bold: true, fill: { color: cPrimary }, color: 'FFFFFF', fontFace } })),
             ...rows.map((r) => r.map((c) => ({ text: c, options: { fontFace } }))),
@@ -375,8 +373,9 @@ export class PptxGenAdapter implements PptxAdapter {
       }
 
       return { success: true, path: savePath, slideCount: slides.length, brandNotices };
-    } catch (err: any) {
-      return { success: false, error: err?.message || String(err) };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { success: false, error: msg };
     }
   }
 }
@@ -384,8 +383,7 @@ export class PptxGenAdapter implements PptxAdapter {
 /** 工厂：动态探测 pptxgenjs 是否可用，返回真实或 Mock 适配器 */
 export async function createPptxAdapter(): Promise<PptxAdapter> {
   try {
-    const dynamicImport = new Function('m', 'return import(m)') as (m: string) => Promise<any>;
-    await dynamicImport('pptxgenjs');
+    await import('pptxgenjs');
     return new PptxGenAdapter();
   } catch {
     return new MockPptxAdapter();

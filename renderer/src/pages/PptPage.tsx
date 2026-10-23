@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   Briefcase, GraduationCap, Mountain, Smile, Sparkles, RefreshCw, Eye, Save,
   Wand2, FolderOpen, FileDown, Rocket, Building2, Layers, ShieldCheck,
-  ChevronRight, ChevronLeft, Pencil, Download, FileText,
+  ChevronRight, ChevronLeft, Pencil, Download, FileText, Check,
 } from 'lucide-react';
 import { useApp } from '../store/AppProvider';
 import { PptMasterWorkspace } from '../components/ppt/PptMasterWorkspace';
@@ -769,7 +769,7 @@ const PptPage: React.FC = () => {
           slides: slidesWithRole,
           fallbackThemeId: selectedThemeId,
         });
-        design = designRes.design as AiDesign;
+        design = designRes.design;
         setAiDesign(design);
         setSelectedThemeId(design.themeId);
       }
@@ -945,7 +945,7 @@ const PptPage: React.FC = () => {
                 ] as const).map(([mode, label, Icon]) => (
                   <button
                     key={mode}
-                    onClick={() => setInputMode(mode as any)}
+                    onClick={() => setInputMode(mode)}
                     className={`flex-1 inline-flex items-center justify-center gap-1 rounded-md py-1.5 text-[11px] font-medium transition-colors ${
                       inputMode === mode ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
                     }`}
@@ -1520,7 +1520,7 @@ const PptPage: React.FC = () => {
             <div className="flex-1 flex bg-secondary/30 overflow-hidden">
               {/* 左侧：缩略图网格 */}
               <div className="w-[200px] shrink-0 border-r border-border bg-background/40 overflow-y-auto p-2 space-y-2">
-                {outline!.slides.map((s, i) => {
+                {outline.slides.map((s, i) => {
                   const active = i === previewIdx;
                   return (
                     <button
@@ -1534,7 +1534,7 @@ const PptPage: React.FC = () => {
                       <div
                         className="h-[80px] relative"
                         style={{
-                          background: i === 0 || i === outline!.slides.length - 1
+                          background: i === 0 || i === outline.slides.length - 1
                             ? `linear-gradient(135deg, ${themes.find((t) => t.id === selectedThemeId)?.colors.primary || '#1e3a8a'} 0%, ${themes.find((t) => t.id === selectedThemeId)?.colors.secondary || '#7c3aed'} 100%)`
                             : themes.find((t) => t.id === selectedThemeId)?.colors.background || '#f8fafc',
                         }}
@@ -1542,8 +1542,8 @@ const PptPage: React.FC = () => {
                         <div
                           className="absolute top-1 left-1 text-[9px] font-semibold px-1.5 py-0.5 rounded"
                           style={{
-                            color: i === 0 || i === outline!.slides.length - 1 ? 'rgba(255,255,255,0.95)' : themes.find((t) => t.id === selectedThemeId)?.colors.primary || '#1e3a8a',
-                            background: i === 0 || i === outline!.slides.length - 1 ? 'rgba(255,255,255,0.18)' : `${themes.find((t) => t.id === selectedThemeId)?.colors.accent || '#06b6d4'}22`,
+                            color: i === 0 || i === outline.slides.length - 1 ? 'rgba(255,255,255,0.95)' : themes.find((t) => t.id === selectedThemeId)?.colors.primary || '#1e3a8a',
+                            background: i === 0 || i === outline.slides.length - 1 ? 'rgba(255,255,255,0.18)' : `${themes.find((t) => t.id === selectedThemeId)?.colors.accent || '#06b6d4'}22`,
                           }}
                         >
                           {i + 1}
@@ -1551,7 +1551,7 @@ const PptPage: React.FC = () => {
                         <div
                           className="absolute left-1.5 right-1.5 bottom-1.5 text-[10px] font-semibold truncate"
                           style={{
-                            color: i === 0 || i === outline!.slides.length - 1 ? '#fff' : themes.find((t) => t.id === selectedThemeId)?.colors.primary || '#1e3a8a',
+                            color: i === 0 || i === outline.slides.length - 1 ? '#fff' : themes.find((t) => t.id === selectedThemeId)?.colors.primary || '#1e3a8a',
                           }}
                         >
                           {s.title}

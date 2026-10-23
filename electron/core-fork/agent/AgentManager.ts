@@ -1,6 +1,6 @@
 import { LLMProvider } from '../llm/LLMProvider';
 import { decideModelFromPromptWithImages } from '../llm/ModelRouter';
-import { ToolManager } from '../tools/ToolManager';
+import { ToolManager, SUBAGENT_TOOL_NAME } from '../tools/ToolManager';
 import { scheduleToolCalls, DEFAULT_TOOL_POLICIES } from '../tools/ParallelToolScheduler';
 import { CodebaseIndexer } from '../codebase/CodebaseIndexer';
 import { FileSystemAdapter } from '../../adapter/FileSystemAdapter';
@@ -15,20 +15,15 @@ import { SkillRegistry } from '../skills/SkillRegistry';
 import { BUILTIN_PROMPT_SKILLS } from '../skills/builtins';
 import { ApprovalPolicy, ApprovalRule, PolicyDecision } from '../checkpoint/ApprovalPolicy';
 import { ContextTracker, ContextState } from './ContextTracker';
+import { ContextCompressor } from './ContextCompressor';
+import { SubAgentManager, SubAgentType, SubAgentResult, SubAgentExecutor, EXPLORE_TOOLS } from './SubAgentManager';
+import { detectCapabilities } from '../llm/ProviderCapabilities';
 import { RagManager } from '../rag/RagManager';
 import { MockImageGenAdapter, OpenAIImageGenAdapter } from '../tools/ImageGenTools';
 import { randomUUID } from 'node:crypto';
 import { BrowserWindow } from 'electron';
-import { appendFileSync } from 'node:fs';
-
-// 诊断日志：定位"对话没反应/工具卡住"问题
-function dbgLog(msg: string): void {
-  try {
-    appendFileSync('C:\\Users\\yuhen\\Downloads\\CNKE\\cnke-claw\\agent-debug.log', `${new Date().toISOString()} ${msg}\n`);
-  } catch {
-    /* ignore */
-  }
-}
+// 诊断日志：定位"对话没反应/工具卡住"问题。默认关闭，需 CNKE_DEBUG_LOG 环境变量开启。
+import { dbgLog } from '../util/dbgLog';
 
 /** 手动上下文压缩的 system prompt */
 const SUMMARIZE_CONTEXT_PROMPT = `你是对话压缩助手。下面是早期对话历史，请提炼出 200-500 字的简洁摘要，让后续 AI 能延续上下文而不丢失关键信息。
@@ -77,7 +72,7 @@ export interface RunParams {
 }
 
 export interface AgentEvent {
-  type: 'thinking' | 'assistant' | 'tool_call' | 'tool_result' | 'done' | 'error' | 'stream' | 'context_state' | 'model_fallback';
+  type: 'thinking' | 'assistant' | 'tool_call' | 'tool_result' | 'done' | 'error' | 'stream' | 'context_state' | 'model_fallback' | 'context_compressed';
   sessionId: string;
   data: any;
 }
@@ -286,6 +281,10 @@ export class AgentManager {
   private contextTracker: ContextTracker = new ContextTracker();
   /** 浏览器初始化只执行一次，图片适配器则会在每次运行前读取最新配置。 */
   private browserInit?: Promise<void>;
+  /** W8：上下文自动压缩器（超阈值时把早期历史摘要为单条 system 消息） */
+  private contextCompressor = new ContextCompressor();
+  /** W8：子 Agent 委派管理器（delegate_subagent 工具的实现方） */
+  private subAgentManager = new SubAgentManager();
 
   constructor(config: AgentConfig) {
     this.config = config.config;
@@ -430,6 +429,10 @@ export class AgentManager {
           return { success: false, error: '未配置 API' };
         }
 
+        // W8：请求前先做上下文自动压缩。多轮工具调用（每轮都会追加 assistant + tool 消息）
+        // 会让 prompt 持续膨胀，撞上窗口上限后请求直接失败且用户无从下手。
+        currentMessages = await this.autoCompressContext(sessionId, currentMessages, apiConfig, emit);
+
         const response = await this.llmProvider.chat({
           apiConfig,
           messages: currentMessages,
@@ -559,6 +562,25 @@ export class AgentManager {
             execute: async (call) => {
               dbgLog(`[run] executing tool=${call.name} id=${call.id} autoApprove=${autoApproveRun}`);
 
+              // W8：子 Agent 委派需要独立的多轮 LLM 循环，ToolManager 承载不了，故在此拦截。
+              // 委派本身不是破坏性操作，其内部工具调用各自走审批策略（见 runSubAgent）。
+              if (call.name === SUBAGENT_TOOL_NAME) {
+                const sub = await this.runSubAgent(
+                  sessionId,
+                  call.arguments || {},
+                  abortController.signal,
+                  autoApproveRun
+                );
+                const text = sub.success
+                  ? `[子 Agent 完成] 轮数 ${sub.turns}，工具调用 ${sub.toolCallCount} 次\n\n${sub.output || '(无输出)'}`
+                  : `[子 Agent 失败] ${sub.error || '未知错误'}`;
+                // 反幻觉：子 Agent 实际执行了工具，记录在案
+                sessionToolNames.add(call.name);
+                emit({ type: 'tool_result', sessionId, data: { toolCallId: call.id, result: text } });
+                dbgLog(`[run] subagent done: success=${sub.success} turns=${sub.turns}`);
+                return text;
+              }
+
               // 单个工具的审批（仍串行，但不同工具之间可并发）
               if (!autoApproveRun) {
                 const approved = await this.requestToolApproval(sessionId, call as any);
@@ -588,8 +610,8 @@ export class AgentManager {
         for (let i = 0; i < toolCalls.length; i++) {
           const call = toolCalls[i];
           const res = scheduledResults[i].result;
-          if (res && (res as any).__rejected) {
-            toolResults.push({ tool_call_id: call.id, role: 'tool', content: (res as any).content });
+          if (res && (res).__rejected) {
+            toolResults.push({ tool_call_id: call.id, role: 'tool', content: (res).content });
           } else {
             toolResults.push({
               tool_call_id: call.id,
@@ -964,15 +986,25 @@ export class AgentManager {
     }
     const splitUserIdx = userIndices[userIndices.length - 6];
     const toCompress = conversation.slice(0, splitUserIdx);
+    return this.summarizeMessages(toCompress, apiConfig);
+  }
+
+  /**
+   * W8：把一段历史消息摘要为文本。
+   * 「压缩上下文」按钮（手动）与自动压缩共用此实现，避免两处摘要逻辑各自漂移。
+   */
+  private async summarizeMessages(toCompress: any[], apiConfig?: any): Promise<string> {
+    const api = apiConfig || this.getActiveApiConfig();
+    if (!api) throw new Error('未配置 API，无法压缩上下文');
     const src = toCompress
       .map((m: any) => {
-        const role = m.role === 'assistant' ? 'AI' : '用户';
+        const role = m.role === 'assistant' ? 'AI' : m.role === 'tool' ? '工具结果' : '用户';
         const c = typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '');
         return `${role}: ${c.slice(0, 1500)}`;
       })
       .join('\n\n');
     const response = await this.llmProvider.chat({
-      apiConfig,
+      apiConfig: api,
       messages: [
         { role: 'system', content: SUMMARIZE_CONTEXT_PROMPT },
         { role: 'user', content: src.slice(0, 12000) },
@@ -981,6 +1013,127 @@ export class AgentManager {
       stream: false,
     });
     return (response.content || '').trim() || '(压缩失败：摘要为空)';
+  }
+
+  /**
+   * W8：上下文自动压缩。
+   * 触发条件：估算 token ≥ 模型上下文窗口 × triggerRatio，且早期对话轮数多于保留轮数。
+   * 任何失败都原样返回消息列表——压缩是优化手段，不能因此让整轮对话失败。
+   */
+  private async autoCompressContext(
+    sessionId: string,
+    messages: any[],
+    apiConfig: any,
+    emit: (event: AgentEvent) => void
+  ): Promise<any[]> {
+    if (this.config.get<boolean>('agentConfig.autoCompressContext', true) === false) return messages;
+    try {
+      const maxContextTokens = detectCapabilities(apiConfig?.model || '').maxContextTokens;
+      if (!maxContextTokens) return messages;
+      const options = {
+        maxContextTokens,
+        triggerRatio: this.config.get<number>('agentConfig.autoCompressTriggerRatio', 0.8),
+        keepRecentTurns: this.config.get<number>('agentConfig.autoCompressKeepTurns', 6),
+      };
+      if (!this.contextCompressor.shouldCompress(messages, options)) return messages;
+      const { messages: compressed, stats } = await this.contextCompressor.compress(
+        messages,
+        (toCompress) => this.summarizeMessages(toCompress, apiConfig),
+        options
+      );
+      if (stats.compressedTurns === 0) return messages;
+      dbgLog(
+        `[compress] session=${sessionId} msgs ${stats.beforeMessages}->${stats.afterMessages} ` +
+          `chars ${stats.beforeChars}->${stats.afterChars} saved~${stats.savedTokens} tokens`
+      );
+      emit({ type: 'context_compressed', sessionId, data: { ...stats, maxContextTokens } });
+      return compressed;
+    } catch (err: any) {
+      dbgLog(`[compress] failed, keep original messages: ${err.message}`);
+      return messages;
+    }
+  }
+
+  /**
+   * W8：执行一次子 Agent 委派。
+   * 子 Agent 复用同一个 LLMProvider，但拥有独立 messages（看不到主对话历史），
+   * 因此委派时必须在 description 里写清自包含的任务背景。
+   * 工具列表按 agentType 过滤，并排除本工具自身以防无限递归。
+   */
+  private async runSubAgent(
+    parentSessionId: string,
+    args: any,
+    signal: AbortSignal,
+    autoApproveRun: boolean
+  ): Promise<SubAgentResult> {
+    const description = typeof args?.description === 'string' ? args.description.trim() : '';
+    if (!description) {
+      return { success: false, output: '', turns: 0, toolCallCount: 0, error: '缺少 description 参数' };
+    }
+    const agentType: SubAgentType = args?.agentType === 'explore' ? 'explore' : 'general-purpose';
+    const rawTurns = Number(args?.maxTurns);
+    const maxTurns = Number.isFinite(rawTurns) ? Math.max(1, Math.min(30, Math.trunc(rawTurns))) : 10;
+
+    // 仅 ask 模式会裁剪工具白名单，这里取完整工具列表供子 Agent 使用
+    const allTools = await this.toolManager.getAvailableTools('coder');
+    // 排除委派工具本身：子 Agent 不能再委派，否则会递归
+    const usable = allTools.filter((t) => t.name !== SUBAGENT_TOOL_NAME);
+    const toolsByType: Record<SubAgentType, any[]> = {
+      'general-purpose': usable,
+      'explore': usable.filter((t) => EXPLORE_TOOLS.has(t.name)),
+    };
+
+    // SubAgentExecutor.getAvailableTools 是同步签名，故工具列表必须提前解析好
+    const executor: SubAgentExecutor = {
+      getActiveApiConfig: () => this.getActiveApiConfig(),
+      getAvailableTools: (type) => toolsByType[type] || toolsByType['general-purpose'],
+      callLlm: async ({ apiConfig, messages, tools }) => {
+        const r = await this.llmProvider.chat({
+          apiConfig,
+          messages,
+          tools,
+          temperature: this.config.get<number>('agentConfig.temperature', 0.7),
+          topP: this.config.get<number>('agentConfig.topP', 1.0),
+          stream: false,
+          signal,
+          fallbackConfigs: this.getFallbackConfigs(apiConfig),
+          timeout: {
+            perAttemptTimeoutMs: this.config.get<number>('agentConfig.llmTimeoutMs', 60000),
+            totalTimeoutMs: this.config.get<number>('agentConfig.llmTotalTimeoutMs', 180000),
+          },
+        });
+        return {
+          content: r.content || '',
+          thinking: r.thinking,
+          toolCalls: r.toolCalls || [],
+          usage: r.usage,
+        };
+      },
+      executeTool: async (name, toolArgs) => {
+        // 委派出去不等于绕过审批：子 Agent 的工具调用沿用与主 Agent 相同的审批策略，
+        // 否则写文件/执行命令这类操作会变成用户看不见的"隐身执行"。
+        if (!autoApproveRun) {
+          const approved = await this.requestToolApproval(parentSessionId, { name, arguments: toolArgs });
+          if (!approved) return { success: false, error: '用户拒绝了此工具调用' };
+        }
+        const r = await this.toolManager.execute(name, toolArgs);
+        if (typeof r === 'string') return { success: true, output: r };
+        return {
+          success: r?.success !== false,
+          output: r?.output ?? (r?.success === false ? undefined : JSON.stringify(r)),
+          error: r?.error,
+        };
+      },
+      onProgress: (event) => {
+        dbgLog(`[subagent] ${event.type}`);
+      },
+    };
+
+    return this.subAgentManager.runTask(
+      { description, agentType, maxTurns, parentSessionId },
+      executor,
+      signal
+    );
   }
 
   private async requestToolApproval(sessionId: string, toolCall: any): Promise<boolean> {

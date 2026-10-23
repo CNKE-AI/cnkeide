@@ -621,20 +621,20 @@ export class UpdateManager {
    * 检查是否刚完成更新（当前版本与上次记录版本不同），若需要公告则返回版本号。
    * 同时把当前版本写入持久化标记，后续启动不再重复弹出。
    */
-  async checkPostUpdateAnnouncement(): Promise<string | null> {
+  checkPostUpdateAnnouncement(): Promise<string | null> {
     try {
       const currentVersion = app.getVersion();
       const key = 'update.lastAnnouncementVersion';
       const lastShown = this.config.get<string>(key, '');
       if (lastShown === currentVersion) {
         // 已经为此版本弹过公告
-        return null;
+        return Promise.resolve(null);
       }
       // 记录当前版本，后续不再弹
       this.config.set(key, currentVersion);
-      return currentVersion;
+      return Promise.resolve(currentVersion);
     } catch {
-      return null;
+      return Promise.resolve(null);
     }
   }
 

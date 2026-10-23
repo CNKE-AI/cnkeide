@@ -23,6 +23,24 @@ export interface ToolDefinition {
 }
 
 /**
+ * W8：子 Agent 委派工具。
+ * 该工具不在本类的 execute() 里实现——它需要独立的多轮 LLM 循环，
+ * 由 AgentManager 在工具执行处拦截后交给 SubAgentManager 处理。
+ * 常量放在这里，避免 AgentManager 与 ToolManager 互相 import 形成循环依赖。
+ */
+export const SUBAGENT_TOOL_NAME = 'delegate_subagent';
+
+/** W12 浏览器工具名集合：仅在真实 Playwright 就绪时才投递给模型 */
+const BROWSER_TOOL_NAMES = new Set([
+  'browser_navigate',
+  'browser_screenshot',
+  'browser_click',
+  'browser_input',
+  'browser_extract',
+  'browser_close',
+]);
+
+/**
  * 跨平台路径拼接：模型在 Windows 上也可能给出 posix 风格（src/a.ts），
  * 直接用 path.join 在 Windows 上没问题，但在 POSIX 上遇到 Windows 风格分隔符会出错。
  * 这里统一先把分隔符归一化再拼接，保证两种风格混用都能落到正确位置。
@@ -75,6 +93,14 @@ export class ToolManager {
   private playwright?: PlaywrightAdapter;
   /** W12：图片生成适配器（可选，未配置时为 Mock） */
   private imageGen?: ImageGenAdapter;
+  /**
+   * 真实 Playwright 是否就绪。
+   * 为 false 时浏览器工具不会投递给模型：MockPlaywrightAdapter 的每个方法都直接抛
+   * 「Playwright 未启用」，把它们列在工具表里只会让模型白跑一轮再收到无用报错。
+   */
+  private browserReady = false;
+  /** 图片生成适配器是否真正可用（Mock 的 generate() 固定返回失败，故同样不投递） */
+  private imageGenReady = false;
   /** 当前会话上下文（sessionId + 工作区），用于快照归属与回滚 */
   private sessionId: string | null = null;
   private workspaceId: string | null = null;
@@ -147,15 +173,19 @@ export class ToolManager {
     const a = await createRealPlaywrightAdapter();
     if (a) {
       this.playwright = a;
+      this.browserReady = true;
       return true;
     }
+    // 保留 Mock 实例，这样即使被绕过调用也能返回明确的「未启用」而不是 undefined 崩溃
     this.playwright = new MockPlaywrightAdapter();
+    this.browserReady = false;
     return false;
   }
 
   /** W12：设置图片生成适配器（用户提供 apiKey 时调用） */
   setImageGenAdapter(adapter: ImageGenAdapter): void {
     this.imageGen = adapter;
+    this.imageGenReady = !(adapter instanceof MockImageGenAdapter);
   }
 
   /**
@@ -606,12 +636,38 @@ export class ToolManager {
           required: ['files'],
         },
       },
+      {
+        name: SUBAGENT_TOOL_NAME,
+        description:
+          '把独立的子任务委派给子 Agent 执行。子 Agent 拥有独立上下文和完整工具链，适合「大范围搜索调研」或「与当前主线无关的独立任务」，避免大量中间结果把主对话上下文塞满。注意：子 Agent 看不到主对话历史，description 必须自包含。',
+        parameters: {
+          type: 'object',
+          properties: {
+            description: { type: 'string', description: '子任务描述，必须自包含（含必要背景、目标、验收标准）' },
+            agentType: {
+              type: 'string',
+              enum: ['general-purpose', 'explore'],
+              description: 'explore 为只读调研（禁止写入/执行命令），general-purpose 可读写，默认 general-purpose',
+            },
+            maxTurns: { type: 'number', description: '子 Agent 最大轮数，默认 10，上限 30' },
+          },
+          required: ['description'],
+        },
+      },
     ];
 
+    // 只投递真正可用的工具。无法工作的工具留在表里，模型会照调不误——
+    // 白耗一轮，还带回「Playwright 未启用 / 图片生成未配置」这类对用户无意义的报错。
+    const available = allTools.filter((t) => {
+      if (!this.browserReady && BROWSER_TOOL_NAMES.has(t.name)) return false;
+      if (!this.imageGenReady && t.name === 'image_generate') return false;
+      return true;
+    });
+
     if (mode === 'ask') {
-      return allTools.filter((t) => ['read_file', 'search_files', 'list_directory', 'get_plan', 'grep', 'web_search', 'web_fetch', 'git_status', 'git_log', 'semantic_search'].includes(t.name));
+      return available.filter((t) => ['read_file', 'search_files', 'list_directory', 'get_plan', 'grep', 'web_search', 'web_fetch', 'git_status', 'git_log', 'semantic_search'].includes(t.name));
     }
-    return allTools;
+    return available;
   }
 
   private async getMcpTools(): Promise<ToolDefinition[]> {
@@ -733,7 +789,7 @@ export class ToolManager {
           const useEmbedding = args.useEmbedding !== false;
           let embedding: any = undefined;
           if (useEmbedding && this.config) {
-            const cfg = this.config as any;
+            const cfg = this.config;
             const configs: any[] = cfg.getApiKeyConfigs ? cfg.getApiKeyConfigs() : [];
             const activeId = cfg.get('activeApiConfigId');
             const apiConfig = configs.find((c: any) => c.id === activeId) || configs[0];
@@ -762,7 +818,7 @@ export class ToolManager {
           if (!this.ragManager) return { success: false, error: 'RagManager 未启用' };
           let embedding: any;
           if (this.config) {
-            const cfg = this.config as any;
+            const cfg = this.config;
             const configs: any[] = cfg.getApiKeyConfigs ? cfg.getApiKeyConfigs() : [];
             const activeId = cfg.get('activeApiConfigId');
             const apiConfig = configs.find((c: any) => c.id === activeId) || configs[0];
@@ -785,7 +841,7 @@ export class ToolManager {
           if (!this.ragManager) return { success: false, error: 'RagManager 未启用' };
           let embedding: any;
           if (this.config) {
-            const cfg = this.config as any;
+            const cfg = this.config;
             const configs: any[] = cfg.getApiKeyConfigs ? cfg.getApiKeyConfigs() : [];
             const activeId = cfg.get('activeApiConfigId');
             const apiConfig = configs.find((c: any) => c.id === activeId) || configs[0];

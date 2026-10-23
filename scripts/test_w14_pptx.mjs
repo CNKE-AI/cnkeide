@@ -79,7 +79,7 @@ async function main() {
   try {
     fs.unlinkSync(outPath);
     fs.unlinkSync(outPath + '.empty.pptx');
-  } catch {}
+  } catch { /* 文件可能已不存在 */ }
 
   console.log(`\n=== 结果：${pass} 通过 / ${fail} 失败 ===\n`);
   if (fail > 0) {

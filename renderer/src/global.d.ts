@@ -52,6 +52,50 @@ export interface SkillView {
   enabled: boolean;
 }
 
+/** 目录条目（主进程 FileSystemAdapter.listDir 返回） */
+export interface DirEntry {
+  name: string;
+  path: string;
+  isDirectory: boolean;
+  isFile: boolean;
+  size: number;
+  modified: number;
+}
+
+/** #codebase 检索命中条目（主进程 FileSystemAdapter.searchFiles 返回） */
+export interface SearchResultEntry {
+  path: string;
+  relativePath: string;
+  line: number;
+  column: number;
+  match: string;
+}
+
+/** 会话存储结构（主进程 SessionStore 返回，messages 为宽松类型供渲染层收窄） */
+export interface StoredSession {
+  id: string;
+  workspaceId?: string;
+  title?: string;
+  messages?: any[];
+  mode?: string;
+  createdAt?: number;
+  updatedAt?: number;
+}
+
+/** Agent 事件宽松结构（主进程事件字段随版本演进，仅约束公共字段） */
+export interface AgentEventLike {
+  type: string;
+  sessionId?: string;
+  [key: string]: any;
+}
+
+/** PPT 大纲宽松结构（LLM 动态生成，字段随场景变化） */
+export interface PptOutlineLike {
+  title?: string;
+  slides?: any[];
+  [key: string]: any;
+}
+
 export interface CnkeAPI {
   window: {
     minimize: () => void;
@@ -68,13 +112,13 @@ export interface CnkeAPI {
     openFolder: () => Promise<string | null>;
     readFile: (filePath: string) => Promise<{ success: boolean; content?: string; error?: string }>;
     writeFile: (filePath: string, content: string) => Promise<{ success: boolean; error?: string }>;
-    listDir: (dirPath: string) => Promise<{ success: boolean; entries?: any[]; error?: string }>;
+    listDir: (dirPath: string) => Promise<{ success: boolean; entries?: DirEntry[]; error?: string }>;
     createFile: (filePath: string, content?: string) => Promise<{ success: boolean; error?: string }>;
     createDir: (dirPath: string) => Promise<{ success: boolean; error?: string }>;
     deletePath: (filePath: string) => Promise<{ success: boolean; error?: string }>;
     renamePath: (oldPath: string, newPath: string) => Promise<{ success: boolean; error?: string }>;
     exists: (filePath: string) => Promise<boolean>;
-    searchFiles: (rootPath: string, pattern: string) => Promise<{ success: boolean; results?: any[]; error?: string }>;
+    searchFiles: (rootPath: string, pattern: string) => Promise<{ success: boolean; results?: SearchResultEntry[]; error?: string }>;
     /** 开始监听工作区目录变更（打开/切换文件夹时调用） */
     watchWorkspace: (rootPath: string) => Promise<{ success: boolean; error?: string }>;
     /** 停止监听工作区目录变更 */
@@ -98,26 +142,26 @@ export interface CnkeAPI {
     onExit: (cb: (data: { pid: number; code: number }) => void) => () => void;
   };
   agent: {
-    run: (params: any) => Promise<{ success: boolean; error?: string }>;
+    run: (params: unknown) => Promise<{ success: boolean; error?: string }>;
     abort: (sessionId: string) => void;
     enhancePrompt: (text: string) => Promise<{ success: boolean; enhanced?: string; error?: string }>;
-    onEvent: (cb: (event: any) => void) => () => void;
-    onToolCall: (cb: (data: any) => void) => () => void;
-    onToolResult: (cb: (data: any) => void) => () => void;
+    onEvent: (cb: (event: AgentEventLike) => void) => () => void;
+    onToolCall: (cb: (data: unknown) => void) => () => void;
+    onToolResult: (cb: (data: unknown) => void) => () => void;
   };
   session: {
-    list: (workspaceId: string) => Promise<any[]>;
-    listAll: () => Promise<any[]>;
-    load: (sessionId: string) => Promise<any>;
-    save: (session: any) => Promise<{ success: boolean; error?: string }>;
+    list: (workspaceId: string) => Promise<StoredSession[]>;
+    listAll: () => Promise<StoredSession[]>;
+    load: (sessionId: string) => Promise<StoredSession | null>;
+    save: (session: unknown) => Promise<{ success: boolean; error?: string }>;
     delete: (sessionId: string) => Promise<{ success: boolean; error?: string }>;
-    create: (workspaceId: string, title?: string) => Promise<any>;
+    create: (workspaceId: string, title?: string) => Promise<StoredSession>;
   };
   config: {
-    get: (key: string) => Promise<any>;
-    set: (key: string, value: any) => Promise<void>;
-    getApiKeyConfigs: () => Promise<any[]>;
-    saveApiConfig: (config: any) => Promise<{ success: boolean; error?: string }>;
+    get: (key: string) => Promise<unknown>;
+    set: (key: string, value: unknown) => Promise<void>;
+    getApiKeyConfigs: () => Promise<unknown[]>;
+    saveApiConfig: (config: unknown) => Promise<{ success: boolean; error?: string }>;
     deleteApiConfig: (id: string) => Promise<{ success: boolean; error?: string }>;
     syncBuiltins: () => Promise<{ success: boolean; added: number; updated: number; removed: number; error?: string }>;
   };
@@ -130,26 +174,26 @@ export interface CnkeAPI {
     clear: () => Promise<{ success: boolean; error?: string }>;
   };
   mcp: {
-    listServers: () => Promise<any[]>;
-    addServer: (config: any) => Promise<{ success: boolean; error?: string }>;
+    listServers: () => Promise<unknown[]>;
+    addServer: (config: unknown) => Promise<{ success: boolean; error?: string }>;
     removeServer: (id: string) => Promise<{ success: boolean; error?: string }>;
     toggleServer: (id: string, enabled: boolean) => Promise<{ success: boolean; error?: string }>;
-    listTools: (serverId: string) => Promise<any[]>;
-    refreshTools: (serverId: string) => Promise<{ success: boolean; tools?: any[]; error?: string }>;
-    callTool: (serverId: string, toolName: string, args: any) => Promise<any>;
-    onStatusChanged: (cb: (status: any) => void) => () => void;
+    listTools: (serverId: string) => Promise<unknown[]>;
+    refreshTools: (serverId: string) => Promise<{ success: boolean; tools?: unknown[]; error?: string }>;
+    callTool: (serverId: string, toolName: string, args: unknown) => Promise<unknown>;
+    onStatusChanged: (cb: (status: unknown) => void) => () => void;
   };
   dialog: {
-    showOpenDialog: (opts?: any) => Promise<string | null>;
-    showSaveDialog: (opts?: any) => Promise<string | null>;
-    showMessageBox: (opts: any) => Promise<any>;
+    showOpenDialog: (opts?: unknown) => Promise<string | null>;
+    showSaveDialog: (opts?: unknown) => Promise<string | null>;
+    showMessageBox: (opts: unknown) => Promise<unknown>;
   };
   shell: {
     openExternal: (url: string) => Promise<void>;
     openPath: (path: string) => Promise<void>;
   };
   toolApprove: {
-    onRequest: (cb: (data: any) => void) => () => void;
+    onRequest: (cb: (data: unknown) => void) => () => void;
     respond: (requestId: string, approved: boolean) => void;
   };
   path: {
@@ -161,12 +205,12 @@ export interface CnkeAPI {
   backend: {
     ping: () => Promise<{ success: boolean; latency?: number; error?: string }>;
     getDeviceId: () => Promise<string>;
-    getBuiltins: () => Promise<{ success: boolean; builtins?: any[]; error?: string }>;
-    getAnnouncements: () => Promise<{ success: boolean; announcements?: any[]; error?: string }>;
+    getBuiltins: () => Promise<{ success: boolean; builtins?: unknown[]; error?: string }>;
+    getAnnouncements: () => Promise<{ success: boolean; announcements?: unknown[]; error?: string }>;
     subscribeAnnouncements: () => Promise<{ success: boolean; error?: string }>;
-    onAnnouncement: (cb: (payload: { type: string; announcements?: any[]; serverTime?: number }) => void) => () => void;
-    submitFeedback: (msg: string, contact?: string) => Promise<{ success: boolean; item?: any; error?: string }>;
-    listFeedback: (since?: number) => Promise<{ success: boolean; items?: any[]; newReplyCount?: number; serverTime?: number; error?: string }>;
+    onAnnouncement: (cb: (payload: { type: string; announcements?: unknown[]; serverTime?: number }) => void) => () => void;
+    submitFeedback: (msg: string, contact?: string) => Promise<{ success: boolean; item?: unknown; error?: string }>;
+    listFeedback: (since?: number) => Promise<{ success: boolean; items?: unknown[]; newReplyCount?: number; serverTime?: number; error?: string }>;
   };
   /** 远程更新 API（增量热更新 / 断点续传 / 回滚） */
   update: {
@@ -186,6 +230,12 @@ export interface CnkeAPI {
   notify: {
     show: (payload: { type: 'done' | 'error'; title?: string; message?: string }) => void;
   };
+  /** 应用菜单事件（主进程菜单项 → 渲染层动作），返回取消订阅函数 */
+  menu: {
+    onOpenFolder: (cb: () => void) => () => void;
+    onSaveFile: (cb: () => void) => () => void;
+    onAbout: (cb: () => void) => () => void;
+  };
   /** App 元信息（从主进程读取，避免硬编码） */
   app: {
     getVersion: () => Promise<string>;
@@ -199,10 +249,10 @@ export interface CnkeAPI {
   };
   /** Checkpoint 快照（W7） */
   checkpoint: {
-    listSnapshots: (sessionId: string) => Promise<any[]>;
+    listSnapshots: (sessionId: string) => Promise<unknown[]>;
     restore: (snapshotId: string) => Promise<{ success: boolean; snapshotId: string }>;
-    getSnapshot: (snapshotId: string) => Promise<any>;
-    diffSnapshot: (snapshotId: string) => Promise<any>;
+    getSnapshot: (snapshotId: string) => Promise<unknown>;
+    diffSnapshot: (snapshotId: string) => Promise<unknown>;
     getModifiedFiles: () => Promise<string[]>;
   };
   /** 工具审批信任规则（W7） */
@@ -213,35 +263,35 @@ export interface CnkeAPI {
   };
   /** 会话导出/导入/上下文压缩 */
   sessionEx: {
-    export: (sessionId: string) => Promise<{ success: boolean; data?: any; error?: string }>;
-    import: (data: any) => Promise<{ success: boolean; session?: any; error?: string }>;
+    export: (sessionId: string) => Promise<{ success: boolean; data?: unknown; error?: string }>;
+    import: (data: unknown) => Promise<{ success: boolean; session?: unknown; error?: string }>;
     summarize: (sessionId: string) => Promise<{ success: boolean; summary?: string; error?: string }>;
     deleteMessage: (sessionId: string, messageId: string) => Promise<{ success: boolean; error?: string }>;
   };
   /** 计划查询（W3） */
   plan: {
-    get: (sessionId: string) => Promise<{ plan: any; progress: any }>;
-    skip: (sessionId: string, itemId: string) => Promise<{ success: boolean; plan: any; progress: any }>;
-    retry: (sessionId: string, itemId: string) => Promise<{ success: boolean; plan: any; progress: any }>;
-    abandon: (sessionId: string) => Promise<{ success: boolean; plan: any; progress: any }>;
+    get: (sessionId: string) => Promise<{ plan: unknown; progress: unknown }>;
+    skip: (sessionId: string, itemId: string) => Promise<{ success: boolean; plan: unknown; progress: unknown }>;
+    retry: (sessionId: string, itemId: string) => Promise<{ success: boolean; plan: unknown; progress: unknown }>;
+    abandon: (sessionId: string) => Promise<{ success: boolean; plan: unknown; progress: unknown }>;
   };
   /** PPT 生成（W14） */
   ppt: {
-    open: () => void;
+    open: (topic?: string) => void;
     close: () => void;
     minimize: () => void;
-    generate: (req: any, savePath?: string) => Promise<{ success: boolean; path?: string; slideCount?: number; brandNotices?: string[]; audit?: { issues: Array<{ level: 'warning' | 'fixed'; slide: number; message: string }>; summary: string; passed: boolean }; error?: string }>;
-    generateOutline: (topic: string, slideCount?: number, scenarioId?: string) => Promise<{ success: boolean; outline?: any; scenarioId?: string | null; error?: string }>;
-    generateAiDesign: (payload: { topic?: string; scenarioName?: string; slides?: any[]; fallbackThemeId?: string }) => Promise<{ success: boolean; design: { themeId: string; palette: { primary: string; secondary: string; accent: string; background: string }; fontFamily: string; visualStyle: string; rationale: string }; byLlm: boolean }>;
+    generate: (req: unknown, savePath?: string) => Promise<{ success: boolean; path?: string; slideCount?: number; brandNotices?: string[]; audit?: { issues: Array<{ level: 'warning' | 'fixed'; slide: number; message: string }>; summary: string; passed: boolean }; error?: string }>;
+    generateOutline: (topic: string, slideCount?: number, scenarioId?: string) => Promise<{ success: boolean; outline?: PptOutlineLike; scenarioId?: string | null; error?: string }>;
+    generateAiDesign: (payload: { topic?: string; scenarioName?: string; slides?: unknown[]; fallbackThemeId?: string }) => Promise<{ success: boolean; design: { themeId: string; palette: { primary: string; secondary: string; accent: string; background: string }; fontFamily: string; visualStyle: string; rationale: string }; byLlm: boolean }>;
     scanWorkspace: (wsPath?: string) => Promise<WorkspaceScanSummary>;
-    generateFromWorkspace: (opts?: { wsPath?: string; slideCount?: number; focus?: string }) => Promise<{ success: boolean; outline?: any; workspace?: WorkspaceScanSummary; error?: string }>;
+    generateFromWorkspace: (opts?: { wsPath?: string; slideCount?: number; focus?: string }) => Promise<{ success: boolean; outline?: PptOutlineLike; workspace?: WorkspaceScanSummary; error?: string }>;
     listScenarios: () => Promise<{ success: boolean; scenarios: Array<{ id: string; name: string; description: string; recommendedTheme: string; recommendedPages: [number, number] }> }>;
     detectScenario: (topic: string) => Promise<{ success: boolean; scenarioId: string; byLlm: boolean; confidence: number }>;
     getBrand: () => Promise<{ success: boolean; brand: { enabled: boolean; companyName: string; logoPath: string; primary: string; secondary: string; accent: string; fontFamily: string; footerText: string } }>;
-    setBrand: (brand: any) => Promise<{ success: boolean; brand: any }>;
+    setBrand: (brand: unknown) => Promise<{ success: boolean; brand: unknown }>;
     listThemes: () => Promise<{ success: boolean; themes?: { id: string; name: string; description: string; colors: { primary: string; secondary: string; accent: string; background: string }; icon: string }[] }>;
-    generatePreview: (payload: { themeId: string; outline: { title: string; slides: any[] }; design?: { palette?: { primary?: string; secondary?: string; accent?: string; background?: string }; fontFamily?: string; artDirection?: string } }) => Promise<{ success: boolean; html?: string; error?: string }>;
-    renderTheme: (payload: { themeId: string; outline: { title: string; slides: { title: string; bullets: string[]; chart?: { type: 'bar' | 'line' | 'pie'; labels: string[]; series: { name: string; values: number[] }[] } }[] }; extraInstruction?: string }) => Promise<{ success: boolean; html?: string; theme?: any; error?: string }>;
+    generatePreview: (payload: { themeId: string; outline: { title: string; slides: unknown[] }; design?: { palette?: { primary?: string; secondary?: string; accent?: string; background?: string }; fontFamily?: string; artDirection?: string } }) => Promise<{ success: boolean; html?: string; error?: string }>;
+    renderTheme: (payload: { themeId: string; outline: { title: string; slides: { title: string; bullets: string[]; chart?: { type: 'bar' | 'line' | 'pie'; labels: string[]; series: { name: string; values: number[] }[] } }[] }; extraInstruction?: string }) => Promise<{ success: boolean; html?: string; theme?: unknown; error?: string }>;
     saveHtml: (payload: { html: string; savePath: string }) => Promise<{ success: boolean; path?: string; error?: string }>;
     exportPdf: (payload: { html: string; savePath?: string; title?: string }) => Promise<{ success: boolean; path?: string; error?: string }>;
     onRenderProgress: (handler: (payload: { stage: 'render' | 'audit' | 'reflow' | 'finalize'; current: number; total: number; message: string }) => void) => () => void;

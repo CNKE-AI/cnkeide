@@ -56,12 +56,13 @@ export async function parseDocument(filePath: string): Promise<ParsedDocument> {
       type = 'html';
       text = htmlToText(await fs.readFile(filePath, 'utf-8'));
       break;
-    case '.pdf':
+    case '.pdf': {
       type = 'pdf';
       const pdfResult = await parsePdf(filePath);
       text = pdfResult.text;
       pages = pdfResult.pages;
       break;
+    }
     case '.docx':
       type = 'docx';
       text = await parseDocx(filePath);

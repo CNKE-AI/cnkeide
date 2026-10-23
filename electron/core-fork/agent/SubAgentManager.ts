@@ -50,7 +50,8 @@ export interface SubAgentExecutor {
   onProgress?: (event: { type: 'thinking' | 'assistant' | 'tool_call' | 'tool_result'; data: any }) => void;
 }
 
-const EXPLORE_TOOLS = new Set([
+/** explore 子 Agent 的只读工具白名单（导出以便主 Agent 构造工具列表时复用） */
+export const EXPLORE_TOOLS = new Set([
   'read_file', 'search_files', 'list_directory', 'get_file_outline',
   'search_symbol', 'find_references', 'project_structure',
   'grep', 'web_search', 'web_fetch', 'git_status', 'git_log',

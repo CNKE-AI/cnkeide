@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useUiStore, PlanStep } from '../../store/uiStore';
+import { useUiStore, derivePlan, PlanStep } from '../../store/uiStore';
 import {
   CheckCircle2, Circle, Loader2, XCircle, MinusCircle, ListTodo,
   ChevronDown, ChevronRight,
@@ -16,20 +16,44 @@ const STATUS_META: Record<PlanStep['status'], { icon: React.ReactNode; cls: stri
 /** 计划面板：可视化展示 AI 的任务计划步骤与执行进度 */
 const PlanPanel: React.FC<{ sessionId?: string }> = ({ sessionId }) => {
   const { plan, setPlan } = useUiStore();
-  const applyPlan = (result: any) => { if (result?.plan) setPlan({ ...result, plan: result.plan, progress: result.progress }); };
-  const skipStep = async (id: string) => sessionId && applyPlan(await window.cnke.plan.skip(sessionId, id));
-  const retryStep = async (id: string) => sessionId && applyPlan(await window.cnke.plan.retry(sessionId, id));
-  const abandonPlan = async () => sessionId && applyPlan(await window.cnke.plan.abandon(sessionId));
+  // plan IPC 返回的是 { plan, progress }（步骤在 plan.items 里），
+  // 而 store 存的是扁平化的 PlanState（顶层 steps）。
+  // 早期这里直接把整个返回值塞进 store，使 plan.steps 变成 undefined，
+  // 下一帧渲染 plan.steps.length 抛 TypeError —— 全仓无 ErrorBoundary，
+  // 整个 React 树被卸载，表现为点击「跳过」后黑屏。
+  const applyPlan = (result: any) => {
+    if (!result || result.success === false) return;
+    setPlan(result.plan ? derivePlan({ plan: result.plan, progress: result.progress }) : null);
+  };
+
+  // plan IPC 失败时过去会向上抛未处理的 rejection，直接炸掉 React 树 → 白屏。
+  // 三个操作都必须就地兜底：失败只影响这一个面板，不能带崩整个渲染进程。
+  const runPlanAction = async (label: string, fn: () => Promise<any>) => {
+    if (!sessionId) return;
+    try {
+      applyPlan(await fn());
+    } catch (err) {
+      // 保留现有状态，仅提示；不做乐观更新，避免假状态蒙蔽用户
+      alert(`计划操作「${label}」失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  const skipStep = (id: string) => void runPlanAction('跳过', () => window.cnke.plan.skip(sessionId!, id));
+  const retryStep = (id: string) => void runPlanAction('重试', () => window.cnke.plan.retry(sessionId!, id));
+  const abandonPlan = () => void runPlanAction('中止', () => window.cnke.plan.abandon(sessionId!));
   // 默认展开；步骤多时用户可手动收起，避免长计划占满对话区
   const [collapsed, setCollapsed] = useState(false);
 
-  if (!plan || plan.steps.length === 0) return null;
+  // 防御性取值：store 里的 plan 只要结构异常过一次就会让整个面板崩溃，
+  // 而崩溃点在这个组件里，代价却是整个应用黑屏。宁可降级为"不渲染"。
+  const steps: PlanStep[] = Array.isArray(plan?.steps) ? plan.steps : [];
+  if (!plan || steps.length === 0) return null;
 
   const { progress } = plan;
-  const total = progress?.total ?? plan.steps.length;
+  const total = progress?.total ?? steps.length;
   // progress 缺失时用本地 steps 兜底统计，保证计数器不会一直显示 0/N
-  const doneCount = progress?.done ?? plan.steps.filter((s) => s.status === 'completed').length;
-  const failedCount = progress?.failed ?? plan.steps.filter((s) => s.status === 'failed').length;
+  const doneCount = progress?.done ?? steps.filter((s) => s.status === 'completed').length;
+  const failedCount = progress?.failed ?? steps.filter((s) => s.status === 'failed').length;
   const donePct = total > 0 ? Math.round((doneCount / total) * 100) : 0;
 
   return (
@@ -66,7 +90,7 @@ const PlanPanel: React.FC<{ sessionId?: string }> = ({ sessionId }) => {
 
       {!collapsed && (
         <ul className="px-3 py-2 space-y-1">
-          {plan.steps.map((step, idx) => {
+          {steps.map((step, idx) => {
             const meta = STATUS_META[step.status] || STATUS_META.pending;
             // 后端字段异常时兜底显示序号，避免出现无文字的空白行
             const label = step.title?.trim() || `步骤 ${idx + 1}`;

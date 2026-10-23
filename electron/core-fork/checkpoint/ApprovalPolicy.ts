@@ -66,20 +66,22 @@ export class ApprovalPolicy {
   }
 
   /** 核心：评估调用是否需要审批 */
-  evaluate(call: { name: string; arguments: Record<string, any> }): PolicyDecision {
+  evaluate(call: { name: string; arguments: Record<string, unknown> }): PolicyDecision {
     for (const rule of this.rules) {
       if (rule.toolName !== call.name) continue;
 
       // 路径匹配
       if (rule.pathPattern) {
-        const filePath = String(call.arguments?.path || call.arguments?.oldPath || '');
+        const rawPath: unknown = call.arguments?.path || call.arguments?.oldPath || '';
+        const filePath = typeof rawPath === 'string' ? rawPath : String(rawPath);
         if (!filePath) continue;
         if (!globMatch(rule.pathPattern, filePath)) continue;
       }
 
       // 命令匹配
       if (rule.commandPattern) {
-        const cmd = String(call.arguments?.command || '');
+        const rawCmd: unknown = call.arguments?.command || '';
+        const cmd = typeof rawCmd === 'string' ? rawCmd : String(rawCmd);
         if (!cmd.includes(rule.commandPattern)) continue;
       }
 

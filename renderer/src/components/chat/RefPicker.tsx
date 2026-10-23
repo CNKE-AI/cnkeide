@@ -52,7 +52,7 @@ const RefPicker: React.FC<RefPickerProps> = ({ open, onClose, onPickFile, onPick
     setLoading(true);
     const res = await window.cnke.fs.listDir(dir);
     if (res.success) {
-      const list = (res.entries || []).sort((a: DirEntry, b: DirEntry) => {
+      const list = ((res.entries || []) as DirEntry[]).sort((a, b) => {
         if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
         return a.name.localeCompare(b.name);
       });

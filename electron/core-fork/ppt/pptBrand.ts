@@ -39,8 +39,8 @@ export const DEFAULT_BRAND: PptBrand = {
 };
 
 /** 归一化用户输入的品牌配置（容错：去空白、hex 补 #） */
-export function normalizeBrand(raw: any): PptBrand {
-  const b = { ...DEFAULT_BRAND, ...(raw || {}) };
+export function normalizeBrand(raw: unknown): PptBrand {
+  const b = { ...DEFAULT_BRAND, ...(typeof raw === 'object' && raw !== null ? raw : {}) };
   const hex = (c: string) => {
     const s = String(c || '').trim();
     if (!s) return '';

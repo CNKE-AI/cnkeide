@@ -55,8 +55,8 @@ export async function exportHtmlToPdf(html: string, savePath: string): Promise<P
     await fsp.writeFile(savePath, pdfBuffer);
 
     return { success: true, path: savePath };
-  } catch (err: any) {
-    return { success: false, error: err?.message || String(err) };
+  } catch (err: unknown) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
   } finally {
     if (win && !win.isDestroyed()) win.destroy();
   }

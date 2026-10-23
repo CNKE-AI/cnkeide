@@ -11,9 +11,9 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { CodebaseIndexer, SymbolDef, Reference } from './CodebaseIndexer';
+import { CodebaseIndexer } from './CodebaseIndexer';
 import { EmbeddingProvider, EmbeddingConfig } from './EmbeddingProvider';
-import { SemanticIndex, CodeChunk, SemanticQueryResult, chunkFile } from './SemanticIndex';
+import { SemanticIndex, CodeChunk, SemanticQueryResult } from './SemanticIndex';
 
 export interface RetrieverConfig {
   rootPath: string;
@@ -161,12 +161,16 @@ export class SemanticRetriever {
 
     // 行级定位
     const out: Array<{ file: string; line: number; snippet: string; score: number }> = [];
-    const indexAny = this.index as any;
+    // SemanticIndex 的 chunks/chunksByFile 为私有，这里以结构化类型读取（只读用途）
+    const index = this.index as unknown as {
+      chunks: Map<string, CodeChunk>;
+      chunksByFile: Map<string, string[]>;
+    };
     for (const [file, info] of fileScores) {
-      const ids: string[] | undefined = indexAny.chunksByFile.get(file);
+      const ids: string[] | undefined = index.chunksByFile.get(file);
       if (!ids) continue;
       for (const id of ids) {
-        const c: CodeChunk | undefined = indexAny.chunks.get(id);
+        const c: CodeChunk | undefined = index.chunks.get(id);
         if (!c) continue;
         const lower = c.text.toLowerCase();
         let count = 0;

@@ -22,7 +22,16 @@ export interface McpTool {
   serverName: string;
   name: string;
   description: string;
-  inputSchema: any;
+  inputSchema: unknown;
+}
+
+interface McpTransportLike {
+  start(): Promise<void>;
+  send(message: unknown): Promise<void>;
+  close(): Promise<void>;
+  onerror?: (err: Error) => void;
+  onclose?: () => void;
+  stderr?: NodeJS.EventEmitter | null;
 }
 
 export interface McpServerStatus {
@@ -46,7 +55,7 @@ export interface McpCallResult {
 interface McpConnection {
   config: McpServerConfig;
   client: Client | null;
-  transport: { close(): Promise<void> } | null;
+  transport: McpTransportLike | null;
   status: McpConnectionStatus;
   error?: string;
   lastStderr: string;
@@ -71,19 +80,30 @@ function withTimeout<T>(p: Promise<T>, ms: number, msg: string): Promise<T> {
     const timer = setTimeout(() => reject(new Error(msg)), ms);
     p.then(
       (v) => { clearTimeout(timer); resolve(v); },
-      (e) => { clearTimeout(timer); reject(e); }
+      (e: unknown) => { clearTimeout(timer); reject(e instanceof Error ? e : new Error(String(e))); }
     );
   });
 }
 
-function serializeToolContent(content: any): string {
+/** MCP callTool content 块（JSON-RPC 载荷，字段随服务器而异） */
+interface McpContentBlock {
+  type?: string;
+  text?: string;
+  mimeType?: string;
+  data?: unknown;
+  resource?: { uri?: string };
+  [key: string]: unknown;
+}
+
+function serializeToolContent(content: unknown): string {
   if (!Array.isArray(content)) return content == null ? '' : JSON.stringify(content);
   const parts: string[] = [];
-  for (const block of content) {
-    if (!block || typeof block !== 'object') { parts.push(String(block)); continue; }
+  for (const raw of content) {
+    if (!raw || typeof raw !== 'object') { parts.push(String(raw)); continue; }
+    const block = raw as McpContentBlock;
     switch (block.type) {
       case 'text': parts.push(block.text ?? ''); break;
-      case 'image': parts.push(`[图片: ${block.mimeType ?? 'unknown'} base64 ${String(block.data ?? '').length} 字符]`); break;
+      case 'image': parts.push(`[图片: ${block.mimeType ?? 'unknown'} base64 ${typeof block.data === 'string' ? block.data.length : 0} 字符]`); break;
       case 'audio': parts.push(`[音频: ${block.mimeType ?? 'unknown'}]`); break;
       case 'resource': parts.push(`[资源: ${block.resource?.uri ?? 'unknown'}]`); break;
       default: parts.push(JSON.stringify(block));
@@ -190,7 +210,7 @@ export class McpHub {
   private async doConnect(conn: McpConnection): Promise<void> {
     const { config } = conn;
     conn.closing = false;
-    let transport: any;
+    let transport: McpTransportLike | null = null;
     try {
       if (config.protocol === 'stdio') {
         if (!config.command) throw new Error('stdio 服务器缺少 command');
@@ -200,7 +220,7 @@ export class McpHub {
           env: plainEnv(),
           stderr: 'pipe',
         });
-        const stderrStream = transport.stderr as any;
+        const stderrStream = transport.stderr;
         if (stderrStream) {
           stderrStream.on('data', (buf: Buffer) => {
             const text = buf.toString();
@@ -211,7 +231,7 @@ export class McpHub {
         if (!config.url) throw new Error('HTTP 服务器缺少 url');
         transport = new StreamableHTTPClientTransport(new URL(config.url));
       } else {
-        throw new Error(`未知协议: ${config.protocol}`);
+        throw new Error(`未知协议: ${String(config.protocol)}`);
       }
       // 带外错误：仅记录，不断言断线（HTTP 瞬时错误不代表连接失效）
       transport.onerror = (e: Error) => {
@@ -235,9 +255,9 @@ export class McpHub {
         capabilities: {},
         listChanged: {
           tools: {
-            onChanged: async (err) => {
+            onChanged: (err) => {
               if (!err && conn.client && conn.status === 'connected') {
-                try { await this.discoverTools(conn); } catch { /* 忽略刷新失败 */ }
+                void this.discoverTools(conn).catch(() => { /* 忽略刷新失败 */ });
               }
             },
           },
@@ -256,7 +276,7 @@ export class McpHub {
       conn.error = undefined;
       conn.lastFailAt = undefined;
       this.emit(conn);
-    } catch (e: any) {
+    } catch (e: unknown) {
       conn.error = this.describeConnectError(e);
       conn.status = 'error';
       conn.lastFailAt = Date.now();
@@ -269,8 +289,8 @@ export class McpHub {
   }
 
   /** 把启动失败的错误翻译成可操作的中文提示（含 Windows 命令兼容建议） */
-  private describeConnectError(e: any): string {
-    const raw = e?.message || String(e);
+  private describeConnectError(e: unknown): string {
+    const raw = e instanceof Error ? e.message : String(e);
     // 命令不存在 / 找不到：最常见于 Windows 的 npx、uvx 等 PATH 问题
     if (/ENOENT|spawn\s+\S+\s+ENOENT/i.test(raw)) {
       if (process.platform === 'win32') {
@@ -321,7 +341,7 @@ export class McpHub {
   private async discoverTools(conn: McpConnection): Promise<McpTool[]> {
     if (!conn.client) return [];
     const { tools } = await conn.client.listTools();
-    const mapped: McpTool[] = (tools || []).map((t: any) => ({
+    const mapped: McpTool[] = (tools || []).map((t) => ({
       serverId: conn.config.id,
       serverName: conn.config.name,
       name: t.name,
@@ -389,22 +409,22 @@ export class McpHub {
     try {
       const tools = await this.discoverTools(c);
       return { success: true, tools };
-    } catch (e: any) {
+    } catch (e: unknown) {
       c.status = 'error';
-      c.error = e?.message || String(e);
+      c.error = e instanceof Error ? e.message : String(e);
       c.lastFailAt = Date.now();
       this.emit(c);
       return { success: false, error: c.error };
     }
   }
 
-  async getAllTools(): Promise<McpTool[]> {
+  getAllTools(): Promise<McpTool[]> {
     const all: McpTool[] = [];
     for (const [id, tools] of this.toolsCache.entries()) {
       const conn = this.connections.get(id);
       if (conn?.status === 'connected') all.push(...tools);
     }
-    return all;
+    return Promise.resolve(all);
   }
 
   /** 连接刚失败且仍在退避窗口内（避免 Agent 每轮对话都去打一台已挂的服务器） */
@@ -412,7 +432,7 @@ export class McpHub {
     return !!conn?.lastFailAt && Date.now() - conn.lastFailAt < RETRY_BACKOFF_MS;
   }
 
-  async callTool(serverId: string, toolName: string, args: any): Promise<McpCallResult> {
+  async callTool(serverId: string, toolName: string, args: Record<string, unknown>): Promise<McpCallResult> {
     const conn = this.connections.get(serverId);
     if (!conn || !conn.client || conn.status !== 'connected') {
       const server = this.listServers().find((s) => s.id === serverId);
@@ -428,10 +448,11 @@ export class McpHub {
     if (!c?.client) return { success: false, error: '服务器未连接' };
     try {
       return await this.doCallTool(c, toolName, args);
-    } catch (e: any) {
-      const msg = e?.message || String(e);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      const code = e && typeof e === 'object' && 'code' in e ? (e as { code?: unknown }).code : undefined;
       // JSON-RPC 协议级错误（服务器返回 error，如未知工具/参数校验失败）直接返回，不重连
-      const isTransportError = !e?.code || /connection closed|transport closed|socket hang up|fetch failed|ECONNREFUSED|ECONNRESET|getaddrinfo|timed out/i.test(msg);
+      const isTransportError = code === undefined || /connection closed|transport closed|socket hang up|fetch failed|ECONNREFUSED|ECONNRESET|getaddrinfo|timed out/i.test(msg);
       if (!isTransportError) return { success: false, error: msg };
       // 传输断开：标记状态并自动重连重试一次（退避期内不再尝试）
       c.status = 'error';
@@ -443,23 +464,23 @@ export class McpHub {
         const r = await this.startServer(server);
         const cc = this.connections.get(serverId);
         if (r.success && cc?.client) {
-          try { return await this.doCallTool(cc, toolName, args); } catch (e2: any) { return { success: false, error: e2?.message || String(e2) }; }
+          try { return await this.doCallTool(cc, toolName, args); } catch (e2: unknown) { return { success: false, error: e2 instanceof Error ? e2.message : String(e2) }; }
         }
       }
       return { success: false, error: msg };
     }
   }
 
-  private async doCallTool(conn: McpConnection, toolName: string, args: any): Promise<McpCallResult> {
+  private async doCallTool(conn: McpConnection, toolName: string, args: Record<string, unknown>): Promise<McpCallResult> {
     if (!conn.client) return { success: false, error: '服务器未连接' };
     // 单次调用硬超时：服务器挂死/不响应时不再永久卡住 Agent 工具循环
-    const result: any = await withTimeout(
+    const result = await withTimeout(
       conn.client.callTool({ name: toolName, arguments: args ?? {} }),
       CALL_TIMEOUT_MS,
       `工具调用超时(${CALL_TIMEOUT_MS / 1000}s)：${toolName} 未在限定时间内返回，服务器可能已挂死`,
     );
-    const content = serializeToolContent(result?.content);
-    if (result?.isError) return { success: false, error: content || '工具执行出错' };
+    const content = serializeToolContent(result.content);
+    if (result.isError) return { success: false, error: content || '工具执行出错' };
     return { success: true, content };
   }
 

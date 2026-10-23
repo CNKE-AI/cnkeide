@@ -66,7 +66,7 @@ function looksLikeNonCodeLine(text: string): boolean {
   // 以及 file.ts:12 这类定位写法）。这是截图里最主要的退化形态。
   if (/^[A-Za-z_][A-Za-z0-9_]{0,60}(\.[A-Za-z0-9_]{1,10})?(:\d+(:\d+)?)?$/.test(t)) return true;
   // 短中文短语（≤16 字符）没有特殊字符 → 更像说明文字而非代码
-  if (/^[\u4e00-\u9fa5()\sA-Za-z0-9·.\-]{1,16}$/.test(t) && !/[{}()\[\];=<>]/.test(t)) return true;
+  if (/^[\u4e00-\u9fa5()\sA-Za-z0-9·.-]{1,16}$/.test(t) && !/[{}()\x5b\x5d;=<>]/.test(t)) return true;
   return false;
 }
 

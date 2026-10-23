@@ -46,8 +46,8 @@ const AnnouncementCenter: React.FC = () => {
   const dismiss = useCallback((id: string, once: boolean) => {
     setQueue((q) => q.filter((a) => a.id !== id));
     if (once) {
-      window.cnke.config.get('readAnnouncementIds').then((list: string[]) => {
-        const ids = list || [];
+      window.cnke.config.get('readAnnouncementIds').then((raw) => {
+        const ids = Array.isArray(raw) ? raw as string[] : [];
         if (!ids.includes(id)) window.cnke.config.set('readAnnouncementIds', [...ids, id]);
       });
     }
@@ -62,7 +62,7 @@ const AnnouncementCenter: React.FC = () => {
       if (!anns || anns.length === 0) return;
       try {
         const readRaw = await window.cnke.config.get('readAnnouncementIds');
-        const read = readRaw || [];
+        const read = Array.isArray(readRaw) ? readRaw as string[] : [];
         const fresh = anns.filter((a) => !(a.once && read.includes(a.id)));
         if (fresh.length > 0) {
           setQueue((q) => {
@@ -79,7 +79,7 @@ const AnnouncementCenter: React.FC = () => {
     (async () => {
       try {
         const res = await window.cnke.backend.getAnnouncements();
-        if (res.success) await mergeAnnouncements(res.announcements || []);
+        if (res.success) await mergeAnnouncements((res.announcements || []) as Announcement[]);
       } catch { /* 网络不可用则静默 */ }
     })();
 
@@ -91,14 +91,14 @@ const AnnouncementCenter: React.FC = () => {
         if (!sub?.success) return;
         unsubscribe = window.cnke.backend.onAnnouncement((payload) => {
           if (payload?.type === 'announcements' && payload.announcements) {
-            void mergeAnnouncements(payload.announcements);
+            void mergeAnnouncements(payload.announcements as Announcement[]);
           }
         });
       } catch { /* 订阅失败则仅依赖启动拉取 */ }
     })();
 
     return () => {
-      try { unsubscribe?.(); } catch {}
+      try { unsubscribe?.(); } catch { /* may already be disposed */ }
     };
   }, []);
 

@@ -12,6 +12,15 @@ import { CheckpointManager } from '../core-fork/checkpoint/CheckpointManager';
 import { CodebaseIndexer } from '../core-fork/codebase/CodebaseIndexer';
 import { BackendAdapter } from '../adapter/BackendAdapter';
 import { WorkspaceWatcher } from '../adapter/WorkspaceWatcher';
+import type { WorkspaceChange } from '../adapter/WorkspaceWatcher';
+import type { DirEntry } from '../adapter/FileSystemAdapter';
+import type { ChatSession } from '../store/SessionStore';
+import type { RunParams } from '../core-fork/agent/AgentManager';
+import type { McpServerConfig } from '../core-fork/mcp/McpHub';
+import type { ApprovalRule } from '../core-fork/checkpoint/ApprovalPolicy';
+import type { PptxCreateRequest } from '../core-fork/tools/PptxTools';
+import type { AiPptSlideHint } from '../core-fork/ppt/pptDesign';
+import type { PreviewSlide } from '../core-fork/ppt/pptPreview';
 import { UpdateManager } from '../updater/UpdateManager';
 import { PlanManager } from '../core-fork/plan/PlanManager';
 import { RagManager } from '../core-fork/rag/RagManager';
@@ -26,6 +35,7 @@ import { PPT_SCENARIOS, getScenario, detectScenarioByKeyword, detectScenarioByLl
 import { DEFAULT_BRAND, normalizeBrand, PptBrand } from '../core-fork/ppt/pptBrand';
 import { buildAiPptDesignPrompt, normalizeAiPptDesign } from '../core-fork/ppt/pptDesign';
 import { auditOutline, summarizeIssues, AuditIssue } from '../core-fork/ppt/pptAudit';
+import type { AuditOutlineInput } from '../core-fork/ppt/pptAudit';
 import { promises as fsp } from 'node:fs';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
@@ -36,7 +46,6 @@ import {
   getSkillRootCandidate,
   getProjectsRoot,
   rebindPython,
-  initPptMaster,
   PptMasterService,
 } from '../core-fork/pptmaster';
 import { installDependencies } from '../core-fork/pptmaster';
@@ -73,7 +82,7 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
   // 工作区文件监听：变更广播到渲染层，驱动资源管理器/编辑器/终端三视图同步
   const workspaceWatcher = new WorkspaceWatcher();
 
-  storageAdapter.init();
+  void storageAdapter.init();
 
   const mainWindow = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
   windowAdapter.setMainWindow(mainWindow ?? null);
@@ -127,7 +136,7 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
   });
 
   // 工作区文件变更 → 批量广播到渲染进程（fs:changed）
-  workspaceWatcher.on('changes', (payload: { root: string; changes: any[] }) => {
+  workspaceWatcher.on('changes', (payload: { root: string; changes: WorkspaceChange[] }) => {
     sendToWindow('fs:changed', payload);
   });
   // 启动时自动恢复上次工作区的监听
@@ -147,7 +156,7 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
   // 启动恢复：自动拉起所有已启用的 MCP 服务器（后台执行，不阻塞窗口）
   void mcpHub.startEnabledServers().catch(() => {});
   const checkpointManager = new CheckpointManager();
-  checkpointManager.init();
+  void checkpointManager.init();
   // W3：任务规划状态机（注入 AgentManager，启用 plan_* 工具与计划引导）
   const planManager = new PlanManager();
   // RAG 索引在整个应用生命周期内复用，避免每轮 Agent 会话丢失已导入文档。
@@ -212,21 +221,21 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
   });
 
   // 切换监听的工作区根目录（打开/切换文件夹时调用）
-  ipcMain.handle('fs:watchWorkspace', async (_e, rootPath: string) => {
+  ipcMain.handle('fs:watchWorkspace', (_e, rootPath: string) => {
     return workspaceWatcher.watch(rootPath);
   });
 
-  ipcMain.handle('fs:unwatchWorkspace', async () => {
+  ipcMain.handle('fs:unwatchWorkspace', () => {
     workspaceWatcher.unwatch();
     return { success: true };
   });
 
-  ipcMain.handle('fs:watchStatus', async () => {
+  ipcMain.handle('fs:watchStatus', () => {
     return { watching: workspaceWatcher.watching, root: workspaceWatcher.root };
   });
 
   // ===== 终端 IPC =====
-  ipcMain.handle('terminal:spawn', async (_e, cmd: string, args: string[], cwd: string) => {
+  ipcMain.handle('terminal:spawn', (_e, cmd: string, args: string[], cwd: string) => {
     return terminalAdapter.spawn(cmd, args, cwd);
   });
 
@@ -243,7 +252,7 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
   });
 
   // ===== Agent IPC =====
-  ipcMain.handle('agent:run', async (_e, params: any) => {
+  ipcMain.handle('agent:run', async (_e, params: RunParams) => {
     return agentManager.run(params, (event) => {
       sendToWindow('agent:event', event);
     });
@@ -304,11 +313,15 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
     return sessionStore.load(sessionId);
   });
 
-  ipcMain.handle('session:save', async (_e, session: any) => {
+  ipcMain.handle('session:save', async (_e, session: ChatSession) => {
     return sessionStore.save(session);
   });
 
   ipcMain.handle('session:delete', async (_e, sessionId: string) => {
+    // 会话删除时必须同步释放其 plan。
+    // PlanManager.plans 以 sessionId 为 key 且此前没有清理入口，
+    // 已删除会话的计划会一直驻留内存（app 生命周期内不释放）。
+    planManager.clear(sessionId);
     return sessionStore.delete(sessionId);
   });
 
@@ -323,7 +336,7 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
     return { success: true, data: session };
   });
 
-  ipcMain.handle('session:import', async (_e, data: any) => {
+  ipcMain.handle('session:import', async (_e, data: ChatSession) => {
     try {
       if (!data || typeof data !== 'object' || !Array.isArray(data.messages)) {
         return { success: false, error: '无效的会话数据' };
@@ -337,8 +350,8 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
       const imported = { ...data, id: importId };
       await sessionStore.save(imported);
       return { success: true, session: imported };
-    } catch (err: any) {
-      return { success: false, error: err.message };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
   });
 
@@ -349,8 +362,8 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
       if (!session) return { success: false, error: '会话不存在' };
       const summary = await agentManager.summarizeContext(sessionId, session.messages);
       return { success: true, summary };
-    } catch (err: any) {
-      return { success: false, error: err.message };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
   });
 
@@ -359,55 +372,76 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
     try {
       const session = await sessionStore.load(sessionId);
       if (!session) return { success: false, error: '会话不存在' };
-      const idx = session.messages.findIndex((m: any) => m.id === messageId);
+      const idx = session.messages.findIndex((m) => m.id === messageId);
       if (idx === -1) return { success: false, error: '消息不存在' };
       session.messages = session.messages.slice(0, idx);
       await sessionStore.save(session);
       return { success: true };
-    } catch (err: any) {
-      return { success: false, error: err.message };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
   });
 
   // ===== Plan 查询（W3）：读取当前会话的计划状态 =====
-  ipcMain.handle('plan:skip', async (_e, sessionId: string, itemId: string) => {
-    return { success: planManager.skipItem(sessionId, itemId), plan: planManager.getPlan(sessionId), progress: planManager.progress(sessionId) };
+  // 这几个 handler 过去没有 try/catch：一旦抛错，ipcRenderer.invoke 的 Promise 会 reject
+  // 到渲染层，而调用方若没有 catch 就变成未处理 rejection —— 会直接卸载整个 React 树，
+  // 用户看到的就是点击后黑屏。统一改成"永远 resolve 一个带 error 的结果"，把异常留在主进程。
+  const planSnapshot = (sessionId: string) => {
+    try {
+      return { plan: planManager.getPlan(sessionId), progress: planManager.progress(sessionId) };
+    } catch {
+      return { plan: undefined, progress: null };
+    }
+  };
+
+  ipcMain.handle('plan:skip', (_e, sessionId: string, itemId: string) => {
+    try {
+      return { success: planManager.skipItem(sessionId, itemId), ...planSnapshot(sessionId) };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err), ...planSnapshot(sessionId) };
+    }
   });
 
-  ipcMain.handle('plan:retry', async (_e, sessionId: string, itemId: string) => {
-    return { success: planManager.retryItem(sessionId, itemId), plan: planManager.getPlan(sessionId), progress: planManager.progress(sessionId) };
+  ipcMain.handle('plan:retry', (_e, sessionId: string, itemId: string) => {
+    try {
+      return { success: planManager.retryItem(sessionId, itemId), ...planSnapshot(sessionId) };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err), ...planSnapshot(sessionId) };
+    }
   });
 
-  ipcMain.handle('plan:abandon', async (_e, sessionId: string) => {
-    planManager.abandon(sessionId);
-    return { success: true, plan: planManager.getPlan(sessionId), progress: planManager.progress(sessionId) };
+  ipcMain.handle('plan:abandon', (_e, sessionId: string) => {
+    try {
+      planManager.abandon(sessionId);
+      return { success: true, ...planSnapshot(sessionId) };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err), ...planSnapshot(sessionId) };
+    }
   });
 
-  ipcMain.handle('plan:get', async (_e, sessionId: string) => {
-    const plan = planManager.getPlan(sessionId);
-    const progress = planManager.progress(sessionId);
-    return { plan, progress };
+  ipcMain.handle('plan:get', (_e, sessionId: string) => {
+    return planSnapshot(sessionId);
   });
 
   // ===== 配置 IPC =====
-  ipcMain.handle('config:get', async (_e, key: string) => {
+  ipcMain.handle('config:get', (_e, key: string) => {
     return config.get(key);
   });
 
-  ipcMain.handle('config:set', async (_e, key: string, value: any) => {
+  ipcMain.handle('config:set', async (_e, key: string, value: unknown) => {
     config.set(key, value);
     await config.flush();
   });
 
-  ipcMain.handle('config:getApiKeyConfigs', async () => {
+  ipcMain.handle('config:getApiKeyConfigs', () => {
     return config.getApiKeyConfigs();
   });
 
-  ipcMain.handle('config:saveApiConfig', async (_e, apiConfig: any) => {
+  ipcMain.handle('config:saveApiConfig', (_e, apiConfig: Record<string, unknown>) => {
     return config.saveApiConfig(apiConfig);
   });
 
-  ipcMain.handle('config:deleteApiConfig', async (_e, id: string) => {
+  ipcMain.handle('config:deleteApiConfig', (_e, id: string) => {
     return config.deleteApiConfig(id);
   });
 
@@ -452,23 +486,23 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
   });
 
   // ===== MCP IPC =====
-  ipcMain.handle('mcp:listServers', async () => {
+  ipcMain.handle('mcp:listServers', () => {
     return mcpHub.listServersWithStatus();
   });
 
-  ipcMain.handle('mcp:addServer', async (_e, serverConfig: any) => {
+  ipcMain.handle('mcp:addServer', (_e, serverConfig: McpServerConfig) => {
     return mcpHub.addServer(serverConfig);
   });
 
-  ipcMain.handle('mcp:removeServer', async (_e, id: string) => {
+  ipcMain.handle('mcp:removeServer', (_e, id: string) => {
     return mcpHub.removeServer(id);
   });
 
-  ipcMain.handle('mcp:toggleServer', async (_e, id: string, enabled: boolean) => {
+  ipcMain.handle('mcp:toggleServer', (_e, id: string, enabled: boolean) => {
     return mcpHub.toggleServer(id, enabled);
   });
 
-  ipcMain.handle('mcp:listTools', async (_e, serverId: string) => {
+  ipcMain.handle('mcp:listTools', (_e, serverId: string) => {
     return mcpHub.listTools(serverId);
   });
 
@@ -476,7 +510,7 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
     return mcpHub.refreshTools(serverId);
   });
 
-  ipcMain.handle('mcp:callTool', async (_e, serverId: string, toolName: string, args: any) => {
+  ipcMain.handle('mcp:callTool', (_e, serverId: string, toolName: string, args: Record<string, unknown>) => {
     return mcpHub.callTool(serverId, toolName, args);
   });
 
@@ -500,48 +534,46 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
     return checkpointManager.diffSnapshot(snapshotId);
   });
 
-  ipcMain.handle('checkpoint:getModifiedFiles', async () => {
+  ipcMain.handle('checkpoint:getModifiedFiles', () => {
     return agentManager.getModifiedFiles();
   });
 
   // ===== W7 工具审批规则 =====
-  ipcMain.handle('approval:listRules', async () => {
+  ipcMain.handle('approval:listRules', () => {
     return agentManager.listApprovalRules();
   });
 
-  ipcMain.handle('approval:addRule', async (_e, rule: any) => {
+  ipcMain.handle('approval:addRule', (_e, rule: ApprovalRule) => {
     agentManager.addApprovalRule(rule);
     return { success: true };
   });
 
-  ipcMain.handle('approval:removeRule', async (_e, index: number) => {
+  ipcMain.handle('approval:removeRule', (_e, index: number) => {
     return { success: agentManager.removeApprovalRule(index) };
   });
 
   // ===== W11 上下文状态 =====
-  ipcMain.handle('context:getState', async (_e, sessionId: string) => {
+  ipcMain.handle('context:getState', (_e, sessionId: string) => {
     return agentManager.getContextState(sessionId);
   });
 
-  ipcMain.handle('context:listStates', async () => {
+  ipcMain.handle('context:listStates', () => {
     return agentManager.listContextStates();
   });
 
-  ipcMain.handle('context:removeState', async (_e, sessionId: string) => {
+  ipcMain.handle('context:removeState', (_e, sessionId: string) => {
     agentManager.removeContextState(sessionId);
     return { success: true };
   });
 
   // ===== 对话框 IPC =====
-  ipcMain.handle('dialog:open', async (_e, opts?: any) => {
-    return windowAdapter.showOpenFolder();
-  });
+  ipcMain.handle('dialog:open', () => windowAdapter.showOpenFolder());
 
-  ipcMain.handle('dialog:save', async (_e, opts?: any) => {
+  ipcMain.handle('dialog:save', async (_e, opts?: { defaultName?: string; filters?: Electron.FileFilter[] }) => {
     return windowAdapter.showSaveDialog(opts?.defaultName, opts?.filters);
   });
 
-  ipcMain.handle('dialog:message', async (_e, opts: any) => {
+  ipcMain.handle('dialog:message', async (_e, opts: Electron.MessageBoxOptions) => {
     return dialog.showMessageBox(opts);
   });
 
@@ -560,15 +592,15 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
   });
 
   // ===== App 元信息（版本/平台）=====
-  ipcMain.handle('app:getVersion', async () => {
+  ipcMain.handle('app:getVersion', () => {
     return app.getVersion();
   });
 
-  ipcMain.handle('app:getPlatform', async () => {
+  ipcMain.handle('app:getPlatform', () => {
     return process.platform;
   });
 
-  ipcMain.handle('backend:getDeviceId', async () => {
+  ipcMain.handle('backend:getDeviceId', () => {
     return backendAdapter.getDeviceId();
   });
 
@@ -583,7 +615,7 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
   // 公告 SSE 实时推送订阅：渲染层发起订阅，主进程建立长连接，
   // 收到公告变化后通过 'backend:announcement-event' 通道推送到渲染层。
   let unsubscribeAnnouncements: (() => void) | null = null;
-  ipcMain.handle('backend:subscribeAnnouncements', async () => {
+  ipcMain.handle('backend:subscribeAnnouncements', () => {
     if (unsubscribeAnnouncements) {
       // 已订阅则幂等返回（避免重复建连）
       return { success: true };
@@ -600,8 +632,8 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
         // disconnect 事件仅内部用于重连，不需要推送给渲染层
       });
       return { success: true };
-    } catch (err: any) {
-      return { success: false, error: err?.message || '订阅失败' };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : '订阅失败' };
     }
   });
 
@@ -622,16 +654,16 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
     return updateManager.downloadAndInstall(mode || 'manual');
   });
 
-  ipcMain.handle('update:install', async () => {
+  ipcMain.handle('update:install', () => {
     return updateManager.installNow();
   });
 
-  ipcMain.handle('update:cancel', async () => {
+  ipcMain.handle('update:cancel', () => {
     updateManager.cancel();
     return { success: true };
   });
 
-  ipcMain.handle('update:getStatus', async () => {
+  ipcMain.handle('update:getStatus', () => {
     return updateManager.getStatus();
   });
 
@@ -657,7 +689,7 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
   };
 
   // 生成 PPT 并保存到指定路径（企业级：生成前智能审校 + 自动修复 + 品牌注入）
-  ipcMain.handle('ppt:generate', async (_e, req: any, savePath?: string) => {
+  ipcMain.handle('ppt:generate', async (_e, req: PptxCreateRequest, savePath?: string) => {
     const adapter = await getPptAdapter();
     if (!adapter.available) {
       return { success: false, error: 'PPT 生成未就绪：缺少 pptxgenjs 依赖，请运行 npm install pptxgenjs' };
@@ -673,11 +705,12 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
     }
     // 智能审校：文字溢出预防（超长标题/要点拆分/图表数据一致性），能修的自动修
     let auditIssues: AuditIssue[] = [];
-    let finalReq = req ?? {};
+    const finalReq: PptxCreateRequest = req || {};
     if (finalReq?.slides) {
       const audited = auditOutline(finalReq);
       auditIssues = audited.issues;
-      finalReq = { ...finalReq, slides: audited.data.slides, title: audited.data.title };
+      finalReq.slides = audited.data.slides as unknown as PptxCreateRequest['slides'];
+      if (audited.data.title !== undefined) finalReq.title = audited.data.title;
     }
     const result = await adapter.generate(finalReq, savePath);
     if (result.success) {
@@ -693,7 +726,7 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
   ipcMain.handle('ppt:generateOutline', async (_e, topic: string, slideCount?: number, scenarioId?: string) => {
     const configs = config.getApiKeyConfigs();
     const activeId = config.get<string>('activeApiConfigId');
-    const apiConfig = configs.find((c: any) => c.id === activeId) || configs[0];
+    const apiConfig = configs.find((c) => c.id === activeId) || configs[0];
     const n = Math.max(1, Math.min(20, Number(slideCount) || 8));
     const scenario = scenarioId ? getScenario(scenarioId) : null;
     if (!apiConfig) {
@@ -721,8 +754,8 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
       if (fenceMatch) text = fenceMatch[1].trim();
       const parsed = JSON.parse(text);
       return { success: true, outline: parsed, scenarioId: scenario?.id || null };
-    } catch (err: any) {
-      console.warn('[ppt] AI 大纲生成失败，改用本地保底大纲:', err?.message || err);
+    } catch (err) {
+      console.warn('[ppt] AI 大纲生成失败，改用本地保底大纲:', err instanceof Error ? err.message : err);
       return {
         success: true,
         outline: buildFallbackPptOutline(topic, n),
@@ -737,14 +770,14 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
   ipcMain.handle('ppt:generateAiDesign', async (_e, payload: {
     topic?: string;
     scenarioName?: string;
-    slides?: Array<{ title?: string; role?: string; bullets?: string[]; chart?: unknown }>;
+    slides?: AiPptSlideHint[];
     fallbackThemeId?: string;
   }) => {
     const fallbackThemeId = payload?.fallbackThemeId || 'business';
     const fallback = normalizeAiPptDesign(null, fallbackThemeId);
     const configs = config.getApiKeyConfigs();
     const activeId = config.get<string>('activeApiConfigId');
-    const apiConfig = configs.find((c: any) => c.id === activeId) || configs[0];
+    const apiConfig = configs.find((c) => c.id === activeId) || configs[0];
     if (!apiConfig) return { success: true, design: fallback, byLlm: false };
     try {
       const llm = new LLMProvider();
@@ -755,7 +788,7 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
           content: buildAiPptDesignPrompt({
             topic: String(payload?.topic || '演示文稿'),
             scenarioName: payload?.scenarioName,
-            slides: (payload?.slides || []) as any,
+            slides: payload?.slides ?? [],
           }),
         }],
         temperature: 0.45,
@@ -772,7 +805,7 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
 
   // ===== 企业级：场景体系 =====
   // 场景清单（静态，不调 LLM）
-  ipcMain.handle('ppt:listScenarios', async () => {
+  ipcMain.handle('ppt:listScenarios', () => {
     return {
       success: true,
       scenarios: PPT_SCENARIOS.map((s) => ({
@@ -791,7 +824,7 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
     if (!t) return { success: true, scenarioId: 'general', byLlm: false, confidence: 0 };
     const configs = config.getApiKeyConfigs();
     const activeId = config.get<string>('activeApiConfigId');
-    const apiConfig = configs.find((c: any) => c.id === activeId) || configs[0];
+    const apiConfig = configs.find((c) => c.id === activeId) || configs[0];
     if (!apiConfig) {
       // 未配置 API：直接关键词规则
       return { success: true, scenarioId: detectScenarioByKeyword(t).id, byLlm: false, confidence: 0.5 };
@@ -806,11 +839,11 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
   });
 
   // ===== 企业级：品牌配置 =====
-  ipcMain.handle('ppt:getBrand', async () => {
+  ipcMain.handle('ppt:getBrand', () => {
     return { success: true, brand: config.get<PptBrand>('ppt.brand', DEFAULT_BRAND) };
   });
 
-  ipcMain.handle('ppt:setBrand', async (_e, brand: any) => {
+  ipcMain.handle('ppt:setBrand', (_e, brand: unknown) => {
     const normalized = normalizeBrand(brand);
     config.set('ppt.brand', normalized);
     return { success: true, brand: normalized };
@@ -818,7 +851,7 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
 
   // ===== PPT 主题相关 =====
   // 返回内置主题清单（不调用 LLM）
-  ipcMain.handle('ppt:listThemes', async () => {
+  ipcMain.handle('ppt:listThemes', () => {
     return {
       success: true,
       themes: PPT_THEMES.map((t) => ({
@@ -833,9 +866,9 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
 
   // 纯代码生成 HTML 预览（不调 LLM，确定性输出，与 PPTX 导出视觉一致）
   // 替代 ppt:renderTheme 的 LLM 渲染路径——一键生成主推此路径
-  ipcMain.handle('ppt:generatePreview', async (_e, payload: {
+  ipcMain.handle('ppt:generatePreview', (_e, payload: {
     themeId: string;
-    outline: { title: string; slides: any[] };
+    outline: { title: string; slides: PreviewSlide[] };
     design?: { palette?: { primary?: string; secondary?: string; accent?: string; background?: string }; fontFamily?: string; artDirection?: string };
   }) => {
     try {
@@ -857,8 +890,8 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
         artDirection: aiDesign.artDirection,
       });
       return { success: true, html };
-    } catch (err: any) {
-      return { success: false, error: err?.message || String(err) };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
   });
 
@@ -877,7 +910,7 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
       if (!theme) return { success: false, error: `未知主题：${payload.themeId}` };
       const configs = config.getApiKeyConfigs();
       const activeId = config.get<string>('activeApiConfigId');
-      const apiConfig = configs.find((c: any) => c.id === activeId) || configs[0];
+      const apiConfig = configs.find((c) => c.id === activeId) || configs[0];
       if (!apiConfig) return { success: false, error: '未配置 API，无法渲染。请先在设置中配置模型 API。' };
       const sender = e.sender;
       // 品牌色注入 HTML 预览（保证预览与导出 PPTX 视觉一致）
@@ -896,12 +929,12 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
           extraInstruction: payload.extraInstruction,
           brandColors,
           onProgress: (stage, current, total, message) => {
-            try { sender.send('ppt:renderProgress', { stage, current, total, message }); } catch {}
+            try { sender.send('ppt:renderProgress', { stage, current, total, message }); } catch { /* 窗口已关闭 */ }
           },
         });
         return result;
-      } catch (err: any) {
-        return { success: false, error: err?.message || String(err) };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
       }
     },
   );
@@ -915,8 +948,8 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
       await fsp.mkdir(path.dirname(payload.savePath), { recursive: true });
       await fsp.writeFile(payload.savePath, payload.html, 'utf-8');
       return { success: true, path: payload.savePath };
-    } catch (err: any) {
-      return { success: false, error: err?.message || String(err) };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
   });
 
@@ -954,7 +987,7 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
     ) => {
       const configs = config.getApiKeyConfigs();
       const activeId = config.get<string>('activeApiConfigId');
-      const apiConfig = configs.find((c: any) => c.id === activeId) || configs[0];
+      const apiConfig = configs.find((c) => c.id === activeId) || configs[0];
       if (!apiConfig) return { success: false, error: '未配置 API，无法扩写' };
       try {
         const llm = new LLMProvider();
@@ -964,8 +997,8 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
           presentationTopic: payload.presentationTopic,
         });
         return result;
-      } catch (err: any) {
-        return { success: false, error: err?.message || String(err) };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
       }
     },
   );
@@ -983,7 +1016,7 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
     ) => {
       const configs = config.getApiKeyConfigs();
       const activeId = config.get<string>('activeApiConfigId');
-      const apiConfig = configs.find((c: any) => c.id === activeId) || configs[0];
+      const apiConfig = configs.find((c) => c.id === activeId) || configs[0];
       if (!apiConfig) return { success: false, error: '未配置 API，无法扩写' };
       const sender = e.sender;
       try {
@@ -993,12 +1026,12 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
           extraInstruction: payload.extraInstruction,
           presentationTopic: payload.outline.title,
           onProgress: (current, total, message) => {
-            try { sender.send('ppt:expandProgress', { current, total, message }); } catch {}
+            try { sender.send('ppt:expandProgress', { current, total, message }); } catch { /* 窗口已关闭 */ }
           },
         });
         return result;
-      } catch (err: any) {
-        return { success: false, error: err?.message || String(err) };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
       }
     },
   );
@@ -1047,23 +1080,22 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
     basePath: string,
   ): Promise<void> {
     if (depth > maxDepth || lines.length > 800) return;
-    let entries: any[] = [];
+    let entries: DirEntry[] = [];
     try {
       const res = await fsAdapter.listDir(dir);
       if (!res.success || !res.entries) return;
       entries = res.entries.filter(
-        (e: any) => !PPT_SCAN_IGNORE_DIRS.has(e.name) && !PPT_SCAN_IGNORE_FILES.has(e.name),
+        (e) => !PPT_SCAN_IGNORE_DIRS.has(e.name) && !PPT_SCAN_IGNORE_FILES.has(e.name),
       );
     } catch {
       return;
     }
-    const dirs = entries.filter((e: any) => e.isDirectory);
-    const files = entries.filter((e: any) => e.isFile);
+    const dirs = entries.filter((e) => e.isDirectory);
+    const files = entries.filter((e) => e.isFile);
     const shown = [...dirs, ...files].slice(0, PPT_SCAN_MAX_ENTRIES_PER_DIR);
     for (let i = 0; i < shown.length; i++) {
       const e = shown[i];
       const isLast = i === shown.length - 1;
-      const rel = path.relative(basePath, e.path) || e.name;
       const connector = isLast ? '└─ ' : '├─ ';
       lines.push(`${prefix}${connector}${e.name}${e.isDirectory ? '/' : ''}`);
       if (e.isDirectory) {
@@ -1105,7 +1137,7 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
       const topDirs: Record<string, number> = {};
       const collectDocs = async (dir: string, depth: number) => {
         if (depth > 3) return;
-        let entries: any[] = [];
+        let entries: DirEntry[] = [];
         try {
           const res = await fsAdapter.listDir(dir);
           if (!res.success || !res.entries) return;
@@ -1144,8 +1176,8 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
         fileStats: { totalFiles, topDirs: topDirStats },
         docFiles,
       };
-    } catch (err: any) {
-      return { success: false, error: err?.message || String(err) };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -1166,7 +1198,7 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
     }
     const configs = config.getApiKeyConfigs();
     const activeId = config.get<string>('activeApiConfigId');
-    const apiConfig = configs.find((c: any) => c.id === activeId) || configs[0];
+    const apiConfig = configs.find((c) => c.id === activeId) || configs[0];
     const n = Math.max(1, Math.min(20, Number(opts?.slideCount) || 8));
 
     const summary = await scanWorkspaceSummary(wsPath);
@@ -1214,8 +1246,8 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
       if (fenceMatch) text = fenceMatch[1].trim();
       const parsed = JSON.parse(text);
       return { success: true, outline: parsed, workspace: summary };
-    } catch (err: any) {
-      console.warn('[ppt] 工作区 AI 大纲生成失败，改用本地保底大纲:', err?.message || err);
+    } catch (err) {
+      console.warn('[ppt] 工作区 AI 大纲生成失败，改用本地保底大纲:', err instanceof Error ? err.message : err);
       return {
         success: true,
         outline: buildFallbackPptOutline(summary.projectName || '项目介绍', n),
@@ -1243,8 +1275,8 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
     try {
       const env = await svc.checkEnvironment();
       return { success: true, ...env, projectsRoot: getProjectsRoot() };
-    } catch (err: any) {
-      return { success: false, error: err?.message || String(err) };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
   });
 
@@ -1256,8 +1288,8 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
       }
       const r = await rebindPython(config);
       return { success: true, ...r };
-    } catch (err: any) {
-      return { success: false, error: err?.message || String(err) };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
   });
 
@@ -1348,8 +1380,8 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
           savePath: opts.savePath,
         });
         return result;
-      } catch (err: any) {
-        return { success: false, error: err?.message || String(err) };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
       }
     },
   );
@@ -1405,8 +1437,8 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
       }
       projects.sort((a, b) => b.mtime - a.mtime);
       return { success: true, projects, root };
-    } catch (err: any) {
-      return { success: false, error: err?.message || String(err), projects: [] };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err), projects: [] };
     }
   });
 
@@ -1415,8 +1447,8 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
     try {
       await shell.openPath(projectPath);
       return { success: true };
-    } catch (err: any) {
-      return { success: false, error: err?.message || String(err) };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
   });
 
@@ -1448,7 +1480,7 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
       // 落盘更新日志并清理 autoUpdater 监听
       void updateManager.dispose();
       // 断开公告 SSE 长连接
-      try { unsubscribeAnnouncements?.(); } catch {}
+      try { unsubscribeAnnouncements?.(); } catch { /* 已断链时忽略 */ }
     },
   };
 }

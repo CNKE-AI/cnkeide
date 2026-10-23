@@ -69,24 +69,24 @@ export class BackendAdapter {
     const start = Date.now();
     try {
       // 原生 fetch 不识别 timeout 选项，须用 AbortSignal 实现真实超时
-      const resp = await fetch(`${CONFIG_API}?action=ping`, { method: 'GET', signal: AbortSignal.timeout(8000) } as any);
-      const data: any = await resp.json();
+      const resp = await fetch(`${CONFIG_API}?action=ping`, { method: 'GET', signal: AbortSignal.timeout(8000) });
+      const data = (await resp.json()) as { success?: boolean };
       return { success: !!data?.success, latency: Date.now() - start };
-    } catch (err: any) {
-      return { success: false, error: err.message };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
   }
 
   /** 拉取官方内置 API 列表（公开） */
   async getBuiltins(): Promise<{ success: boolean; builtins?: BuiltinApi[]; error?: string }> {
     try {
-      const resp = await fetch(`${CONFIG_API}?action=get`, { method: 'GET', signal: AbortSignal.timeout(10000) } as any);
-      const data: any = await resp.json();
+      const resp = await fetch(`${CONFIG_API}?action=get`, { method: 'GET', signal: AbortSignal.timeout(10000) });
+      const data = (await resp.json()) as { success?: boolean; builtins?: BuiltinApi[]; error?: string };
       if (!data?.success) return { success: false, error: data?.error || '拉取失败' };
       return { success: true, builtins: data.builtins || [] };
-    } catch (err: any) {
+    } catch (err) {
       // 网络异常统一转成结构化失败，调用方（渲染层）据此提示，避免抛出未处理 rejection
-      return { success: false, error: err?.message || '网络请求失败' };
+      return { success: false, error: err instanceof Error ? err.message : '网络请求失败' };
     }
   }
 
@@ -94,12 +94,12 @@ export class BackendAdapter {
   async getAnnouncements(): Promise<{ success: boolean; announcements?: RemoteAnnouncement[]; error?: string }> {
     const url = `${CONFIG_API}?action=announcements&version=${encodeURIComponent(this.version)}&platform=${encodeURIComponent(this.getPlatform())}`;
     try {
-      const resp = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(10000) } as any);
-      const data: any = await resp.json();
+      const resp = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(10000) });
+      const data = (await resp.json()) as { success?: boolean; announcements?: RemoteAnnouncement[]; error?: string };
       if (!data?.success) return { success: false, error: data?.error || '拉取失败' };
       return { success: true, announcements: data.announcements || [] };
-    } catch (err: any) {
-      return { success: false, error: err.message };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -120,11 +120,13 @@ export class BackendAdapter {
       controller = new AbortController();
       // 兜底超时（略大于服务端 85s），防止异常卡死
       const guard = setTimeout(() => {
-        try { controller?.abort(); } catch {}
+        try { controller?.abort(); } catch {
+          /* 已 abort 的 controller 重复 abort 会抛错，忽略即可 */
+        }
       }, 95 * 1000);
 
-      fetch(url, { method: 'GET', signal: controller.signal } as any)
-        .then(async (resp: any) => {
+      fetch(url, { method: 'GET', signal: controller.signal })
+        .then(async (resp) => {
           if (aborted) return;
           if (!resp.ok || !resp.body) {
             throw new Error(`SSE 连接失败: ${resp.status}`);
@@ -151,7 +153,7 @@ export class BackendAdapter {
               }
               if (!data) continue;
               try {
-                const payload = JSON.parse(data);
+                const payload = JSON.parse(data) as { announcements?: RemoteAnnouncement[]; serverTime?: number };
                 onEvent({ type: event, announcements: payload.announcements, serverTime: payload.serverTime });
               } catch {
                 /* 忽略无法解析的帧 */
@@ -161,14 +163,14 @@ export class BackendAdapter {
 
           // 读取循环
           for (;;) {
-            if (aborted) { try { reader.cancel(); } catch {} return; }
+            if (aborted) { try { await reader.cancel(); } catch { /* 连接已关闭时 cancel 可能抛错 */ } return; }
             const { done, value } = await reader.read();
             if (done) break;
             processChunk(decoder.decode(value, { stream: true }));
           }
           processChunk(decoder.decode()); // flush 残留
         })
-        .catch((err: any) => {
+        .catch(() => {
           if (aborted) return;
           // 网络异常 / 服务端断开，稍后重连
           onEvent({ type: 'disconnect', serverTime: undefined });
@@ -186,7 +188,7 @@ export class BackendAdapter {
     return () => {
       aborted = true;
       if (timer) clearTimeout(timer);
-      try { controller?.abort(); } catch {}
+      try { controller?.abort(); } catch { /* 已 abort 的 controller 重复 abort 会抛错，忽略即可 */ }
     };
   }
 
@@ -204,12 +206,12 @@ export class BackendAdapter {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: body.toString(),
         signal: AbortSignal.timeout(10000),
-      } as any);
-      const data: any = await resp.json();
+      });
+      const data = (await resp.json()) as { success?: boolean; item?: FeedbackItem; error?: string };
       if (!data?.success) return { success: false, error: data?.error || '提交失败' };
       return { success: true, item: data.item };
-    } catch (err: any) {
-      return { success: false, error: err.message };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -217,12 +219,12 @@ export class BackendAdapter {
   async listFeedback(since = 0): Promise<{ success: boolean; items?: FeedbackItem[]; newReplyCount?: number; serverTime?: number; error?: string }> {
     const url = `${FEEDBACK_API}?action=list&device=${encodeURIComponent(this.deviceId)}&since=${Number(since) || 0}`;
     try {
-      const resp = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(10000) } as any);
-      const data: any = await resp.json();
+      const resp = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(10000) });
+      const data = (await resp.json()) as { success?: boolean; items?: FeedbackItem[]; newReplyCount?: number; serverTime?: number; error?: string };
       if (!data?.success) return { success: false, error: data?.error || '拉取失败' };
       return { success: true, items: data.items || [], newReplyCount: data.newReplyCount || 0, serverTime: data.serverTime };
-    } catch (err: any) {
-      return { success: false, error: err.message };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
   }
 }

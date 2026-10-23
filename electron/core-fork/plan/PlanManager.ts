@@ -45,9 +45,33 @@ export interface PlanEvent {
 
 const VALID_STATUSES: PlanItemStatus[] = ['pending', 'running', 'completed', 'failed', 'skipped'];
 
+/** plans 缓存的容量上限：超出后按插入顺序淘汰最早的计划 */
+const MAX_CACHED_PLANS = 200;
+
 export class PlanManager {
   private plans: Map<string, Plan> = new Map();
   private listeners: Set<(e: PlanEvent) => void> = new Set();
+
+  /**
+   * 淘汰最旧计划，防止 plans 无限增长。
+   *
+   * 这个 Map 以 sessionId 为 key，而 clear() 虽已存在却长期没有任何调用点：
+   * 用户删掉的会话，其计划一直留在内存里。单个 Plan 不大，但会话数量会随时间
+   * 累积，属于典型的小而持续的泄漏。
+   * 正常路径由 session:delete 调用 clear() 精确释放；这里只是兜底上限，
+   * 防止其它入口（如新建后未保存的会话）漏掉清理。
+   */
+  private evictOldest(): void {
+    if (this.plans.size < MAX_CACHED_PLANS) return;
+    // Map 保持插入顺序，最前面的即为最早创建的计划
+    const overflow = this.plans.size - MAX_CACHED_PLANS + 1;
+    let removed = 0;
+    for (const key of this.plans.keys()) {
+      if (removed >= overflow) break;
+      this.plans.delete(key);
+      removed++;
+    }
+  }
 
   /** 当前会话是否存在 plan */
   hasPlan(sessionId: string): boolean {
@@ -75,6 +99,10 @@ export class PlanManager {
       createdAt: now,
       updatedAt: now,
     };
+    this.evictOldest();
+    // 先 delete 再 set：Map 对已存在的 key 执行 set 不更新插入序，
+    // 直接覆盖会让"老会话重建计划"仍排在最旧位置，被 evictOldest 误淘汰
+    this.plans.delete(sessionId);
     this.plans.set(sessionId, plan);
     this.emit({ type: 'created', planId: plan.id, plan });
     return plan;
@@ -187,7 +215,7 @@ export class PlanManager {
     this.plans.delete(sessionId);
   }
 
-  /** 计划进度（已完成/总步骤） */
+  /** 会话的 plan 进度（已完成/总步骤） */
   progress(sessionId: string): { done: number; total: number; failed: number; skipped: number; pending: number; running: number } | null {
     const plan = this.plans.get(sessionId);
     if (!plan) return null;

@@ -77,7 +77,7 @@ export function MemoryPanel({ workspaceId, onClose }: { workspaceId?: string; on
       const list = await window.cnke.memory.list();
       setItems(list);
     } catch (e) {
-      setError(`读取记忆失败：${e}`);
+      setError(`读取记忆失败：${e instanceof Error ? e.message : String(e)}`);
     }
   };
 
@@ -152,7 +152,7 @@ export function MemoryPanel({ workspaceId, onClose }: { workspaceId?: string; on
       if (!error) setEditing(null);
       await load();
     } catch (e) {
-      setError(`保存异常：${e}`);
+      setError(`保存异常：${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setSaving(false);
     }

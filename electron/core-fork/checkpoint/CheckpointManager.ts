@@ -208,9 +208,9 @@ export class CheckpointManager {
         }
       }
       return { success: true };
-    } catch (err: any) {
+    } catch (err: unknown) {
       if (err instanceof AgentError) return { success: false, error: err.message };
-      return { success: false, error: err.message || '恢复失败' };
+      return { success: false, error: err instanceof Error ? err.message : '恢复失败' };
     }
   }
 
@@ -431,7 +431,6 @@ function countChanges(unified: string): { additions: number; deletions: number }
 
 /** 简易 diff 应用：从 before 应用 unified diff 文本返回 after（仅支持 +/- 操作） */
 function applyDiff(before: string, unifiedDiff: string): string {
-  const lines = before.split(/\r?\n/);
   const diffLines = unifiedDiff.split('\n');
   const out: string[] = [];
   // 解析 hunk 头，定位位置

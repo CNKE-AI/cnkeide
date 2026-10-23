@@ -113,14 +113,15 @@ export function renderOutlineHtmlSync(
 
 /**
  * 把大纲 + 主题 → 完整 HTML（纯代码，确定性）
+ * 同步渲染但返回 Promise 以保持与其他渲染函数的统一接口
  */
-export async function renderOutlineToHtml(
-  _llmProvider: any,
-  _apiConfig: any,
+export function renderOutlineToHtml(
+  _llmProvider: unknown,
+  _apiConfig: unknown,
   opts: RenderOptions,
 ): Promise<RenderResult> {
   const theme = findTheme(opts.themeId);
-  if (!theme) return { success: false, error: `未知主题：${opts.themeId}` };
+  if (!theme) return Promise.resolve({ success: false, error: `未知主题：${opts.themeId}` });
 
   const onProgress = opts.onProgress || (() => {});
   const total = Math.max(1, opts.outline.slides.length);
@@ -130,7 +131,7 @@ export async function renderOutlineToHtml(
   onProgress('render', total, total, `完成 ${total} 页装配`);
   onProgress('finalize', 1, 1, '渲染完成');
 
-  return { success: true, html, theme, issues: [] };
+  return Promise.resolve({ success: true, html, theme, issues: [] });
 }
 
 /** 构造配色（含派生正文色） */

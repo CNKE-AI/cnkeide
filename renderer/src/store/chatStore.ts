@@ -45,6 +45,8 @@ export interface ChatMessage {
   files?: UploadedFile[];
   /** 模型降级提示：请求的模型失败被 fallback 替换时展示（含真实模型名） */
   modelNotice?: string;
+  /** 上下文自动压缩提示：早期历史被摘要替换时展示，避免用户误以为 AI「失忆」 */
+  contextNotice?: string;
   usage?: {
     prompt_tokens: number;
     completion_tokens: number;
@@ -75,7 +77,6 @@ interface ChatState {
   mode: AgentMode;
   /** 全自动模式：运行时自动批准所有工具调用，不弹确认窗口 */
   autoMode: boolean;
-  streamingContent: string;
   /** 当前会话绑定的工作区路径（切换对话时自动切换，驱动 FileTree 等） */
   activeWorkspaceId: string | null;
   setMessages: (msgs: ChatMessage[]) => void;
@@ -124,6 +125,193 @@ async function saveCurrentSession(workspaceId: string) {
   });
 }
 
+/**
+ * 流式增量合帧缓冲。
+ *
+ * 模型侧一个 token 就是一个 stream 事件，长回复可达每秒上百次。原实现每个
+ * delta 同步 set 两次（streamingContent 一次 + messages 一次），等于整个对话
+ * 列表每秒重渲染上百次——长会话下明显掉帧。
+ * 这里把增量累积到下一帧统一提交：渲染次数降到屏幕刷新率上限，文字在人眼看来
+ * 没有任何延迟差异。
+ */
+let pendingDelta = '';
+let streamFrame: number | null = null;
+
+/** 把累积的增量一次性写入最后一条 assistant 消息 */
+function commitPendingDelta(): void {
+  const delta = pendingDelta;
+  pendingDelta = '';
+  if (!delta) return;
+  const cur = useChatStore.getState().messages;
+  const idx = cur.length - 1;
+  const last = cur[idx];
+  if (!last || last.role !== 'assistant') return;
+  const next = cur.slice();
+  next[idx] = { ...last, content: (last.content || '') + delta };
+  useChatStore.setState({ messages: next });
+}
+
+/**
+ * 立即提交尚未落地的增量。
+ * 终态（done/error）、中断、异常路径必须调用，否则最后一段文字会永久丢失。
+ */
+function flushPendingDelta(): void {
+  if (streamFrame !== null && typeof cancelAnimationFrame === 'function') {
+    cancelAnimationFrame(streamFrame);
+  }
+  streamFrame = null;
+  commitPendingDelta();
+}
+
+/** 累积增量，并安排到下一帧统一提交 */
+function pushDelta(delta: unknown): void {
+  if (typeof delta !== 'string' || !delta) return;
+  pendingDelta += delta;
+  if (streamFrame !== null) return;
+  // 极端环境下没有 rAF（如部分测试宿主）：退化为立即提交，保证流式不中断
+  if (typeof requestAnimationFrame !== 'function') {
+    commitPendingDelta();
+    return;
+  }
+  streamFrame = requestAnimationFrame(() => {
+    streamFrame = null;
+    commitPendingDelta();
+  });
+}
+
+/**
+ * 订阅 agent 事件并把状态写回 store。
+ *
+ * 这段逻辑原先在 sendMessage 与 regenerateMessage 里各存了一份完全相同的拷贝
+ * （约 50 行 if/else）。两份拷贝带来过真实缺陷：新事件类型（context_compressed）
+ * 只在发送路径接入，重答路径就会静默漏掉，用户重答时看不到压缩提示。
+ * 故收敛为单一实现，两条路径只传不同的收尾回调。
+ *
+ * 两个路径的差异仅在「结束时如何落盘」，用 onFinish 参数表达。
+ *
+ * 返回退订函数：调用方必须在 agent.run 返回/reject 时调用，否则事件监听会残留。
+ */
+function subscribeRunEvents(opts: {
+  sessionId: string;
+  /** 原始提问，用于系统通知摘要与保存会话标题 */
+  prompt: string;
+  workspaceId: string;
+  onFinish: (sessionId: string, workspaceId: string) => void;
+}): () => void {
+  const { sessionId: sid, prompt, workspaceId, onFinish } = opts;
+
+  /** 只更新最后一条 assistant 消息：避免每个事件都重建整个数组 */
+  const patchLast = (patch: (m: ChatMessage) => ChatMessage) => {
+    const cur = useChatStore.getState().messages;
+    const idx = cur.length - 1;
+    const last = cur[idx];
+    if (!last || last.role !== 'assistant') return;
+    const next = cur.slice();
+    next[idx] = patch(last);
+    useChatStore.setState({ messages: next });
+  };
+
+  return subscribeAgentEvents((event) => {
+    if (event.type === 'stream') {
+      pushDelta(event.data?.delta);
+    } else if (event.type === 'thinking') {
+      patchLast((last) => ({ ...last, thinking: event.data?.thinking }));
+    } else if (event.type === 'tool_call') {
+      patchLast((last) => ({ ...last, toolCalls: [...(last.toolCalls || []), event.data] }));
+    } else if (event.type === 'model_fallback') {
+      // 模型请求失败自动降级：显式告知用户实际使用的模型，避免"切换成功"的错觉
+      const d = event.data || {};
+      patchLast((last) => ({
+        ...last,
+        modelNotice: `模型 ${d.requestedModel || '?'} 请求失败，已自动切换备用模型：${d.actualName || d.actualModel || '?'}`,
+      }));
+    } else if (event.type === 'context_compressed') {
+      // 上下文自动压缩：必须显式告知，否则用户只会觉得"AI 突然忘了前面聊过什么"
+      const d = event.data || {};
+      patchLast((last) => ({
+        ...last,
+        contextNotice: `上下文已自动压缩：${d.beforeMessages ?? '?'} → ${d.afterMessages ?? '?'} 条消息，约省 ${d.savedTokens ?? 0} tokens（保留最近数轮，早期历史已摘要为一条系统消息）`,
+      }));
+    } else if (event.type === 'done' || event.type === 'error') {
+      // 先把还没落地的流式增量刷出去，否则最后一段文字会丢
+      flushPendingDelta();
+      // 任务结束：解除窗口保护（允许正常最小化 / 直接关闭）
+      window.cnke.window.setAgentBusy(false);
+      if (event.type === 'error') {
+        patchLast((last) => ({ ...last, content: `Error: ${event.data?.error || '未知错误'}` }));
+        window.cnke.notify.show({ type: 'error', title: '任务异常', message: event.data?.error || 'AI 任务异常退出' });
+      } else {
+        if (event.data?.usage) {
+          patchLast((last) => ({ ...last, usage: event.data.usage }));
+        }
+        window.cnke.notify.show({ type: 'done', title: '任务完成', message: prompt.slice(0, 50) });
+      }
+      // 先落消息补丁、再清 loading：两者都是终态，各一次 set 无性能影响，
+      // 但顺序保证"内容已完整"的那一帧不会仍带着 loading 光标。
+      useChatStore.setState({ loading: false });
+      onFinish(sid, workspaceId);
+    }
+  });
+}
+
+/**
+ * 发起一轮 agent 运行并接管其事件流。
+ *
+ * 两条路径（发送 / 重新回答）在「消息怎么准备」上不同，但订阅、窗口保护、
+ * 异常兜底、终态落盘完全一致，故统一收口到这里。
+ */
+async function startAgentRun(
+  params: {
+    sid: string;
+    prompt: string;
+    workspaceId: string;
+    mode: AgentMode;
+    history: { role: string; content: string }[];
+    images?: string[];
+    files?: UploadedFile[];
+    autoMode?: boolean;
+  },
+  set: (patch: Partial<ChatState>) => void,
+  get: () => ChatState
+): Promise<void> {
+  const { sid, prompt, workspaceId, mode, history, images, files, autoMode } = params;
+
+  const removeEvent = subscribeRunEvents({
+    sessionId: sid,
+    prompt,
+    workspaceId,
+    onFinish: (finishedSessionId, finishedWorkspaceId) => {
+      // 终态已到：先退订，避免残留监听把后续事件重复写进新会话
+      removeEvent();
+      const finalMsgs = get().messages;
+      window.cnke.session.save({ id: finishedSessionId, workspaceId: finishedWorkspaceId, title: prompt.slice(0, 30), messages: finalMsgs, createdAt: Date.now(), updatedAt: Date.now(), mode });
+      get().refreshSessions(finishedWorkspaceId);
+    },
+  });
+
+  // 任务开始：通知主进程启用窗口保护（防误最小化 / 关闭需二次确认）
+  window.cnke.window.setAgentBusy(true);
+  try {
+    await window.cnke.agent.run({ sessionId: sid, workspaceId, prompt, history, mode, images, files, autoApprove: autoMode });
+  } catch (err: any) {
+    // agent.run 抛出（如 IPC 断开 / 主进程崩溃后 invoke reject）
+    window.cnke.window.setAgentBusy(false);
+    // 先冲掉残留增量，保证已收到的文字不丢，再写错误兜底
+    flushPendingDelta();
+    // 异常路径也要退订，否则下一次发消息会叠加一个僵尸监听
+    removeEvent();
+    const msgs = get().messages;
+    const last = msgs[msgs.length - 1];
+    if (last && last.role === 'assistant') {
+      const patched = [...msgs];
+      patched[patched.length - 1] = { ...last, content: last.content || `Error: ${err?.message || '请求失败'}` };
+      set({ messages: patched, loading: false });
+    } else {
+      set({ loading: false });
+    }
+  }
+}
+
 export const useChatStore = create<ChatState>((set, get) => ({
   messages: [],
   sessionId: null,
@@ -131,7 +319,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
   loading: false,
   mode: 'coder',
   autoMode: false,
-  streamingContent: '',
   activeWorkspaceId: null,
   setMessages: (msgs) => set({ messages: msgs }),
   setSessionId: (id) => set({ sessionId: id }),
@@ -145,7 +332,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const v = await window.cnke.config.get('agentConfig.autoApproveTools');
     set({ autoMode: !!v });
   },
-  clearMessages: () => set({ messages: [], streamingContent: '' }),
+  clearMessages: () => set({ messages: [] }),
 
   refreshSessions: async (_workspaceId?: string) => {
     // 全局拉取所有会话（跨工作区），每个对话可绑定不同工作区
@@ -160,7 +347,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (loading) return;
     if (sessionId && messages.length) await saveCurrentSession(workspaceId);
     const session = await window.cnke.session.create(workspaceId, '新对话');
-    set({ sessionId: session.id, messages: [], streamingContent: '', activeWorkspaceId: workspaceId });
+    set({ sessionId: session.id, messages: [], activeWorkspaceId: workspaceId });
     await get().refreshSessions(workspaceId);
   },
 
@@ -176,7 +363,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({
       sessionId: session.id,
       messages: session.messages || [],
-      streamingContent: '',
       mode: (session.mode as AgentMode) || get().mode,
       // 切换对话时同步切换工作区（每个对话绑定各自的工作区）
       activeWorkspaceId: session.workspaceId || workspaceId,
@@ -196,7 +382,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         await get().switchSession(rest[0].workspaceId || workspaceId, rest[0].id);
       } else {
         const session = await window.cnke.session.create(workspaceId, '新对话');
-        set({ sessionId: session.id, messages: [], streamingContent: '', activeWorkspaceId: workspaceId });
+        set({ sessionId: session.id, messages: [], activeWorkspaceId: workspaceId });
       }
     }
     await window.cnke.session.delete(sessionId);
@@ -220,75 +406,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       timestamp: Date.now(),
     };
     const assistantMsg: ChatMessage = { id: nanoid(), role: 'assistant', content: '', timestamp: Date.now() };
-    set((s) => ({ messages: [...s.messages, userMsg, assistantMsg], loading: true, streamingContent: '' }));
+    set((s) => ({ messages: [...s.messages, userMsg, assistantMsg], loading: true }));
 
-    const removeEvent = subscribeAgentEvents((event) => {
-      const s = get();
-      const msgs = [...s.messages];
-      const last = msgs[msgs.length - 1];
-      if (!last || last.role !== 'assistant') return;
-      if (event.type === 'stream') {
-        const newContent = s.streamingContent + event.data.delta;
-        set({ streamingContent: newContent });
-        msgs[msgs.length - 1] = { ...last, content: newContent };
-        set({ messages: msgs });
-      } else if (event.type === 'thinking') {
-        msgs[msgs.length - 1] = { ...last, thinking: event.data.thinking };
-        set({ messages: msgs });
-      } else if (event.type === 'tool_call') {
-        const tc = last.toolCalls || [];
-        msgs[msgs.length - 1] = { ...last, toolCalls: [...tc, event.data] };
-        set({ messages: msgs });
-      } else if (event.type === 'model_fallback') {
-        // 模型请求失败自动降级：显式告知用户实际使用的模型，避免"切换成功"的错觉
-        msgs[msgs.length - 1] = {
-          ...last,
-          modelNotice: `模型 ${event.data.requestedModel || '?'} 请求失败，已自动切换备用模型：${event.data.actualName || event.data.actualModel || '?'}`,
-        };
-        set({ messages: msgs });
-      } else if (event.type === 'done' || event.type === 'error') {
-        set({ loading: false, streamingContent: '' });
-        // 任务结束：解除窗口保护（允许正常最小化 / 直接关闭）
-        window.cnke.window.setAgentBusy(false);
-        if (event.type === 'error') {
-          msgs[msgs.length - 1] = { ...last, content: `Error: ${event.data.error}` };
-          set({ messages: msgs });
-          window.cnke.notify.show({ type: 'error', title: '任务异常', message: event.data.error || 'AI 任务异常退出' });
-        } else {
-          if (event.data?.usage) {
-            msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], usage: event.data.usage };
-            set({ messages: msgs });
-          }
-          window.cnke.notify.show({ type: 'done', title: '任务完成', message: prompt.slice(0, 50) });
-        }
-        removeEvent?.();
-        const finalMsgs = get().messages;
-        window.cnke.session.save({ id: sid, workspaceId, title: prompt.slice(0, 30), messages: finalMsgs, createdAt: Date.now(), updatedAt: Date.now(), mode });
-        get().refreshSessions(workspaceId);
-      }
-    });
-
+    // 历史消息取本轮追加之前的内容，当前提问单独通过 prompt 传入
     const history = messages.map((m) => ({ role: m.role, content: m.content }));
-    // 任务开始：通知主进程启用窗口保护（防误最小化 / 关闭需二次确认）
-    window.cnke.window.setAgentBusy(true);
-    try {
-      await window.cnke.agent.run({ sessionId: sid, workspaceId, prompt, history, mode, images, files, autoApprove: autoMode });
-    } catch (err: any) {
-      // agent.run 抛异常：同样要解除保护，否则窗口将无法最小化
-      window.cnke.window.setAgentBusy(false);
-      // agent.run 抛出（如 IPC 断开 / 主进程崩溃后 invoke reject）：
-      // 兜底重置 loading 并向用户提示，避免输入框永久卡死
-      const msgs = get().messages;
-      const last = msgs[msgs.length - 1];
-      if (last && last.role === 'assistant') {
-        const patched = [...msgs];
-        patched[patched.length - 1] = { ...last, content: last.content || `Error: ${err?.message || '请求失败'}` };
-        set({ messages: patched, loading: false, streamingContent: '' });
-      } else {
-        set({ loading: false, streamingContent: '' });
-      }
-      removeEvent?.();
-    }
+
+    await startAgentRun({ sid, prompt, workspaceId, mode, history, images, files, autoMode }, set, get);
   },
 
   rollback: async (workspaceId: string) => {
@@ -301,7 +424,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
     if (lastUserIdx === -1) return;
     const next = messages.slice(0, lastUserIdx);
-    set({ messages: next, streamingContent: '' });
+    set({ messages: next });
     await saveCurrentSession(workspaceId);
   },
 
@@ -322,7 +445,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const files = userMsg.files;
     // 删除该 AI 回复及其之后的所有消息（回到该问题待回答状态）
     const history = messages.slice(0, idx);
-    set({ messages: history, streamingContent: '', loading: true });
+    set({ messages: history, loading: true });
 
     const assistantMsg: ChatMessage = { id: nanoid(), role: 'assistant', content: '', timestamp: Date.now() };
     set((s) => ({ messages: [...s.messages, assistantMsg] }));
@@ -334,77 +457,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set({ sessionId: sid });
     }
 
-    const removeEvent = subscribeAgentEvents((event) => {
-      const s = get();
-      const msgs = [...s.messages];
-      const last = msgs[msgs.length - 1];
-      if (!last || last.role !== 'assistant') return;
-      if (event.type === 'stream') {
-        const newContent = s.streamingContent + event.data.delta;
-        set({ streamingContent: newContent });
-        msgs[msgs.length - 1] = { ...last, content: newContent };
-        set({ messages: msgs });
-      } else if (event.type === 'thinking') {
-        msgs[msgs.length - 1] = { ...last, thinking: event.data.thinking };
-        set({ messages: msgs });
-      } else if (event.type === 'tool_call') {
-        const tc = last.toolCalls || [];
-        msgs[msgs.length - 1] = { ...last, toolCalls: [...tc, event.data] };
-        set({ messages: msgs });
-      } else if (event.type === 'model_fallback') {
-        // 模型请求失败自动降级：显式告知用户实际使用的模型，避免"切换成功"的错觉
-        msgs[msgs.length - 1] = {
-          ...last,
-          modelNotice: `模型 ${event.data.requestedModel || '?'} 请求失败，已自动切换备用模型：${event.data.actualName || event.data.actualModel || '?'}`,
-        };
-        set({ messages: msgs });
-      } else if (event.type === 'done' || event.type === 'error') {
-        set({ loading: false, streamingContent: '' });
-        // 任务结束：解除窗口保护
-        window.cnke.window.setAgentBusy(false);
-        if (event.type === 'error') {
-          msgs[msgs.length - 1] = { ...last, content: `Error: ${event.data.error}` };
-          set({ messages: msgs });
-          window.cnke.notify.show({ type: 'error', title: '任务异常', message: event.data.error || 'AI 任务异常退出' });
-        } else {
-          if (event.data?.usage) {
-            msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], usage: event.data.usage };
-            set({ messages: msgs });
-          }
-          window.cnke.notify.show({ type: 'done', title: '任务完成', message: prompt.slice(0, 50) });
-        }
-        removeEvent?.();
-        const finalMsgs = get().messages;
-        window.cnke.session.save({ id: sid, workspaceId, title: prompt.slice(0, 30), messages: finalMsgs, createdAt: Date.now(), updatedAt: Date.now(), mode });
-        get().refreshSessions(workspaceId);
-      }
-    });
-
     const historyForRun = history.map((m) => ({ role: m.role, content: m.content }));
-    // 任务开始：启用窗口保护
-    window.cnke.window.setAgentBusy(true);
-    try {
-      await window.cnke.agent.run({ sessionId: sid, workspaceId, prompt, history: historyForRun, mode, images, files, autoApprove: autoMode });
-    } catch (err: any) {
-      window.cnke.window.setAgentBusy(false);
-      const msgs = get().messages;
-      const last = msgs[msgs.length - 1];
-      if (last && last.role === 'assistant') {
-        const patched = [...msgs];
-        patched[patched.length - 1] = { ...last, content: last.content || `Error: ${err?.message || '请求失败'}` };
-        set({ messages: patched, loading: false, streamingContent: '' });
-      } else {
-        set({ loading: false, streamingContent: '' });
-      }
-      removeEvent?.();
-    }
+    await startAgentRun({ sid, prompt, workspaceId, mode, history: historyForRun, images, files, autoMode }, set, get);
   },
 
   abort: () => {
     const { sessionId } = get();
     if (sessionId) {
       window.cnke.agent.abort(sessionId);
-      set({ loading: false, streamingContent: '' });
+      // 中断前把已收到的文字落盘，否则最后一段会消失
+      flushPendingDelta();
+      set({ loading: false });
       // 用户主动中断：立即解除窗口保护
       window.cnke.window.setAgentBusy(false);
     }

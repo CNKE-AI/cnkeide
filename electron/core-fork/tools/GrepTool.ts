@@ -8,10 +8,11 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { execFileSafe } from '../util/SafeSpawn';
 
-const execFileAsync = promisify(execFileSafe as any) as (
+// promisify 对三回调值 (stdout, stderr) 的函数类型推断不足，必须显式标注返回类型
+const execFileAsync = promisify(execFileSafe) as unknown as (
   file: string,
   args: string[],
-  options: Record<string, unknown>,
+  options?: Record<string, unknown>,
 ) => Promise<{ stdout: string; stderr: string }>;
 
 export interface GrepMatch {
@@ -90,8 +91,10 @@ async function grepWithRg(opts: GrepOptions): Promise<{ success: boolean; matche
     });
     const lines = stdout.split('\n').filter(Boolean);
     const matches: GrepMatch[] = lines.slice(0, max).map((l) => {
-      // rg 输出: path:line:match
-      const idx = l.indexOf(':');
+      // rg 输出: path:line:match。Windows 绝对路径含盘符冒号（如 C:\...），
+      // 若直接 indexOf(':') 会切到盘符，导致 file/line 解析错误，故先跳过盘符。
+      const start = /^[A-Za-z]:[\\/]/.test(l) ? 2 : 0;
+      const idx = l.indexOf(':', start);
       const idx2 = l.indexOf(':', idx + 1);
       if (idx < 0 || idx2 < 0) return { file: l, line: 0, match: l };
       return {

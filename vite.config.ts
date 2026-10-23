@@ -34,7 +34,8 @@ export default defineConfig({
           build: {
             outDir: 'dist-electron',
             rollupOptions: {
-              external: ['electron', /^@modelcontextprotocol\/sdk/],
+              // kerberos 是 playwright-core 的可选依赖（mongodb 认证），本地未安装时会导致 Rollup 解析失败
+              external: ['electron', /^@modelcontextprotocol\/sdk/, 'kerberos'],
             },
           },
         },

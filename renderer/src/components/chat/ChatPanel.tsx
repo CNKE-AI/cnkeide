@@ -1,4 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { shallow } from 'zustand/shallow';
 import { createPortal } from 'react-dom';
 import * as XLSX from 'xlsx';
 import { useChatStore, ChatMessage, AgentMode, UploadedFile, MAX_FILE_TEXT_CHARS, MAX_UPLOAD_FILES } from '../../store/chatStore';
@@ -158,7 +159,7 @@ function parseSpreadsheet(buf: ArrayBuffer): string {
       const ws = wb.Sheets[name];
       if (!ws) continue;
       // sheet_to_json 保留空行，header:1 得到二维数组（每行是单元格数组）
-      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' }) as any[][];
+      const rows = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, defval: '' });
       const lines: string[] = [];
       for (let r = 0; r < rows.length && r < maxRows; r++) {
         const row = rows[r] || [];
@@ -385,12 +386,20 @@ const SubRow: React.FC<{ color: string; label: string; value: number }> = ({ col
   </div>
 );
 
-const MessageBubble: React.FC<{
+/**
+ * 消息气泡。
+ * memo 是流式场景的关键：流式时每帧只更新最后一条 assistant 消息的 content，
+ * 有了 memo，其他 N-1 条历史消息可以直接跳过重渲染（Markdown 内部还有一层 memo）。
+ * 三个回调都由父组件用 useCallback 固定，引用稳定才会真正生效。
+ */
+interface MessageBubbleProps {
   msg: ChatMessage;
   onRegenerate?: (id: string) => void;
   onRemember?: (content: string) => Promise<boolean>;
   onRollbackTo?: (id: string) => void;
-}> = ({ msg, onRegenerate, onRemember, onRollbackTo }) => {
+}
+
+const MessageBubble = React.memo(({ msg, onRegenerate, onRemember, onRollbackTo }: MessageBubbleProps) => {
   const [thinkingOpen, setThinkingOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [tokenOpen, setTokenOpen] = useState(false);
@@ -460,6 +469,12 @@ const MessageBubble: React.FC<{
         </div>
       )}
 
+      {msg.contextNotice && (
+        <div className="mb-1.5 text-[11px] text-sky-400/90 bg-sky-400/10 border border-sky-400/30 rounded-md px-2 py-1.5">
+          {msg.contextNotice}
+        </div>
+      )}
+
       {msg.thinking && (
         <div className="mb-1.5">
           <button
@@ -495,7 +510,7 @@ const MessageBubble: React.FC<{
       {msg.content ? (
         <div className="mt-2 flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground/80">
           <button
-            onClick={handleCopy}
+            onClick={() => void handleCopy()}
             className="flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-accent hover:text-foreground transition-colors"
             title="复制回复内容"
           >
@@ -504,7 +519,7 @@ const MessageBubble: React.FC<{
           </button>
           {onRemember && msg.content && (
             <button
-              onClick={handleRemember}
+              onClick={() => void handleRemember()}
               className="flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-accent hover:text-foreground transition-colors"
               title="把这条回复的要点存入本地记忆，后续对话自动加载"
             >
@@ -543,10 +558,40 @@ const MessageBubble: React.FC<{
       ) : null}
     </div>
   );
-};
+});
 
 const ChatPanel: React.FC = () => {
-  const { messages, sessionId, sessions, loading, mode, autoMode, setMode, setAutoMode, initAutoMode, sendMessage, abort, refreshSessions, startNewSession, switchSession, removeSession, rollback, regenerateMessage, activeWorkspaceId } = useChatStore();
+  // 用 shallow 比较挑选字段，而不是 useChatStore() 订阅整个 store。
+  // 原来的写法让 store 里任何字段变化（含流式期间每帧的 messages）都触发本组件重渲染；
+  // 配合下方 MessageBubble 的 memo，历史气泡虽然会跳过，但表头、输入区等仍被无谓重算。
+  const {
+    messages, sessionId, sessions, loading, mode, autoMode,
+    setMode, setAutoMode, initAutoMode, sendMessage, abort,
+    refreshSessions, startNewSession, switchSession, removeSession,
+    rollback, regenerateMessage, activeWorkspaceId,
+  } = useChatStore(
+    (s) => ({
+      messages: s.messages,
+      sessionId: s.sessionId,
+      sessions: s.sessions,
+      loading: s.loading,
+      mode: s.mode,
+      autoMode: s.autoMode,
+      setMode: s.setMode,
+      setAutoMode: s.setAutoMode,
+      initAutoMode: s.initAutoMode,
+      sendMessage: s.sendMessage,
+      abort: s.abort,
+      refreshSessions: s.refreshSessions,
+      startNewSession: s.startNewSession,
+      switchSession: s.switchSession,
+      removeSession: s.removeSession,
+      rollback: s.rollback,
+      regenerateMessage: s.regenerateMessage,
+      activeWorkspaceId: s.activeWorkspaceId,
+    }),
+    shallow
+  );
   const { workspacePath, setWorkspacePath, settingsOpen } = useApp();
   const [input, setInput] = useState('');
   const [images, setImages] = useState<string[]>([]);
@@ -568,8 +613,8 @@ const ChatPanel: React.FC = () => {
   // 切换会话时：拉取该会话的上下文占用与计划状态
   useEffect(() => {
     if (!sessionId) return;
-    refreshContext(sessionId);
-    refreshPlan(sessionId);
+    void refreshContext(sessionId);
+    void refreshPlan(sessionId);
   }, [sessionId, refreshContext, refreshPlan]);
 
   // 编辑器选区发送：把选中代码注入到输入框
@@ -581,7 +626,8 @@ const ChatPanel: React.FC = () => {
   }, [pendingPrompt, setPendingPrompt]);
 
   useEffect(() => {
-    initAutoMode();
+    void initAutoMode();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- initAutoMode 是稳定的初始化函数引用
   }, []);
 
   // 切换对话时自动切换工作区：每个对话绑定各自的工作区目录
@@ -594,9 +640,8 @@ const ChatPanel: React.FC = () => {
   // 首次启动/切换工作区时：拉取会话列表，恢复最近会话或新建空会话（带防重，兼容 StrictMode 双挂载）
   useEffect(() => {
     if (!workspacePath) return;
-    useChatStore.setState({ streamingContent: '' });
     let cancelled = false;
-    (async () => {
+    void (async () => {
       await refreshSessions(workspacePath);
       if (cancelled) return;
       const { sessions, sessionId } = useChatStore.getState();
@@ -722,7 +767,7 @@ const ChatPanel: React.FC = () => {
     if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      handleSend();
+      void handleSend();
     }
   };
 
@@ -851,14 +896,14 @@ const ChatPanel: React.FC = () => {
     const ws = activeWorkspaceId || workspacePath;
     if (!ws || !sessionId || loading) return;
     if (window.confirm('删除当前对话？此操作不可恢复。')) {
-      removeSession(ws, sessionId);
+      void removeSession(ws, sessionId);
     }
   };
 
   const [memoryOpen, setMemoryOpen] = useState(false);
 
   /** 把 AI 回复的要点存入本地记忆（供后续对话自动加载） */
-  const rememberToMemory = async (content: string): Promise<boolean> => {
+  const rememberToMemory = useCallback(async (content: string): Promise<boolean> => {
     try {
       const text = content.trim();
       if (!text) return false;
@@ -880,10 +925,10 @@ const ChatPanel: React.FC = () => {
     } catch {
       return false;
     }
-  };
+  }, [activeWorkspaceId, workspacePath]);
 
   // 回滚到任意消息：删除该消息之后的所有消息
-  const handleRollbackTo = async (messageId: string) => {
+  const handleRollbackTo = useCallback(async (messageId: string) => {
     if (!sessionId || loading) return;
     if (!window.confirm('回滚到此消息会删除之后的所有消息，是否继续？')) return;
     const res = await window.cnke.sessionEx.deleteMessage(sessionId, messageId);
@@ -894,7 +939,13 @@ const ChatPanel: React.FC = () => {
     const ws = activeWorkspaceId || workspacePath;
     if (ws) await refreshSessions(ws);
     if (ws) await switchSession(ws, sessionId);
-  };
+  }, [sessionId, loading, activeWorkspaceId, workspacePath, refreshSessions, switchSession]);
+
+  /** 重新回答（稳定引用，否则 MessageBubble 的 memo 失效） */
+  const handleRegenerate = useCallback((id: string) => {
+    const ws = activeWorkspaceId || workspacePath;
+    if (ws) void regenerateMessage(ws, id);
+  }, [activeWorkspaceId, workspacePath, regenerateMessage]);
 
   return (
     <div className="flex flex-col h-full bg-background">
@@ -908,19 +959,19 @@ const ChatPanel: React.FC = () => {
           <div className="flex items-center gap-1">
             {/* 主操作：新建对话 */}
             <div className="flex items-center gap-0.5">
-              <button onClick={handleNewChat} className="icon-btn" title="新建对话（当前工作区）">
+              <button onClick={() => void handleNewChat()} className="icon-btn" title="新建对话（当前工作区）">
                 <Plus className="w-3.5 h-3.5" />
               </button>
-              <button onClick={handleNewChatNewWorkspace} className="icon-btn" title="新建对话并选择新工作区目录">
+              <button onClick={() => void handleNewChatNewWorkspace()} className="icon-btn" title="新建对话并选择新工作区目录">
                 <FolderPlus className="w-3.5 h-3.5" />
               </button>
             </div>
             {/* 分隔点 */}
             <span className="w-px h-4 bg-border/70 mx-0.5" />
             {/* 会话管理 */}
-            <SessionToolbar sessionId={sessionId} workspaceId={activeWorkspaceId || workspacePath} onImport={() => { refreshSessions(workspacePath || activeWorkspaceId || ''); }} onSummarized={() => { if (sessionId) refreshContext(sessionId); }} />
+            <SessionToolbar sessionId={sessionId} workspaceId={activeWorkspaceId || workspacePath} onImport={() => { void refreshSessions(workspacePath || activeWorkspaceId || ''); }} onSummarized={() => { if (sessionId) void refreshContext(sessionId); }} />
             <button
-              onClick={() => { const ws = activeWorkspaceId || workspacePath; if (ws) rollback(ws); }}
+              onClick={() => { const ws = activeWorkspaceId || workspacePath; if (ws) void rollback(ws); }}
               disabled={loading || messages.length === 0}
               className="icon-btn"
               title="回滚：撤销上一轮对话"
@@ -961,7 +1012,7 @@ const ChatPanel: React.FC = () => {
                   } ${loading ? 'opacity-50 pointer-events-none' : 'cursor-pointer'}`}
                 >
                   <button
-                    onClick={() => switchSession(s.workspaceId || workspacePath!, s.id)}
+                    onClick={() => void switchSession(s.workspaceId || workspacePath!, s.id)}
                     disabled={loading}
                     title={s.title || '新对话'}
                     className="flex items-center gap-1 shrink-0"
@@ -977,7 +1028,7 @@ const ChatPanel: React.FC = () => {
                       e.stopPropagation();
                       if (s.workspaceId && !loading) {
                         if (window.confirm(`关闭对话「${s.title || '新对话'}」？`)) {
-                          removeSession(s.workspaceId, s.id);
+                          void removeSession(s.workspaceId, s.id);
                         }
                       }
                     }}
@@ -1013,12 +1064,12 @@ const ChatPanel: React.FC = () => {
             </p>
             {!workspacePath && (
               <button
-                onClick={async () => {
+                onClick={() => { void (async () => {
                   const p = await window.cnke.fs.openFolder();
                   if (p) {
                     window.location.reload();
                   }
-                }}
+                })(); }}
                 className="text-xs border border-border rounded-lg px-3.5 py-1.5 hover:bg-accent transition-colors mt-1"
               >
                 打开文件夹
@@ -1027,7 +1078,7 @@ const ChatPanel: React.FC = () => {
           </div>
         )}
         {messages.map((msg) => (
-          <MessageBubble key={msg.id} msg={msg} onRegenerate={(id) => { const ws = activeWorkspaceId || workspacePath; if (ws) regenerateMessage(ws, id); }} onRemember={rememberToMemory} onRollbackTo={handleRollbackTo} />
+          <MessageBubble key={msg.id} msg={msg} onRegenerate={handleRegenerate} onRemember={rememberToMemory} onRollbackTo={handleRollbackTo} />
         ))}
         {loading && (
           <div className="flex items-center gap-1.5 text-muted-foreground text-xs px-1 py-2">
@@ -1099,7 +1150,7 @@ const ChatPanel: React.FC = () => {
               type="file"
               multiple
               className="hidden"
-              onChange={handleFileSelect}
+              onChange={(e) => void handleFileSelect(e)}
               aria-label="上传文件"
             />
             <button
@@ -1144,7 +1195,7 @@ const ChatPanel: React.FC = () => {
               className="flex-1 bg-transparent outline-none resize-none text-[13px] leading-relaxed placeholder:text-muted-foreground/50 overflow-y-auto"
             />
             <button
-              onClick={handleEnhance}
+              onClick={() => void handleEnhance()}
               disabled={!input.trim() || enhancing}
               className={`p-1.5 rounded-md transition-colors shrink-0 ${
                 !input.trim() || enhancing
@@ -1165,7 +1216,7 @@ const ChatPanel: React.FC = () => {
               </button>
             ) : (
               <button
-                onClick={handleSend}
+                onClick={() => void handleSend()}
                 disabled={!input.trim() && images.length === 0 && files.length === 0}
                 className={`p-2 rounded-lg transition-colors shrink-0 ${
                   !input.trim() && images.length === 0 && files.length === 0

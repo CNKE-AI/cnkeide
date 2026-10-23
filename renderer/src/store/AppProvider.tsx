@@ -22,8 +22,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   useEffect(() => {
-    window.cnke.config.get('workspace.lastWorkspace').then((ws: string | null) => {
-      if (ws) setWorkspacePathState(ws);
+    window.cnke.config.get('workspace.lastWorkspace').then((ws) => {
+      if (typeof ws === 'string' && ws) setWorkspacePathState(ws);
     });
   }, []);
 
@@ -80,6 +80,45 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // 3) 资源管理器立即切到新工作区（文件树加载由下方 effect 统一驱动，避免重复请求竞态）
     useFileStore.setState({ selectedPath: null, lastChangedPaths: [], rootPath: null });
   }, []);
+
+  /**
+   * 应用菜单 → 渲染层动作。
+   * 主进程只捕获菜单项与快捷键（Ctrl+O / Ctrl+S），真正的动作依赖 UI 状态
+   * （工作区路径、编辑器打开的文件），只能在渲染层执行。
+   * 此前这三个通道只有发送方没有接收方，菜单点击和快捷键完全无反应。
+   * 依赖 setWorkspacePath，故必须声明在其之后，避免 TDZ。
+   */
+  useEffect(() => {
+    const offOpen = window.cnke.menu.onOpenFolder(async () => {
+      const p = await window.cnke.fs.openFolder();
+      if (p) setWorkspacePath(p);
+    });
+
+    // Ctrl+S：优先保存当前编辑的文件；没有打开文件时退化为「保存全部未保存项」
+    const offSave = window.cnke.menu.onSaveFile(async () => {
+      const editor = useEditorStore.getState();
+      if (editor.activePath) await editor.saveFile(editor.activePath);
+      else await editor.saveAll();
+    });
+
+    const offAbout = window.cnke.menu.onAbout(async () => {
+      const version = await window.cnke.app.getVersion().catch(() => '');
+      await window.cnke.dialog.showMessageBox({
+        type: 'info',
+        title: '关于 CnkeIDE',
+        message: `CnkeIDE ${version}`,
+        detail: '独立 Electron 桌面 AI 编程 IDE\nhttps://github.com/CNKE-AI/cnkeide',
+        buttons: ['确定'],
+        noLink: true,
+      });
+    });
+
+    return () => {
+      offOpen();
+      offSave();
+      offAbout();
+    };
+  }, [setWorkspacePath]);
 
   return (
     <AppContext.Provider value={{ workspacePath, setWorkspacePath, activePage, setActivePage, settingsOpen, setSettingsOpen }}>

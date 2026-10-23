@@ -150,7 +150,7 @@ const SettingsSheet: React.FC = () => {
 
   useEffect(() => {
     let mounted = true;
-    (async () => {
+    void (async () => {
       try {
         const v = await window.cnke.app.getVersion();
         if (mounted && v) setAppVersion(v);
@@ -235,11 +235,12 @@ const SettingsSheet: React.FC = () => {
   };
 
   useEffect(() => {
-    window.cnke.config.getApiKeyConfigs().then((configs) => setApiConfigs(configs || []));
-    window.cnke.config.get('activeApiConfigId').then((id) => { if (id) setActiveId(id); });
-    window.cnke.config.get('agentConfig').then((cfg) => { if (cfg) setAgentCfg({ ...agentCfg, ...cfg }); });
-    reloadMcpServers();
+    void window.cnke.config.getApiKeyConfigs().then((configs) => setApiConfigs((configs || []) as ApiConfig[]));
+    void window.cnke.config.get('activeApiConfigId').then((id) => { if (typeof id === 'string') setActiveId(id); });
+    void window.cnke.config.get('agentConfig').then((cfg) => { if (cfg && typeof cfg === 'object') setAgentCfg((a: any) => ({ ...a, ...cfg })); });
+    void reloadMcpServers();
     void reloadSkills();
+     
   }, []);
 
   // 订阅 MCP 连接状态推送（后端主动推送，如启动恢复/连接结果/断线）
@@ -251,8 +252,8 @@ const SettingsSheet: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (tab === 'models') loadOfficialModels();
-    if (tab === 'about') loadFeedback();
+    if (tab === 'models') void loadOfficialModels();
+    if (tab === 'about') void loadFeedback();
   }, [tab]);
 
   const importOfficialModel = async (m: any) => {
@@ -273,7 +274,7 @@ const SettingsSheet: React.FC = () => {
     };
     const result = await window.cnke.config.saveApiConfig(cfg);
     if (result.success) {
-      const list = (await window.cnke.config.getApiKeyConfigs()) || [];
+      const list = ((await window.cnke.config.getApiKeyConfigs()) || []) as ApiConfig[];
       setApiConfigs(list);
       await window.cnke.config.set('activeApiConfigId', localId);
       setActiveId(localId);
@@ -293,7 +294,7 @@ const SettingsSheet: React.FC = () => {
         setFeedbackMsg('');
         setFeedbackContact('');
         alert('反馈已提交，感谢你的支持！');
-        loadFeedback();
+        void loadFeedback();
       } else {
         alert(res.error || '提交失败，请稍后重试');
       }
@@ -338,7 +339,7 @@ const SettingsSheet: React.FC = () => {
     if (!editing) return;
     const result = await window.cnke.config.saveApiConfig(editing);
     if (result.success) {
-      setApiConfigs(await window.cnke.config.getApiKeyConfigs() || []);
+      setApiConfigs(((await window.cnke.config.getApiKeyConfigs()) || []) as ApiConfig[]);
       setEditing(null);
     } else {
       alert(result.error);
@@ -356,7 +357,7 @@ const SettingsSheet: React.FC = () => {
 
   const deleteApiConfig = async (id: string) => {
     await window.cnke.config.deleteApiConfig(id);
-    setApiConfigs(await window.cnke.config.getApiKeyConfigs() || []);
+    setApiConfigs(((await window.cnke.config.getApiKeyConfigs()) || []) as ApiConfig[]);
     if (activeId === id) setActiveId('');
   };
 
@@ -364,7 +365,7 @@ const SettingsSheet: React.FC = () => {
     setActiveId(id);
     await window.cnke.config.set('activeApiConfigId', id);
     await window.cnke.config.syncBuiltins();
-    setApiConfigs((await window.cnke.config.getApiKeyConfigs()) || []);
+    setApiConfigs(((await window.cnke.config.getApiKeyConfigs()) || []) as ApiConfig[]);
     // 切换模型后自动关闭设置弹窗，让焦点归还对话输入框，避免输入框被遮罩层挡住而"卡死"
     setSettingsOpen(false);
   };
@@ -445,7 +446,7 @@ const SettingsSheet: React.FC = () => {
                     <h3 className="text-sm font-semibold text-cyan-300">官方内置模型</h3>
                   </div>
                   <button
-                    onClick={loadOfficialModels}
+                    onClick={() => void loadOfficialModels()}
                     disabled={officialLoading}
                     className="flex items-center gap-1 text-[11px] border border-border rounded-md px-2 py-1 hover:bg-accent/60 transition-colors disabled:opacity-50"
                   >
@@ -470,7 +471,7 @@ const SettingsSheet: React.FC = () => {
                     {officialModels.map((m) => (
                       <div
                         key={m.id}
-                        onClick={() => importOfficialModel(m)}
+                        onClick={() => void importOfficialModel(m)}
                         className="border border-border rounded-lg p-2.5 cursor-pointer transition-all hover:border-cyan-400/50 hover:bg-cyan-400/5 group"
                         title="点击导入并使用"
                       >
@@ -510,7 +511,7 @@ const SettingsSheet: React.FC = () => {
                   <div
                     key={cfg.id}
                     className={`flex items-center justify-between border rounded-lg px-3 py-2.5 cursor-pointer transition-colors ${activeId === cfg.id ? 'border-primary bg-primary/5' : 'border-border hover:bg-accent/40'}`}
-                    onClick={() => activateApiConfig(cfg.id)}
+                    onClick={() => void activateApiConfig(cfg.id)}
                   >
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
@@ -525,7 +526,7 @@ const SettingsSheet: React.FC = () => {
                         <button onClick={(e) => { e.stopPropagation(); setEditing({ ...cfg }); }} className="p-1.5 hover:bg-accent hover:text-foreground rounded transition-colors" title="编辑 / 查看 API 地址">
                           <Pencil className="w-3.5 h-3.5" />
                         </button>
-                        <button onClick={(e) => { e.stopPropagation(); deleteApiConfig(cfg.id); }} className="p-1.5 hover:bg-red-500/20 hover:text-red-400 rounded transition-colors" title="删除">
+                        <button onClick={(e) => { e.stopPropagation(); void deleteApiConfig(cfg.id); }} className="p-1.5 hover:bg-red-500/20 hover:text-red-400 rounded transition-colors" title="删除">
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       </div>
@@ -564,7 +565,7 @@ const SettingsSheet: React.FC = () => {
                   </div>
                   <div className="flex justify-end gap-2 pt-1">
                     <button onClick={() => setEditing(null)} className="px-3 py-1.5 text-xs border border-border rounded-md hover:bg-accent transition-colors">取消</button>
-                    <button onClick={saveApiConfig} className="flex items-center gap-1 px-3 py-1.5 text-xs bg-primary text-primary-foreground rounded-md hover:bg-primary/80 transition-colors">
+                    <button onClick={() => void saveApiConfig()} className="flex items-center gap-1 px-3 py-1.5 text-xs bg-primary text-primary-foreground rounded-md hover:bg-primary/80 transition-colors">
                       <Save className="w-3 h-3" /> 保存
                     </button>
                   </div>
@@ -674,7 +675,7 @@ const SettingsSheet: React.FC = () => {
                   </label>
                 )}
               </div>
-              <button onClick={saveAgentConfig} className="flex items-center gap-1 px-3 py-1.5 text-xs bg-primary text-primary-foreground rounded-md hover:bg-primary/80 transition-colors">
+              <button onClick={() => void saveAgentConfig()} className="flex items-center gap-1 px-3 py-1.5 text-xs bg-primary text-primary-foreground rounded-md hover:bg-primary/80 transition-colors">
                 <Save className="w-3 h-3" /> 保存 Agent 设置
               </button>
             </div>
@@ -740,7 +741,7 @@ const SettingsSheet: React.FC = () => {
                     {mcpServers.map((s) => (
                       <div key={s.id} className={`border rounded-lg overflow-hidden transition-colors ${mcpExpanded[s.id] ? 'border-primary/40 bg-secondary/10' : 'border-border'}`}>
                         {/* 主行（点击展开工具详情） */}
-                        <div className="flex items-center justify-between px-3 py-2.5 cursor-pointer hover:bg-accent/30 transition-colors" onClick={() => toggleMcpExpand(s.id)}>
+                        <div className="flex items-center justify-between px-3 py-2.5 cursor-pointer hover:bg-accent/30 transition-colors" onClick={() => void toggleMcpExpand(s.id)}>
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-1.5">
                               {mcpExpanded[s.id]
@@ -757,17 +758,17 @@ const SettingsSheet: React.FC = () => {
                           </div>
                           <div className="flex items-center gap-1 ml-2 shrink-0" onClick={(e) => e.stopPropagation()}>
                             <button
-                              onClick={async () => {
+                              onClick={() => { void (async () => {
                                 const r = await window.cnke.mcp.toggleServer(s.id, !s.enabled);
                                 if (!r.success) alert(r.error || '操作失败');
                                 await reloadMcpServers();
-                              }}
+                              })(); }}
                               className={`px-2 py-1 text-[11px] rounded-md transition-colors ${s.enabled ? 'bg-secondary text-muted-foreground hover:bg-accent' : 'bg-primary/20 text-primary hover:bg-primary/30'}`}
                             >
                               {s.enabled ? '禁用' : '启用'}
                             </button>
                             <button
-                              onClick={() => refreshMcpTools(s.id)}
+                              onClick={() => void refreshMcpTools(s.id)}
                               disabled={mcpToolsLoading[s.id]}
                               className="p-1.5 hover:bg-accent rounded transition-colors disabled:opacity-50"
                               title={s.status === 'error' ? '重新连接并获取工具' : '刷新工具列表'}
@@ -777,7 +778,7 @@ const SettingsSheet: React.FC = () => {
                             <button onClick={() => setMcpEditing({ id: s.id, name: s.name, protocol: s.protocol, command: s.command || '', args: (s.args || []).join(' '), url: s.url || '', enabled: s.enabled })} className="p-1.5 hover:bg-accent rounded transition-colors" title="编辑">
                               <Pencil className="w-3.5 h-3.5" />
                             </button>
-                            <button onClick={async () => { await window.cnke.mcp.removeServer(s.id); await reloadMcpServers(); }} className="p-1.5 hover:bg-red-500/20 hover:text-red-400 rounded transition-colors" title="删除">
+                            <button onClick={() => { void (async () => { await window.cnke.mcp.removeServer(s.id); await reloadMcpServers(); })(); }} className="p-1.5 hover:bg-red-500/20 hover:text-red-400 rounded transition-colors" title="删除">
                               <Trash2 className="w-3.5 h-3.5" />
                             </button>
                           </div>
@@ -862,7 +863,7 @@ const SettingsSheet: React.FC = () => {
                   </div>
                   <div className="flex justify-end gap-2 pt-1">
                     <button onClick={() => setMcpEditing(null)} className="px-3 py-1.5 text-xs border border-border rounded-md hover:bg-accent transition-colors">取消</button>
-                    <button onClick={saveMcpServer} className="flex items-center gap-1 px-3 py-1.5 text-xs bg-primary text-primary-foreground rounded-md hover:bg-primary/80 transition-colors">
+                    <button onClick={() => void saveMcpServer()} className="flex items-center gap-1 px-3 py-1.5 text-xs bg-primary text-primary-foreground rounded-md hover:bg-primary/80 transition-colors">
                       <Save className="w-3 h-3" /> 保存
                     </button>
                   </div>
@@ -969,7 +970,7 @@ const SettingsSheet: React.FC = () => {
                     <h3 className="text-sm font-semibold text-cyan-300">软件更新</h3>
                   </div>
                   <button
-                    onClick={checkUpdate}
+                    onClick={() => void checkUpdate()}
                     disabled={updateChecking || updateDownloading}
                     className="flex items-center gap-1 px-3 py-1.5 text-xs bg-gradient-to-r from-cyan-500 to-violet-500 text-white rounded-md hover:opacity-90 transition-opacity disabled:opacity-40"
                   >
@@ -1065,7 +1066,7 @@ const SettingsSheet: React.FC = () => {
                     className="flex-1 bg-background border border-border rounded-md px-2.5 py-1.5 text-xs outline-none focus:border-violet-500/60"
                   />
                   <button
-                    onClick={submitFeedback}
+                    onClick={() => void submitFeedback()}
                     disabled={feedbackSending || !feedbackMsg.trim()}
                     className="flex items-center gap-1 px-3 py-1.5 text-xs bg-gradient-to-r from-violet-500 to-fuchsia-500 text-white rounded-md hover:opacity-90 transition-opacity disabled:opacity-40 shrink-0"
                   >
@@ -1078,7 +1079,7 @@ const SettingsSheet: React.FC = () => {
                   <div className="flex items-center gap-1.5 mb-2">
                     <Inbox className="w-3.5 h-3.5 text-muted-foreground" />
                     <span className="text-[11px] text-muted-foreground font-medium">我的反馈与官方回复</span>
-                    <button onClick={loadFeedback} className="ml-auto text-[10px] text-muted-foreground hover:text-foreground flex items-center gap-1 transition-colors">
+                    <button onClick={() => void loadFeedback()} className="ml-auto text-[10px] text-muted-foreground hover:text-foreground flex items-center gap-1 transition-colors">
                       <RefreshCw className="w-2.5 h-2.5" /> 刷新
                     </button>
                   </div>

@@ -73,7 +73,7 @@ export const useLayoutStore = create<LayoutState>((set, get) => ({
 
   setPanelVisible: (panel, visible) => {
     const key = keyOf(panel);
-    set({ [key]: visible } as any);
+    set({ [key]: visible });
     const s = get();
     persist({
       editorVisible: s.editorVisible,

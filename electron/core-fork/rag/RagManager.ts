@@ -7,7 +7,7 @@
  * - query 返回 LLM-ready 引用文本 + 结构化命中
  */
 
-import { parseDocument, ParsedDocument } from './DocumentParser';
+import { parseDocument } from './DocumentParser';
 import { DocumentIndex, DocQueryHit } from './DocumentIndex';
 import { EmbeddingProvider, EmbeddingConfig, getEmbeddingProvider } from '../codebase/EmbeddingProvider';
 

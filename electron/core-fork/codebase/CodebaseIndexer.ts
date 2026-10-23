@@ -1,5 +1,4 @@
 import fs from 'node:fs/promises';
-import { existsSync } from 'node:fs';
 import path from 'node:path';
 
 /**
@@ -88,6 +87,12 @@ export interface SymbolSearchResult {
   symbol: SymbolDef;
 }
 
+/** 目录树节点：子目录递归 + _files 存放当前目录下的文件名 */
+interface TreeNode {
+  _files?: string[];
+  dirs: Record<string, TreeNode>;
+}
+
 /**
  * 符号定义的正则（按语言粗分，覆盖主流语言常见写法）
  */
@@ -117,12 +122,12 @@ const SYMBOL_PATTERNS: Array<{ kind: string; regex: RegExp }> = [
   // Java / Kotlin
   { kind: 'class', regex: /^\s*(?:public\s+|private\s+|protected\s+|abstract\s+|final\s+|static\s+)*class\s+([A-Za-z_]\w*)/ },
   { kind: 'interface', regex: /^\s*(?:public\s+|private\s+|protected\s+)*interface\s+([A-Za-z_]\w*)/ },
-  { kind: 'method', regex: /^\s*(?:public\s+|private\s+|protected\s+|static\s+|final\s+|abstract\s+|synchronized\s+)*[\w<>\[\],\s?]+\s+([a-z_]\w*)\s*\([^)]*\)\s*\{/ },
+  { kind: 'method', regex: /^\s*(?:public\s+|private\s+|protected\s+|static\s+|final\s+|abstract\s+|synchronized\s+)*[\w<>[,\s?]+\s+([a-z_]\w*)\s*\([^)]*\)\s*\{/ },
   // C / C++
   { kind: 'function', regex: /^\s*(?:static\s+|inline\s+|extern\s+)*[\w:*<>,\s&]+\s+([A-Za-z_]\w*)\s*\([^;]*\)\s*\{/ },
   // C#
   { kind: 'class', regex: /^\s*(?:public\s+|private\s+|internal\s+|protected\s+|abstract\s+|sealed\s+|static\s+)*class\s+([A-Za-z_]\w*)/ },
-  { kind: 'method', regex: /^\s*(?:public\s+|private\s+|internal\s+|protected\s+|static\s+|async\s+|override\s+|virtual\s+)*[\w<>\[\],\s?]+\s+([A-Za-z_]\w*)\s*\([^)]*\)/ },
+  { kind: 'method', regex: /^\s*(?:public\s+|private\s+|internal\s+|protected\s+|static\s+|async\s+|override\s+|virtual\s+)*[\w<>[,\s?]+\s+([A-Za-z_]\w*)\s*\([^)]*\)/ },
   // PHP
   { kind: 'function', regex: /^\s*(?:public\s+|private\s+|protected\s+|static\s+)*function\s+([A-Za-z_]\w*)\s*\(/ },
   { kind: 'class', regex: /^\s*(?:abstract\s+|final\s+)?class\s+([A-Za-z_]\w*)/ },
@@ -244,7 +249,6 @@ export class CodebaseIndexer {
     const relativeFile = path.relative(this.rootPath, file).replace(/\\/g, '/');
 
     // 追踪当前类上下文（用于标记 method 的 parent）
-    let currentClass = '';
     let braceDepth = 0;
     const classStack: string[] = [];
 
@@ -405,7 +409,7 @@ export class CodebaseIndexer {
   async getProjectStructure(maxDepth = 3): Promise<string> {
     await this.ensureIndex();
     // 基于已索引文件重建目录树
-    const tree: Record<string, any> = {};
+    const tree: TreeNode = { dirs: {} };
 
     for (const file of this.indexedFiles) {
       const rel = path.relative(this.rootPath, file).replace(/\\/g, '/');
@@ -418,21 +422,21 @@ export class CodebaseIndexer {
           if (!node._files) node._files = [];
           node._files.push(part);
         } else {
-          if (!node[part]) node[part] = {};
-          node = node[part];
+          if (!node.dirs[part]) node.dirs[part] = { dirs: {} };
+          node = node.dirs[part];
         }
       }
     }
 
     const lines: string[] = [];
-    const render = (node: any, prefix: string, depth: number, name: string) => {
+    const render = (node: TreeNode, prefix: string, depth: number, name: string) => {
       if (depth > maxDepth) return;
       lines.push(prefix + name + (node._files ? '/' : ''));
-      const childDirs = Object.keys(node).filter((k) => k !== '_files').sort();
+      const childDirs = Object.keys(node.dirs).sort();
       const files = (node._files || []).sort();
       // 目录在前，文件在后
       for (const dir of childDirs) {
-        render(node[dir], prefix + '  ', depth + 1, dir);
+        render(node.dirs[dir], prefix + '  ', depth + 1, dir);
       }
       if (depth < maxDepth) {
         const shown = files.slice(0, 20);

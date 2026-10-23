@@ -1,11 +1,11 @@
-﻿/**
+/**
  * 验证 Markdown 规范提示词 + CodeBlock 兜底逻辑
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
 let pass = 0, fail = 0;
-const log = (ok, n, d='') => { ok ? (pass++, console.log('  PASS  '+n)) : (fail++, console.log('  FAIL  '+n+' :: '+d)); };
+const log = (ok, n, d='') => { if (ok) { pass++; console.log('  PASS  '+n); } else { fail++; console.log('  FAIL  '+n+' :: '+d); } };
 
 const am = await fs.readFile('electron/core-fork/agent/AgentManager.ts', 'utf-8');
 const md = await fs.readFile('renderer/src/components/chat/Markdown.tsx', 'utf-8');

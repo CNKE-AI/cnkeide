@@ -9,10 +9,11 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { execFileSafe } from '../util/SafeSpawn';
 
-const execFileAsync = promisify(execFileSafe as any) as (
+// promisify 对三回调值 (stdout, stderr) 的函数类型推断不足，必须显式标注返回类型
+const execFileAsync = promisify(execFileSafe) as unknown as (
   file: string,
   args: string[],
-  options: Record<string, unknown>,
+  options?: Record<string, unknown>,
 ) => Promise<{ stdout: string; stderr: string }>;
 
 export type Formatter = 'prettier' | 'eslint-fix' | 'black' | 'gofmt' | 'rustfmt' | 'unknown';

@@ -29,22 +29,22 @@ export interface PlaywrightAdapter {
 export class MockPlaywrightAdapter implements PlaywrightAdapter {
   readonly available = false;
 
-  async navigate(url: string): Promise<{ url: string; title: string; status: number }> {
-    throw new Error('Playwright 未启用。请先运行：npm install playwright && npx playwright install chromium');
+  navigate(_url: string): Promise<{ url: string; title: string; status: number }> {
+    return Promise.reject(new Error('Playwright 未启用。请先运行：npm install playwright && npx playwright install chromium'));
   }
-  async screenshot(): Promise<any> {
-    throw new Error('Playwright 未启用');
+  screenshot(_path?: string): Promise<{ path: string; base64?: string; width: number; height: number }> {
+    return Promise.reject(new Error('Playwright 未启用'));
   }
-  async click(): Promise<{ success: boolean; error?: string }> {
-    throw new Error('Playwright 未启用');
+  click(_selector: string): Promise<{ success: boolean; error?: string }> {
+    return Promise.reject(new Error('Playwright 未启用'));
   }
-  async input(): Promise<{ success: boolean; error?: string }> {
-    throw new Error('Playwright 未启用');
+  input(_selector: string, _text: string): Promise<{ success: boolean; error?: string }> {
+    return Promise.reject(new Error('Playwright 未启用'));
   }
-  async extract(): Promise<{ value: string }> {
-    throw new Error('Playwright 未启用');
+  extract(_selector: string, _attr?: 'text' | 'html'): Promise<{ value: string }> {
+    return Promise.reject(new Error('Playwright 未启用'));
   }
-  async close(): Promise<void> { /* noop */ }
+  close(): Promise<void> { return Promise.resolve(); }
   getStatus() { return { available: false }; }
 }
 
@@ -54,68 +54,74 @@ export class MockPlaywrightAdapter implements PlaywrightAdapter {
  */
 export async function createRealPlaywrightAdapter(): Promise<PlaywrightAdapter | null> {
   try {
-    // 动态 import：避免强制依赖（用 Function 包裹避免 Vite/Rollup 静态分析）
-    const dynamicImport = new Function('m', 'return import(m)') as (m: string) => Promise<any>;
-    // @ts-ignore - 可选依赖
-    const playwright = await dynamicImport('playwright').catch(() => null);
-    if (!playwright) return null;
-    // @ts-ignore
-    const { chromium } = playwright;
-    // @ts-ignore
-    const browser = await chromium.launch({ headless: true });
-    // @ts-ignore
-    const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
-    // @ts-ignore
-    const page = await context.newPage();
+    // 原生动态 import —— playwright 是可选依赖，不存在时 catch 返回 null
+    const playwright: unknown = await import('playwright').catch(() => null);
+    if (!playwright || typeof playwright !== 'object') return null;
+    const pw = playwright as Record<string, unknown>;
+    const chromium = pw.chromium as Record<string, unknown> | undefined;
+    if (!chromium) return null;
+    const browser = await (chromium.launch as (opts: Record<string, unknown>) => Promise<unknown>)({ headless: true });
+    if (!browser || typeof browser !== 'object') return null;
+    const br = browser as Record<string, unknown>;
+    const context = await (br.newContext as (opts: Record<string, unknown>) => Promise<unknown>)({ viewport: { width: 1280, height: 720 } });
+    if (!context || typeof context !== 'object') return null;
+    const ctx = context as Record<string, unknown>;
+    const page = await (ctx.newPage as () => Promise<unknown>)();
+    if (!page || typeof page !== 'object') return null;
+    const pg = page as Record<string, unknown>;
 
     return {
       available: true,
       async navigate(url) {
-        const resp = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+        const resp = await (pg.goto as (u: string, opts: Record<string, unknown>) => Promise<unknown>)(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+        const got = resp as Record<string, unknown> | null | undefined;
         return {
-          url: page.url(),
-          title: await page.title(),
-          status: resp?.status() ?? 0,
+          url: (pg.url as () => string)(),
+          title: await (pg.title as () => Promise<string>)(),
+          status: (got?.status as () => number | undefined)?.() ?? 0,
         };
       },
       async screenshot(path) {
-        // @ts-ignore
-        const buf = await page.screenshot({ fullPage: false, type: 'png' });
+        const buf = await (pg.screenshot as (opts: Record<string, unknown>) => Promise<unknown>)({ fullPage: false, type: 'png' });
         if (path) {
-          // @ts-ignore
           const fs = await import('node:fs/promises');
-          await fs.writeFile(path, buf);
+          await (fs.writeFile as (p: string, data: unknown) => Promise<void>)(path, buf);
         }
-        return { path: path || '', base64: buf.toString('base64'), width: 1280, height: 720 };
+        const bufStr = typeof buf === 'object' && buf && typeof (buf as Buffer).toString === 'function'
+          ? (buf as Buffer).toString('base64')
+          : '';
+        return { path: path || '', base64: bufStr, width: 1280, height: 720 };
       },
       async click(selector) {
         try {
-          // @ts-ignore
-          await page.click(selector, { timeout: 10_000 });
+          await (pg.click as (s: string, opts: Record<string, unknown>) => Promise<unknown>)(selector, { timeout: 10_000 });
           return { success: true };
-        } catch (e: any) {
-          return { success: false, error: e.message || String(e) };
+        } catch (e: unknown) {
+          const msg = e instanceof Error ? e.message : String(e);
+          return { success: false, error: msg };
         }
       },
       async input(selector, text) {
         try {
-          // @ts-ignore
-          await page.fill(selector, text, { timeout: 10_000 });
+          await (pg.fill as (s: string, t: string, opts: Record<string, unknown>) => Promise<unknown>)(selector, text, { timeout: 10_000 });
           return { success: true };
-        } catch (e: any) {
-          return { success: false, error: e.message || String(e) };
+        } catch (e: unknown) {
+          const msg = e instanceof Error ? e.message : String(e);
+          return { success: false, error: msg };
         }
       },
       async extract(selector, attr) {
-        // @ts-ignore
-        const value = attr === 'html' ? await page.locator(selector).innerHTML() : await page.locator(selector).innerText();
+        const locator = (pg.locator as (s: string) => Record<string, unknown>)(selector);
+        const value = attr === 'html'
+          ? await (locator.innerHTML as () => Promise<string>)()
+          : await (locator.innerText as () => Promise<string>)();
         return { value };
       },
       async close() {
-        await browser.close();
+        await (br.close as () => Promise<unknown>)();
       },
       getStatus() {
-        return { available: true, currentUrl: page.url(), pageTitle: '' };
+        return { available: true, currentUrl: (pg.url as () => string)(), pageTitle: '' };
       },
     };
   } catch {

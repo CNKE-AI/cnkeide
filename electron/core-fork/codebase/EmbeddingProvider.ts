@@ -126,12 +126,15 @@ export class EmbeddingProvider {
           ...(config.dimensions ? { dimensions: config.dimensions } : {}),
         }),
         signal: ctrl.signal,
-      } as any);
+      });
       if (!resp.ok) {
         return null;
       }
-      const data: any = await resp.json();
-      const emb = data?.data?.[0]?.embedding;
+      const data: unknown = await resp.json();
+      const emb =
+        typeof data === 'object' && data !== null
+          ? (data as { data?: Array<{ embedding?: unknown }> }).data?.[0]?.embedding
+          : undefined;
       if (!Array.isArray(emb)) return null;
       return emb as number[];
     } catch {

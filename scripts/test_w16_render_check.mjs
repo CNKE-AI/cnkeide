@@ -43,7 +43,7 @@ const looksLikeNonCodeLine = (text) => {
   if (t.startsWith('~/') || t.startsWith('./') || t.startsWith('../') || t.startsWith('/')) return true;
   if (/^[\w.\- ]+\.[a-zA-Z0-9]{1,5}$/.test(t)) return true;
   if (/^[A-Za-z_][A-Za-z0-9_]{0,60}(\.[A-Za-z0-9_]{1,10})?(:\d+(:\d+)?)?$/.test(t)) return true;
-  if (/^[\u4e00-\u9fa5()\sA-Za-z0-9·.\-]{1,16}$/.test(t) && !/[{}()\[\];=<>]/.test(t)) return true;
+  if (/^[\u4e00-\u9fa5()\sA-Za-z0-9·.-]{1,16}$/.test(t) && !/[{}()\x5b\x5d;=<>]/.test(t)) return true;
   return false;
 };
 
@@ -96,7 +96,7 @@ let pass = 0, fail = 0;
 console.log('\n=== W16 渲染行为验证 ===\n');
 for (const r of results) {
   const ok = r.want === r.got;
-  ok ? pass++ : fail++;
+  if (ok) { pass++; } else { fail++; }
   const dim = r.got === 'block' ? ` [${r.blockWidth}x${r.blockHeight}px]` : '';
   console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${r.note.padEnd(16)} 期望=${r.want.padEnd(6)} 实际=${r.got}${dim}`);
 }

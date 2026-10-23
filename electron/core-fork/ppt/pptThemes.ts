@@ -156,7 +156,7 @@ const THEME_OVERRIDES: Record<string, Partial<Record<LayoutId, string>>> = {
 };
 
 function buildLayouts(themeId: string): Record<LayoutId, LayoutSpec> {
-  const out: Record<LayoutId, LayoutSpec> = {} as any;
+  const out = {} as Record<LayoutId, LayoutSpec>;
   (Object.keys(LAYOUT_TEMPLATES) as LayoutId[]).forEach((id) => {
     const base = LAYOUT_TEMPLATES[id];
     const override = THEME_OVERRIDES[themeId]?.[id];

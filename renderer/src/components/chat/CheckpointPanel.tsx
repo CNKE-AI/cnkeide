@@ -28,7 +28,7 @@ const CheckpointPanel: React.FC<Props> = ({ sessionId, onClose }) => {
     if (!sessionId) return;
     setLoading(true);
     try {
-      const list = (await window.cnke.checkpoint.listSnapshots(sessionId)) || [];
+      const list = ((await window.cnke.checkpoint.listSnapshots(sessionId)) || []) as Snapshot[];
       setSnapshots(list);
     } catch {
       setSnapshots([]);
@@ -39,7 +39,7 @@ const CheckpointPanel: React.FC<Props> = ({ sessionId, onClose }) => {
 
   useEffect(() => {
     load();
-    // eslint-disable-next-line react-hооk/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
   const handleRestore = async (s: Snapshot) => {

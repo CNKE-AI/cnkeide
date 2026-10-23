@@ -76,7 +76,7 @@ async function test7_updateManagerAutoInstall() {
 async function test8_installNowFlow() {
   console.log('\n[8] installNow 流程');
   const src = await fs.readFile('electron/updater/UpdateManager.ts', 'utf-8');
-  const match = src.match(/installNow\(\):[^{]*\{([\s\S]*?)\n  \}/);
+  const match = src.match(/installNow\(\):[^{]*\{([\s\S]*?)\n {2}\}/);
   if (match) {
     const body = match[1];
     log(/killResidualProcessesAsync/.test(body), '先异步清理残留进程', '');

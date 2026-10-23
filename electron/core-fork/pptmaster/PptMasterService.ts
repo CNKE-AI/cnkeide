@@ -1094,7 +1094,8 @@ ${ctx.prevPageDigest ? `\n## 上一页摘要（保持视觉连续性与节奏）
   }
 
   /** 安全读取 JSON 文件 */
-  private async readJsonSafe(p: string): Promise<any | null> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- JSON.parse 动态结构必须用 any 才能让调用方属性访问通过类型检查
+  private async readJsonSafe(p: string): Promise<any> {
     try {
       if (!existsSync(p)) return null;
       return JSON.parse(await fs.readFile(p, 'utf-8'));
@@ -1170,13 +1171,14 @@ ${ctx.prevPageDigest ? `\n## 上一页摘要（保持视觉连续性与节奏）
    * 与 AgentManager.resolveApiConfig 保持同一优先级：
    * activeApiConfigId 命中 → 否则兜底到第一个可用配置。
    */
-  private async resolveApiConfig(): Promise<any | null> {
+  private resolveApiConfig(): Promise<unknown> {
     try {
       const cfg = this.config;
-      if (!cfg) return null;
+      if (!cfg) return Promise.resolve(null);
 
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- config 接口未导出详细类型，内部按 any 处理
       const configs: any[] = cfg.getApiKeyConfigs?.() ?? cfg.get?.('apiConfigs', []) ?? [];
-      if (!configs.length) return null;
+      if (!configs.length) return Promise.resolve(null);
 
       const activeId = cfg.get?.('activeApiConfigId');
       const usable =
@@ -1185,10 +1187,10 @@ ${ctx.prevPageDigest ? `\n## 上一页摘要（保持视觉连续性与节奏）
         configs[0];
 
       // 基本可用性校验：必须有 baseUrl + apiKey + model
-      if (!usable?.baseUrl || !usable?.apiKey || !usable?.model) return null;
-      return usable;
+      if (!usable?.baseUrl || !usable?.apiKey || !usable?.model) return Promise.resolve(null);
+      return Promise.resolve(usable);
     } catch {
-      return null;
+      return Promise.resolve(null);
     }
   }
 }

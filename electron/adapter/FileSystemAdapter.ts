@@ -4,10 +4,12 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { execFileSafe } from '../core-fork/util/SafeSpawn';
 
-const execFileAsync = promisify(execFileSafe as any) as (
+// promisify 对三回调值 (stdout, stderr) 的函数类型推断不足，
+// 必须显式标注返回类型
+const execFileAsync = promisify(execFileSafe) as unknown as (
   file: string,
   args: string[],
-  options: Record<string, unknown>,
+  options?: Record<string, unknown>,
 ) => Promise<{ stdout: string; stderr: string }>;
 
 export interface DirEntry {
@@ -37,8 +39,8 @@ export class FileSystemAdapter {
     try {
       const content = await fs.readFile(filePath, 'utf-8');
       return { success: true, content };
-    } catch (err: any) {
-      return { success: false, error: err.message };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -48,8 +50,8 @@ export class FileSystemAdapter {
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(filePath, content, 'utf-8');
       return { success: true };
-    } catch (err: any) {
-      return { success: false, error: err.message };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -85,8 +87,8 @@ export class FileSystemAdapter {
       });
 
       return { success: true, entries };
-    } catch (err: any) {
-      return { success: false, error: err.message };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -99,8 +101,8 @@ export class FileSystemAdapter {
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(filePath, content, 'utf-8');
       return { success: true };
-    } catch (err: any) {
-      return { success: false, error: err.message };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -108,8 +110,8 @@ export class FileSystemAdapter {
     try {
       await fs.mkdir(dirPath, { recursive: true });
       return { success: true };
-    } catch (err: any) {
-      return { success: false, error: err.message };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -131,8 +133,8 @@ export class FileSystemAdapter {
         await fs.unlink(targetPath);
       }
       return { success: true };
-    } catch (err: any) {
-      return { success: false, error: err.message };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -140,13 +142,13 @@ export class FileSystemAdapter {
     try {
       await fs.rename(oldPath, newPath);
       return { success: true };
-    } catch (err: any) {
-      return { success: false, error: err.message };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
   }
 
   async exists(targetPath: string): Promise<boolean> {
-    return existsSync(targetPath);
+    return Promise.resolve(existsSync(targetPath));
   }
 
   async searchFiles(rootPath: string, pattern: string): Promise<{ success: boolean; results?: SearchResult[]; error?: string }> {
@@ -214,8 +216,8 @@ export class FileSystemAdapter {
 
       await walk(rootPath);
       return { success: true, results };
-    } catch (err: any) {
-      return { success: false, error: err.message };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
   }
 }

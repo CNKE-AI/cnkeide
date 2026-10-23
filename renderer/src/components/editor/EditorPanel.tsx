@@ -335,6 +335,7 @@ const EditorPanel: React.FC = () => {
       view.destroy();
       viewRef.current = null;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅监听 activePath 切换，其他引用设计上不参与依赖
   }, [activePath]);
 
   // 当文件内容从外部变更时（Agent 写入 / 磁盘变化 / 自动格式化），同步到编辑器
@@ -353,6 +354,7 @@ const EditorPanel: React.FC = () => {
       });
       isUpdatingRef.current = false;
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅监听 content 变化，active 其他字段变化不触发同步
   }, [active?.content]);
 
   // 当文件名变化时，更新语言扩展
@@ -361,6 +363,7 @@ const EditorPanel: React.FC = () => {
     viewRef.current.dispatch({
       effects: langCompartmentRef.current.reconfigure(langExtensionOf(active.name)),
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅监听 name 变化，active 其他字段变化不触发语言切换
   }, [active?.name]);
 
   // 当主题切换时，动态更新编辑器主题

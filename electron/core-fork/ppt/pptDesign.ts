@@ -38,7 +38,8 @@ const VALID_THEME_IDS = new Set<AiPptDesign['themeId']>(Object.keys(FALLBACK_PAL
 const VALID_FONTS = new Set(['Microsoft YaHei', 'PingFang SC', 'Source Han Sans SC', 'Source Han Serif SC', 'KaiTi', 'SimSun']);
 
 function normalizeHex(value: unknown, fallback: string): string {
-  const hex = String(value || '').trim().replace(/^#/, '');
+  const raw = typeof value === 'string' ? value : '';
+  const hex = raw.trim().replace(/^#/, '');
   return /^[0-9a-fA-F]{6}$/.test(hex) ? `#${hex.toUpperCase()}` : fallback;
 }
 
@@ -57,9 +58,9 @@ export function normalizeAiPptDesign(raw: unknown, fallbackThemeId: string = 'bu
   const paletteRaw = source.palette && typeof source.palette === 'object'
     ? source.palette as Record<string, unknown>
     : {};
-  const requestedFont = String(source.fontFamily || '').trim();
+  const requestedFont = typeof source.fontFamily === 'string' ? source.fontFamily.trim() : '';
 
-  const requestedArt = String(source.artDirection || '');
+  const requestedArt = typeof source.artDirection === 'string' ? source.artDirection : '';
   const artDirection: AiPptArtDirection = ['education', 'culture', 'technology', 'healthcare', 'business'].includes(requestedArt)
     ? requestedArt as AiPptArtDirection
     : (themeId === 'chinese' ? 'culture' : themeId === 'illustration' ? 'education' : 'business');
@@ -73,8 +74,8 @@ export function normalizeAiPptDesign(raw: unknown, fallbackThemeId: string = 'bu
       background: normalizeHex(paletteRaw.background, defaults.background),
     },
     fontFamily: VALID_FONTS.has(requestedFont) ? requestedFont : 'Microsoft YaHei',
-    visualStyle: String(source.visualStyle || '专业简约').slice(0, 48),
-    rationale: String(source.rationale || '依据主题和内容自动选择配色与版式。').slice(0, 120),
+    visualStyle: (typeof source.visualStyle === 'string' ? source.visualStyle : '专业简约').slice(0, 48),
+    rationale: (typeof source.rationale === 'string' ? source.rationale : '依据主题和内容自动选择配色与版式。').slice(0, 120),
   };
 }
 

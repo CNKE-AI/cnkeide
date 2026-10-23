@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { BUILTIN_PROMPT_SKILLS } from './builtins';
-import { PackageSkillDefinition, SkillDefinition, SkillView } from './types';
+import { PackageSkillDefinition, SkillView } from './types';
 
 interface SkillRegistryOptions {
   resourcesPath?: string;
@@ -71,8 +71,9 @@ export class SkillRegistry {
   list(enabledIds: unknown): SkillView[] {
     const enabled = new Set(Array.isArray(enabledIds) ? enabledIds.filter((id): id is string => typeof id === 'string') : []);
     return [...BUILTIN_PROMPT_SKILLS, ...this.packageSkills].map((skill) => {
-      const { systemPrompt: _systemPrompt, ...view } = skill as SkillDefinition & { systemPrompt?: string };
-      return { ...view, enabled: enabled.has(skill.id) } as SkillView;
+      const view: Record<string, unknown> = { ...skill };
+      delete view.systemPrompt;
+      return { ...view, id: skill.id, enabled: enabled.has(skill.id) } as SkillView;
     });
   }
 
@@ -119,7 +120,8 @@ export class SkillRegistry {
         entryPath: path.resolve(entryPath),
         available: true,
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const message = error instanceof Error && error.message ? error.message : '无法读取 SKILL.md';
       return {
         id: this.normalizeId(fallbackId),
         name: fallbackId,
@@ -129,7 +131,7 @@ export class SkillRegistry {
         rootPath: path.resolve(rootPath),
         entryPath: path.resolve(entryPath),
         available: false,
-        error: error?.message || '无法读取 SKILL.md',
+        error: message,
       };
     }
   }

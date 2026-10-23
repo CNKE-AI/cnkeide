@@ -47,12 +47,12 @@ export class MockImageGenAdapter implements ImageGenAdapter {
   readonly available = false;
   readonly provider = 'mock';
 
-  async generate(req: ImageGenRequest): Promise<ImageGenResult> {
-    return {
+  generate(_req: ImageGenRequest): Promise<ImageGenResult> {
+    return Promise.resolve({
       success: false,
       provider: this.provider,
       error: '图片生成未配置。请在设置中添加支持图片生成的 API（如 OpenAI DALL-E / 通义万相）',
-    };
+    });
   }
 }
 

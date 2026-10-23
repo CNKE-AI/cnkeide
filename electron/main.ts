@@ -157,7 +157,7 @@ async function createWindow() {
   mainWindow.on('closed', () => clearInterval(guardTimer));
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    void shell.openExternal(url);
     return { action: 'deny' };
   });
 
@@ -279,7 +279,7 @@ async function createPptWindow(topic?: string): Promise<void> {
   if (topic) pptWindow.webContents.send('ppt:prefill-topic', topic);
 
   pptWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    void shell.openExternal(url);
     return { action: 'deny' };
   });
 
@@ -392,6 +392,30 @@ function sendNotification(title: string, body: string) {
 
 app.whenReady().then(async () => {
   await configAdapter.init();
+
+  // 配置写盘失败的用户可见通道。
+  // 过去 ConfigAdapter.persist 里是空 catch：磁盘满 / 文件被占用时，用户改的设置
+  // 不会保存且界面零提示，下次启动回到旧值，表现为"设置莫名其妙失效"。
+  // 这里把它接到通知上，并同时打到控制台便于 Crashpad 上报。
+  configAdapter.setWriteFailureHandler((message) => {
+    console.error('[config] ' + message);
+    // 不能用 sendNotification：它在主窗口前台时会被抑制（避免抢占焦点），
+    // 而配置写失败恰恰发生在用户正操作设置时，提示会永远看不到。
+    // 窗口存在时用对话框保证可见；仅在窗口未建/已毁时退回系统通知。
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      void dialog.showMessageBox(mainWindow, {
+        type: 'warning',
+        title: '设置保存失败',
+        message: '配置写入失败，本次修改可能未被保存',
+        detail: message,
+        buttons: ['确定'],
+        noLink: true,
+      });
+    } else {
+      sendNotification('设置保存失败', message);
+    }
+  });
+
   createMenu();
   createTray();
 
@@ -436,7 +460,7 @@ app.whenReady().then(async () => {
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
+      void createWindow();
     }
   });
 }).catch((e) => {
@@ -469,7 +493,8 @@ ipcMain.on('window:set-agent-busy', (_e, busy: boolean) => {
   setAgentBusy(!!busy);
 });
 // 菜单「文件 → 生成 PPT」通过 app 事件触发（避免 menu.ts 与 main.ts 循环依赖）
-(app as any).on('open-ppt', () => {
+// 自定义事件，不在 Electron 类型定义里
+app.on('open-ppt' as Parameters<typeof app.on>[0], () => {
   void createPptWindow();
 });
 

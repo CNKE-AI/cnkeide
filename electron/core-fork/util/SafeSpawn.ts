@@ -35,6 +35,7 @@
  */
 
 import { spawn, execFile, type SpawnOptions } from 'node:child_process';
+import { promisify } from 'node:util';
 import * as path from 'node:path';
 
 /** Electron 注入进程环境变量的前缀：全部剔除 */
@@ -133,7 +134,7 @@ export function spawnSafe(file: string, args: string[] = [], options: SpawnOptio
   const { env, ...rest } = options;
   return spawn(file, args, {
     ...rest,
-    env: sanitizeEnv(env as NodeJS.ProcessEnv | undefined),
+    env: sanitizeEnv(env),
   });
 }
 
@@ -161,10 +162,32 @@ export function execFileSafe(
   return (execFile as any)(
     file,
     args,
-    { ...rest, env: sanitizeEnv(env as NodeJS.ProcessEnv | undefined) },
+    { ...rest, env: sanitizeEnv(env) },
     callback,
   );
 }
+
+/**
+ * 让 `promisify(execFileSafe)` 与原生 `promisify(execFile)` 行为一致：
+ * 解析为 `{ stdout, stderr }` 而非仅 stdout 字符串。
+ *
+ * 背景：execFileSafe 是自定义包装函数，没有 Node 给原生 execFile 的
+ * `util.promisify.custom` 标记；默认 promisify 只会把回调的**第一个**非错误
+ * 参数（stdout 字符串）作为 resolve 值，导致调用方 `const { stdout } = await ...`
+ * 解构到 undefined。补上 custom 实现即可修正全部 6 处调用点。
+ */
+(execFileSafe as any)[promisify.custom] = function (
+  file: string,
+  args: string[] = [],
+  options: Record<string, unknown> = {},
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    execFileSafe(file, args, options, (err: Error | null, stdout: string, stderr: string) => {
+      if (err) reject(err);
+      else resolve({ stdout, stderr });
+    });
+  });
+};
 
 /**
  * 构造一个"被拒绝"的 ChildProcess 替身。

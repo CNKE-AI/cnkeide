@@ -71,7 +71,7 @@ export function createMenu(): void {
       label: '帮助',
       submenu: [
         { label: '关于 CnkeIDE', click: () => BrowserWindow.getFocusedWindow()?.webContents.send('menu:about') },
-        { label: '官网首页', click: () => shell.openExternal(OFFICIAL_WEBSITE_URL) },
+        { label: '官网首页', click: () => { void shell.openExternal(OFFICIAL_WEBSITE_URL); } },
       ],
     },
   ];

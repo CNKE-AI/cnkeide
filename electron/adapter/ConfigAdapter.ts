@@ -13,6 +13,10 @@ export class ConfigAdapter {
   private dataFile: string = '';
   private data: Record<string, any> = {};
   private writeTimer: NodeJS.Timeout | null = null;
+  /** 连续写盘失败次数：达到阈值后才提示，避免偶发失败打扰用户 */
+  private writeFailures = 0;
+  /** 主窗口引用：写盘失败时用于向用户可见地报警（否则设置会静默丢失） */
+  private onWriteFailure?: (message: string) => void;
 
   async init(): Promise<void> {
     this.configDir = path.join(app.getPath('userData'), 'config');
@@ -157,21 +161,52 @@ export class ConfigAdapter {
 
   private scheduleWrite(): void {
     if (this.writeTimer) clearTimeout(this.writeTimer);
-    this.writeTimer = setTimeout(async () => {
-      try {
-        await fs.writeFile(this.dataFile, JSON.stringify(this.data, null, 2), 'utf-8');
-      } catch {
-        // 写入失败静默忽略，避免 unhandled rejection；下次写入会再次尝试
-      }
+    this.writeTimer = setTimeout(() => {
+      void this.persist();
     }, 300);
   }
 
+  /**
+   * 立即落盘（供 IPC 的 config:set 与关闭前 flush 使用）。
+   * 与 scheduleWrite 共用同一套失败上报逻辑，避免两条路径行为不一致。
+   */
   async flush(): Promise<void> {
     if (this.writeTimer) {
       clearTimeout(this.writeTimer);
       this.writeTimer = null;
     }
-    await fs.writeFile(this.dataFile, JSON.stringify(this.data, null, 2), 'utf-8');
+    await this.persist();
+  }
+
+  /** 写盘失败的上报通道：由 main.ts 注入（发通知 / 写入日志） */
+  setWriteFailureHandler(handler: (message: string) => void): void {
+    this.onWriteFailure = handler;
+  }
+
+  /**
+   * 真正的写盘动作。
+   *
+   * 过去的失败处理是空 catch：磁盘满、目录被占用、杀毒软件锁文件时，
+   * 用户改的设置不会保存，且界面零提示 —— 下次启动回到旧值，
+   * 表现为"设置莫名其妙失效"，极难排查。
+   * 现在连续失败才提示，偶发失败（如瞬时占用）自行恢复不打扰。
+   */
+  private async persist(): Promise<void> {
+    try {
+      await fs.writeFile(this.dataFile, JSON.stringify(this.data, null, 2), 'utf-8');
+      this.writeFailures = 0;
+    } catch (err: any) {
+      this.writeFailures++;
+      console.error('[config] 写盘失败:', err?.message || err);
+      // 只在跨越阈值那一刻提示一次：磁盘满这类持续故障下，每次 set 都会走到这里，
+      // 用 >= 会变成通知轰炸；成功后计数归零，下次故障仍会重新提示。
+      if (this.writeFailures === 2 && this.onWriteFailure) {
+        this.onWriteFailure(
+          `设置未能保存（已连续失败 ${this.writeFailures} 次）：${err?.message || err}\n` +
+            `配置文件：${this.dataFile}\n请检查磁盘空间与该路径的写入权限。`
+        );
+      }
+    }
   }
 
   // ===== API 配置管理 =====

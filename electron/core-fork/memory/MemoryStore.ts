@@ -78,26 +78,27 @@ export const MEMORY_LIMITS = {
 } as const;
 
 /** 归一化磁盘上的原始记录，非法/空记录返回 null */
-function normalize(raw: any): MemoryItem | null {
+function normalize(raw: unknown): MemoryItem | null {
   if (!raw || typeof raw !== 'object') return null;
-  const content = typeof raw.content === 'string' ? raw.content.trim() : '';
+  const rec = raw as Record<string, unknown>;
+  const content = typeof rec.content === 'string' ? rec.content.trim() : '';
   if (!content) return null;
   const now = Date.now();
   const types: MemoryType[] = ['preference', 'project', 'summary', 'manual'];
-  const importance = raw.importance;
+  const importance = rec.importance;
   return {
-    id: typeof raw.id === 'string' && raw.id ? raw.id : randomUUID(),
+    id: typeof rec.id === 'string' && rec.id ? rec.id : randomUUID(),
     content,
-    type: types.includes(raw.type) ? raw.type : 'manual',
-    scope: raw.scope === 'global' ? 'global' : 'workspace',
-    workspaceId: typeof raw.workspaceId === 'string' ? raw.workspaceId : undefined,
-    importance: Number.isInteger(importance) && importance >= 1 && importance <= 3 ? importance : 1,
-    createdAt: typeof raw.createdAt === 'number' ? raw.createdAt : now,
-    updatedAt: typeof raw.updatedAt === 'number' ? raw.updatedAt : now,
-    lastAccessAt: typeof raw.lastAccessAt === 'number' ? raw.lastAccessAt : (typeof raw.updatedAt === 'number' ? raw.updatedAt : now),
-    expiresAt: typeof raw.expiresAt === 'number' && raw.expiresAt > 0 ? raw.expiresAt : undefined,
-    source: raw.source === 'auto' ? 'auto' : 'manual',
-    enabled: raw.enabled !== false,
+    type: types.includes(rec.type as MemoryType) ? (rec.type as MemoryType) : 'manual',
+    scope: rec.scope === 'global' ? 'global' : 'workspace',
+    workspaceId: typeof rec.workspaceId === 'string' ? rec.workspaceId : undefined,
+    importance: Number.isInteger(importance) && (importance as number) >= 1 && (importance as number) <= 3 ? (importance as number) : 1,
+    createdAt: typeof rec.createdAt === 'number' ? rec.createdAt : now,
+    updatedAt: typeof rec.updatedAt === 'number' ? rec.updatedAt : now,
+    lastAccessAt: typeof rec.lastAccessAt === 'number' ? rec.lastAccessAt : (typeof rec.updatedAt === 'number' ? rec.updatedAt : now),
+    expiresAt: typeof rec.expiresAt === 'number' && rec.expiresAt > 0 ? rec.expiresAt : undefined,
+    source: rec.source === 'auto' ? 'auto' : 'manual',
+    enabled: rec.enabled !== false,
   };
 }
 
@@ -120,7 +121,7 @@ export class MemoryStore {
     if (!this.loading) {
       this.loading = (async () => {
         const now = Date.now();
-        const raw = await this.storage.getAll<any>('memories');
+        const raw = await this.storage.getAll<Record<string, unknown>>('memories');
         const kept: MemoryItem[] = [];
         for (const r of raw || []) {
           const item = normalize(r);
@@ -244,11 +245,11 @@ export class MemoryStore {
   }
 
   /** 清空全部记忆 */
-  async clear(): Promise<{ success: boolean; error?: string }> {
+  clear(): Promise<{ success: boolean; error?: string }> {
     this.items = [];
     this.dirty = true;
     this.schedulePersist();
-    return { success: true };
+    return Promise.resolve({ success: true });
   }
 
   /**

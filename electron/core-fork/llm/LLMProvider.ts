@@ -9,15 +9,7 @@
  * 5. 流式响应在 abort 时立即停止 reader.read 并 resolve 部分结果
  */
 
-import { appendFileSync } from 'node:fs';
-
-function dbgLog(msg: string): void {
-  try {
-    appendFileSync('C:\\Users\\yuhen\\Downloads\\CNKE\\cnke-claw\\agent-debug.log', `${new Date().toISOString()} ${msg}\n`);
-  } catch {
-    /* ignore */
-  }
-}
+import { dbgLog } from '../util/dbgLog';
 
 /** 可重试的 HTTP 状态码（429 限流 + 5xx 服务端错误） */
 const RETRYABLE_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504, 522, 524]);
@@ -436,7 +428,7 @@ export class LLMProvider {
       },
       body: JSON.stringify(body),
       signal,
-    } as any);
+    });
 
     if (!resp.ok) {
       const text = await resp.text();
@@ -475,7 +467,7 @@ export class LLMProvider {
       },
       body: JSON.stringify({ ...body, stream: true }),
       signal,
-    } as any);
+    });
 
     if (!resp.ok) {
       const text = await resp.text();
@@ -617,7 +609,7 @@ export class LLMProvider {
       const resp = await fetch(buildModelsUrl(baseUrl || ''), {
         headers: { ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },
         signal: AbortSignal.timeout(15000),
-      } as any);
+      });
 
       if (!resp.ok) return this.getDefaultModels(apiConfig.provider);
       const data: any = await resp.json();

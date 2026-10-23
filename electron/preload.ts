@@ -1,5 +1,14 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import path from 'node:path';
+import type { RunParams } from './core-fork/agent/AgentManager';
+import type { ApprovalRule } from './core-fork/checkpoint/ApprovalPolicy';
+import type { McpServerConfig } from './core-fork/mcp/McpHub';
+import type { MemoryItemInput } from './core-fork/memory/MemoryStore';
+import type { AiPptSlideHint } from './core-fork/ppt/pptDesign';
+import type { PreviewSlide } from './core-fork/ppt/pptPreview';
+import type { PptxCreateRequest } from './core-fork/tools/PptxTools';
+import type { ChatSession } from './store/SessionStore';
+import type { UpdateStatus } from './updater/UpdateManager';
 
 // ===== 窗口控制 API =====
 const windowApi = {
@@ -8,7 +17,7 @@ const windowApi = {
   close: () => ipcRenderer.send('window:close'),
   isMaximized: () => ipcRenderer.sendSync('window:isMaximized'),
   onMaximizedChange: (cb: (maximized: boolean) => void) => {
-    const handler = (_e: any, maximized: boolean) => cb(maximized);
+    const handler = (_e: Electron.IpcRendererEvent, maximized: boolean) => cb(maximized);
     ipcRenderer.on('window:maximized-changed', handler);
     return () => ipcRenderer.removeListener('window:maximized-changed', handler);
   },
@@ -16,7 +25,7 @@ const windowApi = {
   setAgentBusy: (busy: boolean) => ipcRenderer.send('window:set-agent-busy', busy),
   /** 订阅窗口保护提示（例如任务执行中尝试最小化被拦截） */
   onGuardNotice: (cb: (payload: { reason: string }) => void) => {
-    const handler = (_e: any, payload: any) => cb(payload);
+    const handler = (_e: Electron.IpcRendererEvent, payload: { reason: string }) => cb(payload);
     ipcRenderer.on('window:guard-notice', handler);
     return () => ipcRenderer.removeListener('window:guard-notice', handler);
   },
@@ -42,7 +51,7 @@ const fsApi = {
   watchStatus: () => ipcRenderer.invoke('fs:watchStatus'),
   /** 订阅工作区文件变更（批量，已 debounce 合并） */
   onChanged: (cb: (payload: { root: string; changes: FsChange[] }) => void) => {
-    const handler = (_e: any, payload: any) => cb(payload);
+    const handler = (_e: Electron.IpcRendererEvent, payload: { root: string; changes: FsChange[] }) => cb(payload);
     ipcRenderer.on('fs:changed', handler);
     return () => ipcRenderer.removeListener('fs:changed', handler);
   },
@@ -64,12 +73,12 @@ const terminalApi = {
   resize: (pid: number, cols: number, rows: number) => ipcRenderer.send('terminal:resize', pid, cols, rows),
   kill: (pid: number) => ipcRenderer.send('terminal:kill', pid),
   onOutput: (cb: (data: { pid: number; data: string }) => void) => {
-    const handler = (_e: any, data: any) => cb(data);
+    const handler = (_e: Electron.IpcRendererEvent, data: { pid: number; data: string }) => cb(data);
     ipcRenderer.on('terminal:output', handler);
     return () => ipcRenderer.removeListener('terminal:output', handler);
   },
   onExit: (cb: (data: { pid: number; code: number }) => void) => {
-    const handler = (_e: any, data: any) => cb(data);
+    const handler = (_e: Electron.IpcRendererEvent, data: { pid: number; code: number }) => cb(data);
     ipcRenderer.on('terminal:exit', handler);
     return () => ipcRenderer.removeListener('terminal:exit', handler);
   },
@@ -77,21 +86,21 @@ const terminalApi = {
 
 // ===== Agent API =====
 const agentApi = {
-  run: (params: any) => ipcRenderer.invoke('agent:run', params),
+  run: (params: RunParams) => ipcRenderer.invoke('agent:run', params),
   abort: (sessionId: string) => ipcRenderer.send('agent:abort', sessionId),
   enhancePrompt: (text: string) => ipcRenderer.invoke('agent:enhancePrompt', text),
-  onEvent: (cb: (event: any) => void) => {
-    const handler = (_e: any, event: any) => cb(event);
+  onEvent: (cb: (event: unknown) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, event: unknown) => cb(event);
     ipcRenderer.on('agent:event', handler);
     return () => ipcRenderer.removeListener('agent:event', handler);
   },
-  onToolCall: (cb: (data: any) => void) => {
-    const handler = (_e: any, data: any) => cb(data);
+  onToolCall: (cb: (data: unknown) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, data: unknown) => cb(data);
     ipcRenderer.on('agent:tool-call', handler);
     return () => ipcRenderer.removeListener('agent:tool-call', handler);
   },
-  onToolResult: (cb: (data: any) => void) => {
-    const handler = (_e: any, data: any) => cb(data);
+  onToolResult: (cb: (data: unknown) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, data: unknown) => cb(data);
     ipcRenderer.on('agent:tool-result', handler);
     return () => ipcRenderer.removeListener('agent:tool-result', handler);
   },
@@ -102,7 +111,7 @@ const sessionApi = {
   list: (workspaceId: string) => ipcRenderer.invoke('session:list', workspaceId),
   listAll: () => ipcRenderer.invoke('session:listAll'),
   load: (sessionId: string) => ipcRenderer.invoke('session:load', sessionId),
-  save: (session: any) => ipcRenderer.invoke('session:save', session),
+  save: (session: ChatSession) => ipcRenderer.invoke('session:save', session),
   delete: (sessionId: string) => ipcRenderer.invoke('session:delete', sessionId),
   create: (workspaceId: string, title?: string) => ipcRenderer.invoke('session:create', workspaceId, title),
 };
@@ -116,9 +125,9 @@ const skillApi = {
 
 const configApi = {
   get: (key: string) => ipcRenderer.invoke('config:get', key),
-  set: (key: string, value: any) => ipcRenderer.invoke('config:set', key, value),
+  set: (key: string, value: unknown) => ipcRenderer.invoke('config:set', key, value),
   getApiKeyConfigs: () => ipcRenderer.invoke('config:getApiKeyConfigs'),
-  saveApiConfig: (config: any) => ipcRenderer.invoke('config:saveApiConfig', config),
+  saveApiConfig: (config: Record<string, unknown>) => ipcRenderer.invoke('config:saveApiConfig', config),
   deleteApiConfig: (id: string) => ipcRenderer.invoke('config:deleteApiConfig', id),
   syncBuiltins: () => ipcRenderer.invoke('config:syncBuiltins'),
 };
@@ -126,8 +135,8 @@ const configApi = {
 // ===== 本地记忆 API =====
 const memoryApi = {
   list: () => ipcRenderer.invoke('memory:list'),
-  add: (input: any) => ipcRenderer.invoke('memory:add', input),
-  update: (id: string, patch: any) => ipcRenderer.invoke('memory:update', id, patch),
+  add: (input: MemoryItemInput) => ipcRenderer.invoke('memory:add', input),
+  update: (id: string, patch: Partial<MemoryItemInput>) => ipcRenderer.invoke('memory:update', id, patch),
   delete: (id: string) => ipcRenderer.invoke('memory:delete', id),
   clear: () => ipcRenderer.invoke('memory:clear'),
 };
@@ -135,14 +144,14 @@ const memoryApi = {
 // ===== MCP API =====
 const mcpApi = {
   listServers: () => ipcRenderer.invoke('mcp:listServers'),
-  addServer: (config: any) => ipcRenderer.invoke('mcp:addServer', config),
+  addServer: (config: McpServerConfig) => ipcRenderer.invoke('mcp:addServer', config),
   removeServer: (id: string) => ipcRenderer.invoke('mcp:removeServer', id),
   toggleServer: (id: string, enabled: boolean) => ipcRenderer.invoke('mcp:toggleServer', id, enabled),
   listTools: (serverId: string) => ipcRenderer.invoke('mcp:listTools', serverId),
   refreshTools: (serverId: string) => ipcRenderer.invoke('mcp:refreshTools', serverId),
-  callTool: (serverId: string, toolName: string, args: any) => ipcRenderer.invoke('mcp:callTool', serverId, toolName, args),
-  onStatusChanged: (cb: (status: any) => void) => {
-    const handler = (_e: any, status: any) => cb(status);
+  callTool: (serverId: string, toolName: string, args: unknown) => ipcRenderer.invoke('mcp:callTool', serverId, toolName, args),
+  onStatusChanged: (cb: (status: unknown) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, status: unknown) => cb(status);
     ipcRenderer.on('mcp:status-changed', handler);
     return () => ipcRenderer.removeListener('mcp:status-changed', handler);
   },
@@ -150,9 +159,9 @@ const mcpApi = {
 
 // ===== 对话框 API =====
 const dialogApi = {
-  showOpenDialog: (opts?: any) => ipcRenderer.invoke('dialog:open'),
-  showSaveDialog: (opts?: any) => ipcRenderer.invoke('dialog:save'),
-  showMessageBox: (opts: any) => ipcRenderer.invoke('dialog:message', opts),
+  showOpenDialog: () => ipcRenderer.invoke('dialog:open'),
+  showSaveDialog: () => ipcRenderer.invoke('dialog:save'),
+  showMessageBox: (opts: Electron.MessageBoxOptions) => ipcRenderer.invoke('dialog:message', opts),
 };
 
 // ===== Shell API =====
@@ -194,14 +203,14 @@ const checkpointApi = {
 // ===== 工具审批信任规则 API（W7）=====
 const approvalApi = {
   listRules: () => ipcRenderer.invoke('approval:listRules'),
-  addRule: (rule: any) => ipcRenderer.invoke('approval:addRule', rule),
+  addRule: (rule: ApprovalRule) => ipcRenderer.invoke('approval:addRule', rule),
   removeRule: (index: number) => ipcRenderer.invoke('approval:removeRule', index),
 };
 
 // ===== 会话导出 / 导入 / 上下文压缩 API =====
 const sessionExApi = {
   export: (sessionId: string) => ipcRenderer.invoke('session:export', sessionId),
-  import: (data: any) => ipcRenderer.invoke('session:import', data),
+  import: (data: unknown) => ipcRenderer.invoke('session:import', data),
   summarize: (sessionId: string) => ipcRenderer.invoke('session:summarize', sessionId),
   deleteMessage: (sessionId: string, messageId: string) => ipcRenderer.invoke('session:deleteMessage', sessionId, messageId),
 };
@@ -221,8 +230,8 @@ const backendApi = {
   getBuiltins: () => ipcRenderer.invoke('backend:getBuiltins'),
   getAnnouncements: () => ipcRenderer.invoke('backend:getAnnouncements'),
   subscribeAnnouncements: () => ipcRenderer.invoke('backend:subscribeAnnouncements'),
-  onAnnouncement: (cb: (payload: { type: string; announcements?: any[]; serverTime?: number }) => void) => {
-    const listener = (_e: any, payload: any) => cb(payload);
+  onAnnouncement: (cb: (payload: { type: string; announcements?: unknown[]; serverTime?: number }) => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, payload: { type: string; announcements?: unknown[]; serverTime?: number }) => cb(payload);
     ipcRenderer.on('backend:announcement-event', listener);
     return () => ipcRenderer.removeListener('backend:announcement-event', listener);
   },
@@ -232,8 +241,8 @@ const backendApi = {
 
 // ===== 工具确认 API =====
 const toolApproveApi = {
-  onRequest: (cb: (data: any) => void) => {
-    const handler = (_e: any, data: any) => cb(data);
+  onRequest: (cb: (data: unknown) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, data: unknown) => cb(data);
     ipcRenderer.on('tool:approve-request', handler);
     return () => ipcRenderer.removeListener('tool:approve-request', handler);
   },
@@ -244,6 +253,28 @@ const toolApproveApi = {
 const notifyApi = {
   show: (payload: { type: 'done' | 'error'; title?: string; message?: string }) => {
     ipcRenderer.send('agent:notify', payload);
+  },
+};
+
+// ===== 应用菜单事件 API（主进程菜单项 → 渲染层动作）=====
+// 菜单项和快捷键（Ctrl+O / Ctrl+S）由主进程捕获，但动作本身属于 UI 状态
+// （切换工作区、保存编辑器当前文件），所以必须由渲染层执行。
+// 过去这三个通道只有发送方没有接收方，菜单点击和快捷键因此完全无反应。
+const menuApi = {
+  onOpenFolder: (cb: () => void) => {
+    const handler = () => cb();
+    ipcRenderer.on('menu:openFolder', handler);
+    return () => ipcRenderer.removeListener('menu:openFolder', handler);
+  },
+  onSaveFile: (cb: () => void) => {
+    const handler = () => cb();
+    ipcRenderer.on('menu:saveFile', handler);
+    return () => ipcRenderer.removeListener('menu:saveFile', handler);
+  },
+  onAbout: (cb: () => void) => {
+    const handler = () => cb();
+    ipcRenderer.on('menu:about', handler);
+    return () => ipcRenderer.removeListener('menu:about', handler);
   },
 };
 
@@ -261,12 +292,12 @@ const pptApi = {
   close: () => ipcRenderer.send('ppt:close'),
   minimize: () => ipcRenderer.send('ppt:minimize'),
   /** 生成并保存 PPT 到指定路径 */
-  generate: (req: any, savePath?: string) => ipcRenderer.invoke('ppt:generate', req, savePath),
+  generate: (req: PptxCreateRequest, savePath?: string) => ipcRenderer.invoke('ppt:generate', req, savePath),
   /** AI 生成 PPT 大纲（复用当前 active API + LLMProvider；场景化时按场景结构骨架组织） */
   generateOutline: (topic: string, slideCount?: number, scenarioId?: string) =>
     ipcRenderer.invoke('ppt:generateOutline', topic, slideCount, scenarioId),
   /** AI 自动生成原创视觉方案（配色、字体和风格），不使用外部模板。 */
-  generateAiDesign: (payload: { topic?: string; scenarioName?: string; slides?: any[]; fallbackThemeId?: string }) =>
+  generateAiDesign: (payload: { topic?: string; scenarioName?: string; slides?: AiPptSlideHint[]; fallbackThemeId?: string }) =>
     ipcRenderer.invoke('ppt:generateAiDesign', payload),
   /** 扫描当前工作区内容摘要（目录结构 + README + 文档清单） */
   scanWorkspace: (wsPath?: string) => ipcRenderer.invoke('ppt:scanWorkspace', wsPath),
@@ -276,7 +307,7 @@ const pptApi = {
   /** 列出内置主题清单（4 套） */
   listThemes: () => ipcRenderer.invoke('ppt:listThemes'),
   /** 纯代码生成 HTML 预览（不调 LLM，确定性输出，与 PPTX 视觉一致）—— 一键生成主推 */
-  generatePreview: (payload: { themeId: string; outline: { title: string; slides: any[] }; design?: { palette?: { primary?: string; secondary?: string; accent?: string; background?: string }; fontFamily?: string; artDirection?: string } }) =>
+  generatePreview: (payload: { themeId: string; outline: { title: string; slides: PreviewSlide[] }; design?: { palette?: { primary?: string; secondary?: string; accent?: string; background?: string }; fontFamily?: string; artDirection?: string } }) =>
     ipcRenderer.invoke('ppt:generatePreview', payload),
   /** 第 2 轮 LLM：把大纲 + 主题样式 → 渲染为完整 HTML 演示文稿 */
   renderTheme: (payload: {
@@ -292,7 +323,7 @@ const pptApi = {
     ipcRenderer.invoke('ppt:exportPdf', payload),
   /** 监听 PPT 渲染进度（render/audit/reflow/finalize 阶段） */
   onRenderProgress: (handler: (payload: { stage: string; current: number; total: number; message: string }) => void) => {
-    const wrapped = (_e: any, payload: any) => handler(payload);
+    const wrapped = (_e: Electron.IpcRendererEvent, payload: { stage: string; current: number; total: number; message: string }) => handler(payload);
     ipcRenderer.on('ppt:renderProgress', wrapped);
     return () => ipcRenderer.removeListener('ppt:renderProgress', wrapped);
   },
@@ -311,7 +342,7 @@ const pptApi = {
   }) => ipcRenderer.invoke('ppt:expandAll', payload),
   /** 监听全文扩写进度 */
   onExpandProgress: (handler: (payload: { current: number; total: number; message: string }) => void) => {
-    const wrapped = (_e: any, payload: any) => handler(payload);
+    const wrapped = (_e: Electron.IpcRendererEvent, payload: { current: number; total: number; message: string }) => handler(payload);
     ipcRenderer.on('ppt:expandProgress', wrapped);
     return () => ipcRenderer.removeListener('ppt:expandProgress', wrapped);
   },
@@ -322,7 +353,7 @@ const pptApi = {
   /** 读取品牌配置（Logo/企业色/字体/页脚） */
   getBrand: () => ipcRenderer.invoke('ppt:getBrand'),
   /** 保存品牌配置 */
-  setBrand: (brand: any) => ipcRenderer.invoke('ppt:setBrand', brand),
+  setBrand: (brand: unknown) => ipcRenderer.invoke('ppt:setBrand', brand),
 };
 
 // ===== PPT Master 原生 PPTX 流水线 API =====
@@ -358,14 +389,14 @@ const pptMasterApi = {
   /** 列出技能包工作流与参考文档 */
   listCapabilities: () => ipcRenderer.invoke('pptmaster:listCapabilities'),
   /** 订阅生成进度 */
-  onProgress: (cb: (p: any) => void) => {
-    const handler = (_e: any, p: any) => cb(p);
+  onProgress: (cb: (p: unknown) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, p: unknown) => cb(p);
     ipcRenderer.on('pptmaster:progress', handler);
     return () => ipcRenderer.removeListener('pptmaster:progress', handler);
   },
   /** 订阅 pip 安装输出 */
   onInstallOutput: (cb: (line: string) => void) => {
-    const handler = (_e: any, line: string) => cb(line);
+    const handler = (_e: Electron.IpcRendererEvent, line: string) => cb(line);
     ipcRenderer.on('pptmaster:installOutput', handler);
     return () => ipcRenderer.removeListener('pptmaster:installOutput', handler);
   },
@@ -381,8 +412,8 @@ const updateApi = {
   getLogs: (limit?: number) => ipcRenderer.invoke('update:getLogs', limit),
   checkAnnouncement: () => ipcRenderer.invoke('update:checkAnnouncement'),
   getReleaseNotes: () => ipcRenderer.invoke('update:getReleaseNotes'),
-  onStatus: (cb: (status: any) => void) => {
-    const handler = (_e: any, status: any) => cb(status);
+  onStatus: (cb: (status: UpdateStatus) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, status: UpdateStatus) => cb(status);
     ipcRenderer.on('update:status', handler);
     return () => ipcRenderer.removeListener('update:status', handler);
   },
@@ -406,6 +437,7 @@ contextBridge.exposeInMainWorld('cnke', {
   backend: backendApi,
   update: updateApi,
   notify: notifyApi,
+  menu: menuApi,
   app: appApi,
   context: contextApi,
   checkpoint: checkpointApi,

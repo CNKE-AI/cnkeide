@@ -123,7 +123,7 @@ export function detectCapabilities(modelName: string): ModelCapabilities {
 export function extractModelMention(prompt: string): { mention: string | null; cleanPrompt: string } {
   if (!prompt) return { mention: null, cleanPrompt: '' };
   // 匹配开头的 @xxx（最多取到第一个空白）
-  const m = prompt.match(/^\s*@([\w.\-]+)\s+/);
+  const m = prompt.match(/^\s*@([\w.-]+)\s+/);
   if (!m) return { mention: null, cleanPrompt: prompt };
   const mention = m[1].toLowerCase();
   const cleanPrompt = prompt.slice(m[0].length);
