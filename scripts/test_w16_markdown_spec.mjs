@@ -28,20 +28,28 @@ log(!/electron|react|vue|typescript/i.test(am.slice(am.indexOf('REPLY_FORMAT_STR
 log(!/第一步.*安装|npm install/.test(am.slice(am.indexOf('REPLY_FORMAT_STRUCTURED'), am.indexOf('const PLAN_GUIDE'))), '规范段无安装/教程步骤');
 
 console.log('\n[3] CodeBlock 兜底：单行内容降级为行内 code');
-const fn = md.slice(md.indexOf('function looksLikeNonCodeLine'), md.indexOf('/** 代码块/行内代码渲染'));
+// 锚点取 CodeBlock 组件定义起点：注释块可能被改写成多行，不能依赖固定注释文本。
+// 从关键字正则常量开始截取，兜底函数依赖它，单独取函数体会 ReferenceError。
+const FN_START = md.indexOf('const CODE_LEADING_KEYWORD_RE');
+const FN_END = md.indexOf('const CodeBlock');
+if (FN_START < 0 || FN_END <= FN_START) throw new Error('Markdown.tsx 测试锚点失效：CODE_LEADING_KEYWORD_RE / CodeBlock 未找到');
+const fn = md.slice(FN_START, FN_END);
 log(!/if \(!match && looksLikeNonCodeLine/.test(md), '已移除 !match 限制（有语言标注也走兜底）');
 log(/if \(looksLikeNonCodeLine\(codeText\)\)/.test(md), '兜底条件不再要求无语言标识');
 log(/裸标识符/.test(fn), '新增"裸标识符"识别规则');
 
 console.log('\n[4] 兜底函数行为（运行时）');
-const body = md.slice(md.indexOf('function looksLikeNonCodeLine'), md.indexOf('/** 代码块/行内代码渲染'));
+const body = fn;
 // 去掉 TS 类型标注后再求值（参数与返回值类型）
 const src = body
   .slice(0, body.lastIndexOf('}') + 1)
   .replace(/function looksLikeNonCodeLine\(text: string\): boolean/, 'function looksLikeNonCodeLine(text)');
 const looksLikeNonCodeLine = new Function(src + '; return looksLikeNonCodeLine;')();
-for (const t of ['create_file','apply_diff','rename_file','delete_file','list_directory','project_structure','execute_command','AgentManager.ts','AgentManager.ts:281','C:\\x\\y.ts','./src/a.ts','读取文件','git status'])
+for (const t of ['create_file','apply_diff','rename_file','delete_file','list_directory','project_structure','execute_command','AgentManager.ts','AgentManager.ts:281','C:\\x\\y.ts','./src/a.ts','读取文件'])
   log(looksLikeNonCodeLine(t) === true, '单行非代码 → 降级: ' + t);
+// 命令/关键字开头（git/npm/cd/return 等）一律按真代码保留
+for (const t of ['git status', 'npm run build', 'return 0', 'const a = 1'])
+  log(looksLikeNonCodeLine(t) === false, '命令/关键字开头 → 保留代码块: ' + t);
 // 多行代码、含 JSON/语法符号的片段必须保留为代码块；
 // 注意 "ls -la" 这类单行命令会被降级为行内 code —— 这是刻意的取舍：
 // 单行命令渲染成占满宽度的大灰框比行内 code 更难看，提示词已引导模型

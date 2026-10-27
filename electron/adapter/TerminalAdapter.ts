@@ -1,5 +1,4 @@
 import type { ChildProcess } from 'node:child_process';
-import { execFile } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { spawnSafe, sanitizeEnv } from '../core-fork/util/SafeSpawn';
 
@@ -11,7 +10,12 @@ import { spawnSafe, sanitizeEnv } from '../core-fork/util/SafeSpawn';
 function killProcessTree(child: ChildProcess, isWin: boolean): void {
   try {
     if (isWin && typeof child.pid === 'number') {
-      execFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], () => {});
+      // 走 SafeSpawn 而非 execFile：taskkill 同样不能继承 ELECTRON_* 环境变量，
+      // 否则可能在结束进程树时反而派生出 electron 进程。
+      const killer = spawnSafe('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true });
+      killer.on('error', () => {
+        /* taskkill 不可用或子进程已退出：忽略 */
+      });
     } else {
       child.kill('SIGKILL');
     }

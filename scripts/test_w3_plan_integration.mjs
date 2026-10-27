@@ -95,7 +95,7 @@ async function test5_getPlan() {
 }
 
 async function test6_markPlanComplete() {
-  console.log('\n[6] mark_plan_complete 中止未完成步骤');
+  console.log('\n[6] mark_plan_complete 仅收尾计划，不改步骤状态');
   const pm = new PlanManager();
   const tm = makeToolManager(pm);
   await tm.execute('create_plan', { items: [{ content: 'a' }, { content: 'b' }, { content: 'c' }] });
@@ -106,8 +106,18 @@ async function test6_markPlanComplete() {
   log(r.success, '执行成功', '');
   const items = pm.getPlan('s-test').items;
   log(items[0].status === 'completed', 'item0 completed 保留', `status=${items[0].status}`);
-  log(items[1].status === 'skipped', 'item1 running→skipped', `status=${items[1].status}`);
-  log(items[2].status === 'skipped', 'item2 pending→skipped', `status=${items[2].status}`);
+  log(items[1].status === 'running', 'item1 保持 running（不伪造 skipped）', `status=${items[1].status}`);
+  log(items[2].status === 'pending', 'item2 保持 pending（不伪造 skipped）', `status=${items[2].status}`);
+
+  // 用户主动中止才把未完成步骤标 skipped
+  pm.abandon('s-test');
+  const after = pm.getPlan('s-test').items;
+  log(after[0].status === 'completed', 'abandon 后 item0 completed 保留', `status=${after[0].status}`);
+  log(
+    after[1].status === 'skipped' && after[2].status === 'skipped',
+    'abandon 后未完成步骤标 skipped',
+    `status=${after[1].status},${after[2].status}`,
+  );
 }
 
 async function test7_noPlanManager() {
