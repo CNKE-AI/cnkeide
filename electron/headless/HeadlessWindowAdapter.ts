@@ -42,12 +42,14 @@ export class HeadlessWindowAdapter {
     this.log(body ? `${title}: ${body}` : title, type);
   }
 
-  async showError(title: string, message: string): Promise<void> {
+  showError(title: string, message: string): Promise<void> {
     this.log(`${title}: ${message}`, 'error');
+    return Promise.resolve();
   }
 
-  async showInfo(title: string, message: string): Promise<void> {
+  showInfo(title: string, message: string): Promise<void> {
     this.log(`${title}: ${message}`, 'info');
+    return Promise.resolve();
   }
 
   async showConfirm(title: string, message: string, buttons: string[] = ['确认', '取消']): Promise<number> {
@@ -71,12 +73,14 @@ export class HeadlessWindowAdapter {
     return null;
   }
 
-  async openExternal(url: string): Promise<void> {
+  openExternal(url: string): Promise<void> {
     this.log(`打开链接: ${url}`, 'info');
+    return Promise.resolve();
   }
 
-  async openPath(targetPath: string): Promise<void> {
+  openPath(targetPath: string): Promise<void> {
     this.log(`打开路径: ${targetPath}`, 'info');
+    return Promise.resolve();
   }
 
   setTitle(title: string): void {

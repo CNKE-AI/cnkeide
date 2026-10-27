@@ -86,6 +86,6 @@ devserver.err
 scripts/_*.png
 
 # 本地打包配置与临时校验输出
-electron-builder.*.local.json
+electron-builder*.local.json
 _site/_*.txt
 scripts/_*.mjs

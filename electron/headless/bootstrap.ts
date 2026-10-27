@@ -193,7 +193,7 @@ export async function createHeadlessAgent(options: HeadlessBootstrapOptions): Pr
 
   const dispose = async (): Promise<void> => {
     try {
-      await mcpHub.dispose();
+      mcpHub.dispose();
     } catch {
       /* 忽略关闭异常 */
     }

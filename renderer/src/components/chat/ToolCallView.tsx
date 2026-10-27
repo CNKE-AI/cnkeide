@@ -99,14 +99,17 @@ const ToolCallView: React.FC<{ call: any }> = ({ call }) => {
 
   // diff 是 O(n·m) 的 LCS：本组件订阅了全局 loading，流式期间每帧都会重渲染，
   // 不缓存就等于每一帧对所有工具卡片重算一遍。依赖取具体字段而非 diffMeta 引用。
+  const diffPath: string | undefined = diffMeta?.path;
+  const diffBefore: string | undefined = diffMeta?.before;
+  const diffAfter: string | undefined = diffMeta?.after;
   const { rows, additions, deletions } = React.useMemo(() => {
-    const r = diffMeta ? diffLines(diffMeta.before ?? '', diffMeta.after ?? '') : null;
+    const r = diffPath ? diffLines(diffBefore ?? '', diffAfter ?? '') : null;
     return {
       rows: r,
       additions: r ? r.filter((x) => x.type === 'add').length : 0,
       deletions: r ? r.filter((x) => x.type === 'del').length : 0,
     };
-  }, [diffMeta?.path, diffMeta?.before, diffMeta?.after]);
+  }, [diffPath, diffBefore, diffAfter]);
 
   /** 回滚：新建文件 → 删除；其余 → 写回修改前内容。文件监听会自动刷新编辑器。 */
   const doRollback = async () => {
@@ -122,7 +125,7 @@ const ToolCallView: React.FC<{ call: any }> = ({ call }) => {
     try {
       const r = willDelete
         ? await window.cnke.fs.deletePath(diffMeta.path)
-        : await window.cnke.fs.writeFile(diffMeta.path, diffMeta.before!);
+        : await window.cnke.fs.writeFile(diffMeta.path, diffBefore ?? '');
       if (r.success) setRolled(true);
       // 原来失败时完全静默，用户会以为已经回滚成功
       else toast.error(`回滚失败：${r.error || '未知错误'}`);

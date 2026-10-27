@@ -91,11 +91,12 @@ export default tseslint.config(
     }
   },
 
-  // TS 源文件里的函数内 require（SafeSpawn/WorkspaceWatcher 条件动态加载）
+  // TS 源文件里的函数内 require（SafeSpawn/WorkspaceWatcher 条件动态加载、paths 探测 electron）
   {
     files: [
       'electron/core-fork/util/SafeSpawn.ts',
-      'electron/adapter/WorkspaceWatcher.ts'
+      'electron/adapter/WorkspaceWatcher.ts',
+      'electron/util/paths.ts'
     ],
     rules: {
       '@typescript-eslint/no-require-imports': 'off',

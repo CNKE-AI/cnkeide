@@ -15,7 +15,24 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createHeadlessAgent } from '../electron/headless/bootstrap';
 import type { HeadlessApprovalPolicy } from '../electron/headless/bootstrap';
-import type { AgentMode } from '../electron/core-fork/agent/AgentManager';
+import type { AgentEvent, AgentMode } from '../electron/core-fork/agent/AgentManager';
+
+/** 内核 usage 对象同时存在 snake_case（OpenAI 原生）与 camelCase（归一化后）两种写法 */
+interface UsageLike {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+}
+
+/** 工具结果既可能是结构化对象（{success,output,error}），也可能是拒绝时的纯字符串 */
+type ToolResultLike =
+  | string
+  | { success?: boolean; output?: unknown; error?: unknown }
+  | null
+  | undefined;
 
 declare const __CLI_VERSION__: string;
 
@@ -291,9 +308,9 @@ async function main(): Promise<number> {
   }
 
   let timedOut = false;
-  let stdoutClosed = false;
   let finalContent = '';
-  let totalUsage: any = null;
+  // 用对象容器而非裸 let：闭包内赋值不参与外部控制流分析，裸 let 会被收窄成 null
+  const usageRef: { value: UsageLike | null } = { value: null };
 
   const timer = opts.timeoutSec
     ? setTimeout(() => {
@@ -325,13 +342,13 @@ async function main(): Promise<number> {
       model: opts.model,
       autoApprove: opts.approvePolicy === 'never',
     },
-    (event: any) => {
+    (event: AgentEvent) => {
       const data = event?.data ?? {};
       switch (event?.type) {
         case 'stream': {
           if (opts.json) {
             emitJson({ type: 'assistant_delta', text: data.delta ?? '' });
-          } else if (!opts.finalOnly && !stdoutClosed) {
+          } else if (!opts.finalOnly) {
             process.stdout.write(data.delta ?? '');
           }
           break;
@@ -352,7 +369,7 @@ async function main(): Promise<number> {
         case 'tool_result': {
           // ToolManager 正常返回结构化对象 {success, output, error}，拒绝时为字符串，
           // 直接 String() 会得到 "[object Object]"，必须显式取字段。
-          const raw: any = data.result;
+          const raw = data.result as ToolResultLike;
           const output =
             typeof raw === 'string'
               ? raw
@@ -400,7 +417,7 @@ async function main(): Promise<number> {
           break;
         }
         case 'done': {
-          totalUsage = data.usage ?? null;
+          usageRef.value = (data.usage as UsageLike | null) ?? null;
           break;
         }
         default:
@@ -420,11 +437,12 @@ async function main(): Promise<number> {
       : classifyExitCode(result.error, timedOut);
 
   if (opts.json) {
-    if (totalUsage) {
+    const usage = usageRef.value;
+    if (usage) {
       emitJson({
         type: 'usage',
-        promptTokens: totalUsage.prompt_tokens ?? totalUsage.promptTokens,
-        completionTokens: totalUsage.completion_tokens ?? totalUsage.completionTokens,
+        promptTokens: usage.prompt_tokens ?? usage.promptTokens,
+        completionTokens: usage.completion_tokens ?? usage.completionTokens,
       });
     }
     emitJson({

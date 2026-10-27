@@ -31,13 +31,13 @@ const Markdown: React.FC<{ content: string; streaming?: boolean }> = memo(({ con
           a: ({ href, children }) => {
             // 只有 http/https/mailto 允许交给系统浏览器：模型输出里的 javascript: /
             // file: 等 scheme 可能被 openExternal 直接执行或拉起本地文件
-            const safe = !!href && /^(https?:|mailto:)/i.test(href);
+            const safeHref = typeof href === 'string' && /^(https?:|mailto:)/i.test(href) ? href : undefined;
             return (
               <a
-                href={safe ? href : undefined}
+                href={safeHref}
                 onClick={(e) => {
                   e.preventDefault();
-                  if (safe) void window.cnke.shell.openExternal(href!);
+                  if (safeHref) void window.cnke.shell.openExternal(safeHref);
                 }}
                 className="text-primary underline underline-offset-2 hover:opacity-80 break-all"
               >
