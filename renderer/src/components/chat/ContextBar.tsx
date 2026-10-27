@@ -23,7 +23,7 @@ const ContextBar: React.FC = () => {
         : 'text-emerald-400';
 
   return (
-    <div className="px-4 py-2 border-b border-border/70 bg-secondary/10">
+    <div className="@container px-4 py-2 border-b border-border/70 bg-secondary/10">
       <div className="flex items-center gap-2.5">
         <button
           onClick={() => setContextExpanded(!contextExpanded)}
@@ -34,14 +34,21 @@ const ContextBar: React.FC = () => {
           <Gauge className="w-3 h-3" />
           <span>上下文</span>
         </button>
-        <div className="flex-1 h-1.5 bg-secondary rounded-full overflow-hidden">
+        <div className="flex-1 min-w-[32px] h-1.5 bg-secondary rounded-full overflow-hidden">
           <div
             className={`h-full ${color} transition-all duration-300 rounded-full`}
-            style={{ width: `${Math.max(2, pct)}%` }}
+            style={{ width: `${Math.min(100, Math.max(2, pct))}%` }}
           />
         </div>
-        <span className={`text-[11px] tabular-nums font-medium shrink-0 ${textColor}`}>
-          {contextUsage.estimatedTokens.toLocaleString()} / {contextUsage.maxContextTokens.toLocaleString()} ({pct}%)
+        {/* 窄栏（可拖到 220px）下完整 token 数字会把进度条挤没：容器查询决定是否显示明细 */}
+        <span
+          className={`text-[11px] tabular-nums font-medium shrink-0 ${textColor}`}
+          title={`${contextUsage.estimatedTokens.toLocaleString()} / ${contextUsage.maxContextTokens.toLocaleString()} tokens`}
+        >
+          <span className="hidden @[250px]:inline">
+            {contextUsage.estimatedTokens.toLocaleString()} / {contextUsage.maxContextTokens.toLocaleString()}{' '}
+          </span>
+          ({pct}%)
         </span>
       </div>
       {contextExpanded && (

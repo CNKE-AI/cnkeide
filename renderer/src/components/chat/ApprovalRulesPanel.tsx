@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ShieldCheck, X, Plus, Trash2, Loader2 } from 'lucide-react';
 
+import { toast } from '../../utils/toast';
 interface Rule {
   toolName: string;
   pathPattern?: string;
@@ -28,6 +29,22 @@ const ApprovalRulesPanel: React.FC<Props> = ({ onClose }) => {
   const [pathPattern, setPathPattern] = useState('');
   const [commandPattern, setCommandPattern] = useState('');
   const [action, setAction] = useState<'allow' | 'deny' | 'ask'>('ask');
+  /** 零弹窗模式：文件编辑类工具默认不打断用户 */
+  const [zeroApproval, setZeroApproval] = useState(true);
+
+  useEffect(() => {
+    void window.cnke.config.get('agentConfig').then((cfg) => {
+      if (cfg && typeof cfg === 'object') {
+        const v = (cfg as { zeroApprovalMode?: boolean }).zeroApprovalMode;
+        setZeroApproval(v !== false);
+      }
+    });
+  }, []);
+
+  const toggleZeroApproval = async (next: boolean) => {
+    setZeroApproval(next);
+    await window.cnke.config.set('agentConfig.zeroApprovalMode', next);
+  };
 
   const load = async () => {
     setLoading(true);
@@ -46,7 +63,7 @@ const ApprovalRulesPanel: React.FC<Props> = ({ onClose }) => {
 
   const handleAdd = async () => {
     if (!toolName.trim()) {
-      alert('请填写工具名');
+      toast.info('请填写工具名');
       return;
     }
     const rule: Rule = { toolName: toolName.trim(), action };
@@ -75,6 +92,26 @@ const ApprovalRulesPanel: React.FC<Props> = ({ onClose }) => {
           <button onClick={onClose} className="p-1 hover:bg-accent rounded-md transition-colors">
             <X className="w-4 h-4" />
           </button>
+        </div>
+
+        {/* 零弹窗模式开关 */}
+        <div className="px-4 py-2.5 border-b border-border">
+          <label className="flex items-start gap-2.5 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={zeroApproval}
+              onChange={(e) => void toggleZeroApproval(e.target.checked)}
+              className="mt-0.5 accent-violet-500"
+            />
+            <span className="text-[11.5px] leading-relaxed">
+              <span className="text-foreground">零弹窗模式</span>
+              <span className="text-muted-foreground">
+                {' '}
+                — 文件编辑类工具（写入 / 新建 / 精确改写）直接执行，不再弹窗打断；改完可在编辑器顶部一键撤销。
+                删除、重命名、执行命令、git 提交仍需审批。
+              </span>
+            </span>
+          </label>
         </div>
 
         {/* 添加规则表单 */}

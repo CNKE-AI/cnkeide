@@ -1,9 +1,9 @@
-import { app } from 'electron';
 import { existsSync } from 'node:fs';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { BUILTIN_PROMPT_SKILLS } from './builtins';
 import { PackageSkillDefinition, SkillView } from './types';
+import { resolveAppPath, resolveResourcesPath } from '../../util/paths';
 
 interface SkillRegistryOptions {
   resourcesPath?: string;
@@ -28,8 +28,8 @@ export class SkillRegistry {
   private packageSkills: PackageSkillDefinition[] = [];
 
   constructor(options: SkillRegistryOptions = {}) {
-    this.resourcesPath = options.resourcesPath ?? process.resourcesPath;
-    this.appPath = options.appPath ?? app.getAppPath();
+    this.resourcesPath = options.resourcesPath ?? resolveResourcesPath();
+    this.appPath = options.appPath ?? resolveAppPath();
     this.cwd = options.cwd ?? process.cwd();
   }
 

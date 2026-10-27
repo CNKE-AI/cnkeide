@@ -82,6 +82,21 @@ export class PlanManager {
     return this.plans.get(sessionId);
   }
 
+  /** 根据计划步骤关联的工具名/文件路径匹配实际工具调用。 */
+  findMatchingItem(sessionId: string, toolName: string, args: any): PlanItem | null {
+    const plan = this.plans.get(sessionId);
+    if (!plan) return null;
+    const eligible = plan.items.filter((item) => item.status === 'pending' || item.status === 'running');
+    const normalizedTool = toolName.replace(/^mcp__[^_]+__/, '');
+    const requestedPath = String(args?.path || args?.filePath || args?.target || '');
+    const matches = eligible.filter((item) => {
+      if (item.toolName && item.toolName !== toolName && item.toolName !== normalizedTool) return false;
+      if (item.filePath && requestedPath && !requestedPath.toLowerCase().endsWith(item.filePath.toLowerCase())) return false;
+      return Boolean(item.toolName || item.filePath);
+    });
+    return matches.find((item) => item.status === 'running') || matches[0] || null;
+  }
+
   /** 创建计划（每个会话只允许一个；已存在则覆盖） */
   create(sessionId: string, items: { content: string; toolName?: string; filePath?: string }[], title?: string): Plan {
     const now = Date.now();
@@ -193,6 +208,14 @@ export class PlanManager {
   /** 用户跳过某步骤 */
   skipItem(sessionId: string, itemId: string): boolean {
     return this.updateStatus(sessionId, itemId, 'skipped');
+  }
+
+  /** 结束计划但保留未完成步骤状态；只有用户明确中止时才把它们标为 skipped。 */
+  complete(sessionId: string): void {
+    const plan = this.plans.get(sessionId);
+    if (!plan) return;
+    plan.updatedAt = Date.now();
+    this.emit({ type: 'completed', planId: plan.id, plan });
   }
 
   /** 用户中止计划 */

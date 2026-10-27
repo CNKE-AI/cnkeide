@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import React, { useEffect } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { useApp } from '../store/AppProvider';
 import { useUiStore } from '../store/uiStore';
@@ -8,9 +8,10 @@ import FileTree from './filetree/FileTree';
 import ChatPanel from './chat/ChatPanel';
 import EditorPanel from './editor/EditorPanel';
 import TerminalPanel from './editor/TerminalPanel';
+import PreviewPanel from './preview/PreviewPanel';
 import SettingsSheet from './SettingsSheet';
 import AnnouncementCenter from './backend/AnnouncementCenter';
-import { Code2, TerminalSquare, FolderTree, X, MessageCircle } from 'lucide-react';
+import { Code2, TerminalSquare, FolderTree, X, MessageCircle, Monitor } from 'lucide-react';
 
 /** 面板拖拽分隔条统一样式：加宽命中区 + 悬停/拖拽高亮 */
 const RESIZE_HANDLE_H = 'h-1 bg-border/60 hover:bg-primary/60 active:bg-primary transition-colors';
@@ -45,7 +46,7 @@ interface CollapsedItem {
  */
 const MainLayout: React.FC = () => {
   const { settingsOpen } = useApp();
-  const { chatVisible, editorVisible, terminalVisible, explorerVisible, setPanelVisible } = useLayoutStore();
+  const { chatVisible, editorVisible, previewVisible, terminalVisible, explorerVisible, setPanelVisible } = useLayoutStore();
 
   // 应用启动时自动同步官方内置模型到「我的 API 配置」；用户自定义添加的配置不受影响
   useEffect(() => {
@@ -54,21 +55,28 @@ const MainLayout: React.FC = () => {
 
   const showPanel = (p: PanelKey) => setPanelVisible(p, true);
 
-  /** 编辑器与终端同时可见时上下分栏，否则由可见的那个占满编辑区 */
-  const editorArea = editorVisible && terminalVisible ? (
-    <PanelGroup direction="vertical">
-      <Panel defaultSize={70} minSize={20}>
-        <EditorPanel />
-      </Panel>
-      <PanelResizeHandle className={RESIZE_HANDLE_H} />
-      <Panel defaultSize={30} minSize={12}>
-        <TerminalPanel />
-      </Panel>
-    </PanelGroup>
-  ) : editorVisible ? (
-    <EditorPanel />
+  /**
+   * 中间列可纵向堆叠三个面板：编辑器 / 预览 / 终端。
+   * 只显示一个时直接占满；多个时用默认比例分栏（编辑器权重最高）。
+   */
+  const centerPanes: { key: PanelKey; node: React.ReactNode; size: number }[] = [];
+  if (editorVisible) centerPanes.push({ key: 'editor', node: <EditorPanel />, size: 50 });
+  if (previewVisible) centerPanes.push({ key: 'preview', node: <PreviewPanel />, size: 30 });
+  if (terminalVisible) centerPanes.push({ key: 'terminal', node: <TerminalPanel />, size: 20 });
+
+  const editorArea = centerPanes.length === 1 ? (
+    centerPanes[0].node
   ) : (
-    <TerminalPanel />
+    <PanelGroup direction="vertical">
+      {centerPanes.map((pane, i) => (
+        <React.Fragment key={pane.key}>
+          {i > 0 && <PanelResizeHandle className={RESIZE_HANDLE_H} />}
+          <Panel defaultSize={pane.size} minSize={12}>
+            {pane.node}
+          </Panel>
+        </React.Fragment>
+      ))}
+    </PanelGroup>
   );
 
   /**
@@ -93,6 +101,14 @@ const MainLayout: React.FC = () => {
       title: '显示编辑器',
     });
   }
+  if (!previewVisible) {
+    collapsedItems.push({
+      key: 'preview',
+      icon: <Monitor className="w-3.5 h-3.5" />,
+      label: '预览',
+      title: '显示预览（点选页面元素即可改源码）',
+    });
+  }
   if (!terminalVisible) {
     collapsedItems.push({
       key: 'terminal',
@@ -111,7 +127,7 @@ const MainLayout: React.FC = () => {
   }
 
   /** 任一可见面板存在时，折叠条才作为「侧栏」贴在最后一个可见面板右侧 */
-  const hasVisiblePanel = chatVisible || editorVisible || terminalVisible || explorerVisible;
+  const hasVisiblePanel = chatVisible || editorVisible || previewVisible || terminalVisible || explorerVisible;
 
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-background text-foreground">
@@ -124,7 +140,7 @@ const MainLayout: React.FC = () => {
               <Panel defaultSize={50} minSize={25}>
                 <div className="flex flex-col h-full">
                   {/* 头部：标题 + 隐藏按钮（与其他面板一致） */}
-                  <div className="flex items-center justify-between px-2.5 py-1.5 border-b border-border bg-secondary/20 shrink-0">
+                  <div className="panel-header shrink-0">
                     <span className="flex items-center gap-1.5 text-[11px] text-foreground/80 font-medium">
                       <MessageCircle className="w-3 h-3 text-primary" />
                       对话
@@ -147,8 +163,8 @@ const MainLayout: React.FC = () => {
             </>
           )}
 
-          {/* 中间：编辑区（编辑器 + 终端） */}
-          {(editorVisible || terminalVisible) && (
+          {/* 中间：编辑区（编辑器 + 预览 + 终端） */}
+          {(editorVisible || previewVisible || terminalVisible) && (
             <Panel defaultSize={40} minSize={20}>
               <div className="flex flex-col h-full">{editorArea}</div>
             </Panel>
@@ -161,7 +177,7 @@ const MainLayout: React.FC = () => {
               <Panel defaultSize={16} minSize={8}>
                 <div className="flex flex-col h-full">
                   {/* 顶部标签栏：标题 + 关闭按钮 */}
-                  <div className="flex items-center justify-between px-2.5 py-1.5 border-b border-border bg-secondary/20 shrink-0">
+                  <div className="panel-header shrink-0">
                     <div className="flex items-center gap-1.5 text-[11px] text-foreground/80 font-medium">
                       <FolderTree className="w-3 h-3 text-amber-400" />
                       资源管理器

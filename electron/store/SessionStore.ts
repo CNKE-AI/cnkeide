@@ -16,6 +16,8 @@ export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
   content: string | any[];
+  /** 用户原话：content 可能已被 @文件 注入全文占满，回显与历史都用这个 */
+  displayContent?: string;
   thinking?: string;
   toolCalls?: any[];
   timestamp: number;

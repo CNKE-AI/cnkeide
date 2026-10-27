@@ -1,19 +1,64 @@
 import React, { useState } from 'react';
 import { useUiStore, derivePlan, PlanStep } from '../../store/uiStore';
 import {
-  CheckCircle2, Circle, Loader2, XCircle, MinusCircle, ListTodo,
-  ChevronDown, ChevronRight,
+  Check, X, Minus, Loader2, ListTodo, ChevronDown, ChevronRight,
 } from 'lucide-react';
 
-const STATUS_META: Record<PlanStep['status'], { icon: React.ReactNode; cls: string; label: string }> = {
-  pending: { icon: <Circle className="w-3.5 h-3.5" />, cls: 'text-muted-foreground', label: '待处理' },
-  running: { icon: <Loader2 className="w-3.5 h-3.5 animate-spin" />, cls: 'text-cyan-400', label: '执行中' },
-  completed: { icon: <CheckCircle2 className="w-3.5 h-3.5" />, cls: 'text-emerald-400', label: '已完成' },
-  failed: { icon: <XCircle className="w-3.5 h-3.5" />, cls: 'text-rose-400', label: '失败' },
-  skipped: { icon: <MinusCircle className="w-3.5 h-3.5" />, cls: 'text-amber-400/70', label: '已跳过' },
+import { toast } from '../../utils/toast';
+/**
+ * 节点样式：每个步骤对应一个节点，状态通过节点描边/底色区分。
+ * line 是节点之间的横向连接线颜色，用来把「已完成 → 当前 → 待执行」串成一条进度轨道。
+ */
+const NODE_STYLE: Record<
+  PlanStep['status'],
+  { ring: string; line: string; icon: React.ReactNode | null; label: string; text: string }
+> = {
+  pending: {
+    ring: 'border-border/70 bg-background text-muted-foreground',
+    line: 'bg-border/50',
+    icon: null,
+    label: '待处理',
+    text: 'text-muted-foreground',
+  },
+  running: {
+    ring: 'border-cyan-500/60 bg-cyan-500/10 text-cyan-600 ring-2 ring-cyan-500/15',
+    line: 'bg-gradient-to-r from-cyan-500/60 to-border/40',
+    icon: <Loader2 className="h-3.5 w-3.5 animate-spin" />,
+    label: '执行中',
+    text: 'text-foreground',
+  },
+  completed: {
+    ring: 'border-emerald-500/50 bg-emerald-500/10 text-emerald-600',
+    line: 'bg-emerald-500/40',
+    icon: <Check className="h-3.5 w-3.5" />,
+    label: '已完成',
+    text: 'text-foreground/70',
+  },
+  failed: {
+    ring: 'border-rose-500/50 bg-rose-500/10 text-rose-600',
+    line: 'bg-rose-500/35',
+    icon: <X className="h-3.5 w-3.5" />,
+    label: '失败',
+    text: 'text-rose-500',
+  },
+  skipped: {
+    ring: 'border-amber-500/40 bg-amber-500/10 text-amber-600',
+    line: 'bg-border/40',
+    icon: <Minus className="h-3.5 w-3.5" />,
+    label: '已跳过',
+    text: 'text-muted-foreground',
+  },
 };
 
-/** 计划面板：可视化展示 AI 的任务计划步骤与执行进度 */
+const LABEL_CLS: Record<PlanStep['status'], string> = {
+  pending: 'text-muted-foreground',
+  running: 'text-cyan-600',
+  completed: 'text-emerald-600',
+  failed: 'text-rose-600',
+  skipped: 'text-amber-600',
+};
+
+/** 计划面板：以横向节点进度条紧凑展示 AI 的任务步骤与执行进度 */
 const PlanPanel: React.FC<{ sessionId?: string }> = ({ sessionId }) => {
   const { plan, setPlan } = useUiStore();
   // plan IPC 返回的是 { plan, progress }（步骤在 plan.items 里），
@@ -34,7 +79,7 @@ const PlanPanel: React.FC<{ sessionId?: string }> = ({ sessionId }) => {
       applyPlan(await fn());
     } catch (err) {
       // 保留现有状态，仅提示；不做乐观更新，避免假状态蒙蔽用户
-      alert(`计划操作「${label}」失败：${err instanceof Error ? err.message : String(err)}`);
+      toast.error(`计划操作「${label}」失败：${err instanceof Error ? err.message : String(err)}`);
     }
   };
 
@@ -43,6 +88,8 @@ const PlanPanel: React.FC<{ sessionId?: string }> = ({ sessionId }) => {
   const abandonPlan = () => void runPlanAction('中止', () => window.cnke.plan.abandon(sessionId!));
   // 默认展开；步骤多时用户可手动收起，避免长计划占满对话区
   const [collapsed, setCollapsed] = useState(false);
+  // 横向轨道只显示节点，详细文本/错误/操作按需在下方展开，避免占用过多竖向空间
+  const [activeId, setActiveId] = useState<string | null>(null);
 
   // 防御性取值：store 里的 plan 只要结构异常过一次就会让整个面板崩溃，
   // 而崩溃点在这个组件里，代价却是整个应用黑屏。宁可降级为"不渲染"。
@@ -54,82 +101,129 @@ const PlanPanel: React.FC<{ sessionId?: string }> = ({ sessionId }) => {
   // progress 缺失时用本地 steps 兜底统计，保证计数器不会一直显示 0/N
   const doneCount = progress?.done ?? steps.filter((s) => s.status === 'completed').length;
   const failedCount = progress?.failed ?? steps.filter((s) => s.status === 'failed').length;
+  const runningCount = progress?.running ?? steps.filter((s) => s.status === 'running').length;
   const donePct = total > 0 ? Math.round((doneCount / total) * 100) : 0;
 
+  const activeStep = activeId ? steps.find((s) => s.id === activeId) || null : null;
+  const activeIdx = activeStep ? steps.indexOf(activeStep) : -1;
+  const activeMeta = activeStep ? NODE_STYLE[activeStep.status] : null;
+
   return (
-    <div className="mx-3 mt-3 rounded-xl border border-border/80 bg-card/70 shadow-sm overflow-hidden">
+    <div className="mx-3 mt-3 rounded-2xl border border-border/70 bg-card/80 shadow-lg shadow-black/10 overflow-hidden">
       <button
         type="button"
         onClick={() => setCollapsed((v) => !v)}
-        className="w-full flex items-center justify-between px-3 py-2 border-b border-border bg-secondary/10 hover:bg-secondary/20 transition-colors"
+        className="w-full flex items-center justify-between px-4 py-3 border-b border-border/70 bg-gradient-to-r from-cyan-500/5 via-transparent to-violet-500/5 hover:bg-secondary/20 transition-colors"
         title={collapsed ? '展开计划' : '收起计划'}
       >
-        <div className="flex items-center gap-1.5 text-[12px] font-medium text-foreground min-w-0">
+        <div className="flex items-center gap-2 text-[13px] font-semibold text-foreground min-w-0">
           {collapsed
             ? <ChevronRight className="w-3.5 h-3.5 shrink-0 text-muted-foreground" />
             : <ChevronDown className="w-3.5 h-3.5 shrink-0 text-muted-foreground" />}
           <ListTodo className="w-3.5 h-3.5 shrink-0 text-cyan-400" />
           <span className="truncate">{plan.title}</span>
         </div>
-        <div className="flex items-center gap-2 text-[11px] text-muted-foreground shrink-0">
-          {failedCount > 0 && <span className="text-rose-400">失败 {failedCount}</span>}
-          {sessionId && <span onClick={(e) => { e.stopPropagation(); void abandonPlan(); }} className="text-rose-300 hover:text-rose-200">中止</span>}
-          <span className="tabular-nums font-medium">
+        <div className="flex items-center gap-2 text-[11px] shrink-0">
+          {runningCount > 0 && <span className="rounded-full bg-cyan-500/10 px-2 py-0.5 text-cyan-600">执行中 {runningCount}</span>}
+          {failedCount > 0 && <span className="rounded-full bg-rose-500/10 px-2 py-0.5 text-rose-600">失败 {failedCount}</span>}
+          {sessionId && <span onClick={(e) => { e.stopPropagation(); void abandonPlan(); }} className="rounded-md px-2 py-1 text-rose-600 hover:bg-rose-500/10">中止</span>}
+          <span className="rounded-full bg-secondary/60 px-2.5 py-1 font-semibold tabular-nums text-foreground">
             {doneCount}/{total}
           </span>
         </div>
       </button>
 
-      {/* 进度条 */}
-      <div className="h-0.5 bg-secondary/40">
+      {/* 总进度条 */}
+      <div className="h-1 bg-secondary/30">
         <div
-          className={`h-full transition-all duration-300 ${failedCount > 0 ? 'bg-rose-500' : 'bg-cyan-500'}`}
+          className="h-full rounded-full transition-all duration-500 bg-gradient-to-r from-cyan-500 to-emerald-400"
           style={{ width: `${donePct}%` }}
         />
       </div>
 
       {!collapsed && (
-        <ul className="px-3 py-2 space-y-1">
-          {steps.map((step, idx) => {
-            const meta = STATUS_META[step.status] || STATUS_META.pending;
-            // 后端字段异常时兜底显示序号，避免出现无文字的空白行
-            const label = step.title?.trim() || `步骤 ${idx + 1}`;
-            const detail = [step.toolName, step.filePath].filter(Boolean).join(' · ');
-            return (
-              <li key={step.id} className="flex items-start gap-2 text-[12px]">
-                <span className={`mt-0.5 shrink-0 ${meta.cls}`}>{meta.icon}</span>
-                <span className="flex-1 leading-snug min-w-0">
-                  <span
-                    className={
-                      step.status === 'failed'
-                        ? 'text-rose-300/90'
-                        : step.status === 'completed'
-                          ? 'text-foreground/70'
-                          : 'text-foreground'
-                    }
-                  >
-                    {label}
-                  </span>
-                  {detail && (
-                    <span className="block text-[10px] text-muted-foreground/70 truncate" title={detail}>
-                      {detail}
-                    </span>
+        <div className="px-3 py-3">
+          {/* 横向节点轨道：一行展示全部步骤，超出时横向滚动 */}
+          <div className="flex items-start overflow-x-auto pb-1">
+            {steps.map((step, idx) => {
+              const ns = NODE_STYLE[step.status] || NODE_STYLE.pending;
+              const prev = idx > 0 ? steps[idx - 1] : null;
+              const isActive = activeId === step.id;
+              // 后端字段异常时兜底显示序号，避免出现无文字的空白节点
+              const label = step.title?.trim() || `步骤 ${idx + 1}`;
+              return (
+                <div key={step.id} className="flex shrink-0 items-start">
+                  {idx > 0 && (
+                    <span
+                      className={`mt-[11px] h-0.5 w-5 shrink-0 rounded-full ${prev ? NODE_STYLE[prev.status].line : 'bg-border/50'}`}
+                    />
                   )}
-                  {step.error && <span className="block text-[10px] text-rose-300/80 truncate" title={step.error}>{step.error}</span>}
-                  {sessionId && (step.status === 'pending' || step.status === 'failed' || step.status === 'skipped') && (
-                    <span className="mt-1 flex gap-2 text-[10px]">
-                      {step.status === 'pending' && <button type="button" onClick={() => void skipStep(step.id)} className="text-amber-300 hover:text-amber-200">跳过</button>}
-                      {step.status !== 'pending' && <button type="button" onClick={() => void retryStep(step.id)} className="text-cyan-300 hover:text-cyan-200">重试</button>}
+                  <button
+                    type="button"
+                    onClick={() => setActiveId(isActive ? null : step.id)}
+                    title={label}
+                    className="group flex w-[68px] shrink-0 flex-col items-center gap-1 rounded-lg py-0.5 focus:outline-none"
+                  >
+                    <span
+                      className={`flex h-6 w-6 items-center justify-center rounded-full border text-[11px] font-semibold leading-none transition-transform duration-150 group-hover:scale-110 ${ns.ring} ${isActive ? 'ring-2 ring-primary/50' : ''}`}
+                    >
+                      {ns.icon ?? <span className="tabular-nums">{idx + 1}</span>}
                     </span>
+                    <span
+                      className={`line-clamp-2 min-h-[24px] w-full text-center text-[10px] leading-tight ${isActive ? 'text-foreground' : ns.text}`}
+                    >
+                      {label}
+                    </span>
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* 点击节点后的步骤详情：仅在需要时展开，保持面板紧凑 */}
+          {activeStep && activeMeta && (
+            <div className="mt-2 rounded-xl border border-border/60 bg-background/40 px-3 py-2 text-[12px]">
+              <div className="flex items-start justify-between gap-2">
+                <span className={`flex-1 min-w-0 leading-snug ${activeMeta.text}`}>
+                  {activeStep.title?.trim() || `步骤 ${activeIdx + 1}`}
+                </span>
+                <span className={`shrink-0 text-[10px] ${LABEL_CLS[activeStep.status]}`}>{activeMeta.label}</span>
+                <button
+                  type="button"
+                  onClick={() => setActiveId(null)}
+                  className="shrink-0 text-muted-foreground hover:text-foreground"
+                  title="收起详情"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+
+              {[activeStep.toolName, activeStep.filePath].filter(Boolean).length > 0 && (
+                <span className="mt-1 block truncate text-[11px] text-muted-foreground/80">
+                  {[activeStep.toolName, activeStep.filePath].filter(Boolean).join(' · ')}
+                </span>
+              )}
+              {activeStep.error && (
+                <span className="mt-1 block break-words text-[10.5px] text-rose-600/90">{activeStep.error}</span>
+              )}
+
+              {sessionId && (activeStep.status === 'pending' || activeStep.status === 'failed' || activeStep.status === 'skipped') && (
+                <span className="mt-1.5 flex gap-3 text-[10.5px]">
+                  {activeStep.status === 'pending' && (
+                    <button type="button" onClick={() => void skipStep(activeStep.id)} className="text-amber-600 hover:text-amber-500">
+                      跳过
+                    </button>
+                  )}
+                  {activeStep.status !== 'pending' && (
+                    <button type="button" onClick={() => void retryStep(activeStep.id)} className="text-cyan-600 hover:text-cyan-500">
+                      重试
+                    </button>
                   )}
                 </span>
-                {step.status !== 'pending' && (
-                  <span className={`text-[10px] shrink-0 ${meta.cls}`}>{meta.label}</span>
-                )}
-              </li>
-            );
-          })}
-        </ul>
+              )}
+            </div>
+          )}
+        </div>
       )}
     </div>
   );

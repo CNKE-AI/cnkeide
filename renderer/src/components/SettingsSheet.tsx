@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import type { SkillView } from '../global';
+import type { SkillView, McpCatalogEntry } from '../global';
 import { useApp } from '../store/AppProvider';
-import { X, Plus, Trash2, Save, KeyRound, Cpu, Info, RefreshCw, LayoutTemplate, Cloud, Megaphone, MessageSquarePlus, Send, Inbox, Pencil, ChevronDown, ChevronRight, Wrench, Sparkles, ShieldCheck, Zap, GitBranch, Layers, Boxes, Network, ScrollText, BrainCircuit, TerminalSquare, Loader2 } from 'lucide-react';
+import { X, Plus, Trash2, Save, KeyRound, Cpu, Info, RefreshCw, LayoutTemplate, Cloud, MessageSquarePlus, Send, Inbox, Pencil, ChevronDown, ChevronRight, Wrench, Sparkles, ShieldCheck, Zap, GitBranch, Layers, Boxes, Network, ScrollText, BrainCircuit, Presentation, Gauge, Loader2 } from 'lucide-react';
 
+import { toast } from '../utils/toast';
 type TabKey = 'models' | 'agent' | 'skills' | 'about';
 
 const PROVIDERS = [
@@ -13,6 +14,67 @@ const PROVIDERS = [
   { id: 'claude', label: 'Claude', baseUrl: 'https://api.anthropic.com' },
   { id: 'ollama', label: 'Ollama', baseUrl: 'http://localhost:11434' },
   { id: 'custom', label: '自定义/中转', baseUrl: '' },
+];
+
+/** 专业版能力分组：条目均取自当前客户端已实现能力，避免出现未落地功能 */
+const PRO_GROUPS = [
+  {
+    tag: 'CORE',
+    label: 'Agent 内核 · 自主规划与执行',
+    accent: 'fuchsia',
+    items: [
+      { icon: BrainCircuit, title: '四模式 Agent 内核', desc: 'Ask 问答 / Craft 编码 / Plan 规划 / Debug 排错，各自独立的工具白名单与迭代上限' },
+      { icon: Layers, title: '任务计划状态机', desc: 'create_plan 拆解步骤，逐步推进、失败可跳过或废弃，进度实时同步到计划面板' },
+      { icon: Zap, title: '并行工具调度', desc: '按依赖拓扑排序，单轮最多 4 个工具并发：只读并发、同文件写串行、危险操作全局串行' },
+    ],
+  },
+  {
+    tag: 'CODE',
+    label: '研发闭环 · 读懂 / 改动 / 验证',
+    accent: 'cyan',
+    items: [
+      { icon: Network, title: '三路混合检索', desc: '关键词 + Embedding 语义 + 符号引用融合排序，代码块增量索引，改动后即时生效' },
+      { icon: GitBranch, title: 'Checkpoint 快照回滚', desc: '每轮改动自动留痕，逐文件 unified diff 可查，一键回到任意快照' },
+      { icon: ShieldCheck, title: '审批与信任规则', desc: '按工具名 / 路径 / 命令 glob 自动放行或询问，写盘与命令执行默认需确认' },
+    ],
+  },
+  {
+    tag: 'DELIVER',
+    label: '交付能力 · 从代码到演示文稿',
+    accent: 'violet',
+    items: [
+      { icon: Presentation, title: 'AI 演示文稿', desc: '扫描工作区提炼大纲，4 套主题 × 7 类版式，可套用在线模板，导出 PPTX / PDF' },
+      { icon: Sparkles, title: '浏览器自动化与图片生成', desc: '6 个 browser_* 动作完成导航 / 点击 / 输入 / 截图 / 取文，image_generate 直出配图' },
+      { icon: ScrollText, title: '文档问答 RAG', desc: 'doc_ingest 直接摄入 PDF / DOCX / HTML / Markdown，检索结果带 [1][2] 编号引用' },
+    ],
+  },
+  {
+    tag: 'PLATFORM',
+    label: '平台与生态 · 模型 / 扩展 / 更新',
+    accent: 'emerald',
+    items: [
+      { icon: Cpu, title: '多模型智能路由', desc: '按任务类型与 @模型 指定自动选档，内置 17+ 模型能力矩阵，主模型失败自动切备用' },
+      { icon: Boxes, title: 'MCP 客户端与技能市场', desc: '任意 MCP 服务器（stdio / http）即插即用，技能一键安装启用' },
+      { icon: Gauge, title: '上下文追踪与记忆', desc: '实时上下文占用分档提示 + 长会话自动压缩，跨会话保留工作区与偏好' },
+      { icon: Cloud, title: '差分增量更新', desc: '后台静默检测，blockmap 差分下载，支持强制更新兜底' },
+    ],
+  },
+] as const;
+
+/** 分组配色：类名需静态出现，故用映射表而非模板字符串拼接 */
+const ACCENT_STYLES: Record<string, { chip: string; icon: string }> = {
+  fuchsia: { chip: 'from-fuchsia-500 to-violet-500', icon: 'text-fuchsia-400' },
+  cyan: { chip: 'from-cyan-500 to-blue-500', icon: 'text-cyan-400' },
+  violet: { chip: 'from-violet-500 to-fuchsia-500', icon: 'text-violet-400' },
+  emerald: { chip: 'from-emerald-500 to-teal-500', icon: 'text-emerald-400' },
+};
+
+/** 专业版关键指标 */
+const PRO_STATS: { value: string; label: string }[] = [
+  { value: '39', label: '内置工具' },
+  { value: '4', label: '交互模式' },
+  { value: '3', label: '路混合检索' },
+  { value: '7', label: '类演示版式' },
 ];
 
 
@@ -73,9 +135,22 @@ const SettingsSheet: React.FC = () => {
   const [mcpExpanded, setMcpExpanded] = useState<Record<string, boolean>>({});
   const [mcpTools, setMcpTools] = useState<Record<string, any[]>>({});
   const [mcpToolsLoading, setMcpToolsLoading] = useState<Record<string, boolean>>({});
+  // MCP 市场
+  const [mcpSubTab, setMcpSubTab] = useState<'installed' | 'catalog'>('installed');
+  const [mcpCatalog, setMcpCatalog] = useState<McpCatalogEntry[]>([]);
+  const [mcpCatalogLoading, setMcpCatalogLoading] = useState(false);
 
   const reloadMcpServers = async () => {
     setMcpServers(await window.cnke.mcp.listServers() || []);
+  };
+
+  const reloadMcpCatalog = async (forceRefresh = false) => {
+    setMcpCatalogLoading(true);
+    try {
+      setMcpCatalog(await window.cnke.mcp.getCatalog(forceRefresh) || []);
+    } finally {
+      setMcpCatalogLoading(false);
+    }
   };
 
   const reloadSkills = async (refresh = false) => {
@@ -124,7 +199,7 @@ const SettingsSheet: React.FC = () => {
       if (res.success) {
         setMcpTools((prev) => ({ ...prev, [id]: res.tools || [] }));
       } else {
-        alert(res.error || '刷新失败');
+        toast.error(res.error || '刷新失败');
       }
       await reloadMcpServers();
     } finally {
@@ -262,7 +337,7 @@ const SettingsSheet: React.FC = () => {
     if (existing) {
       await window.cnke.config.set('activeApiConfigId', existing.id);
       setActiveId(existing.id);
-      return alert(`已启用官方内置模型「${m.name}」`);
+      return toast.success(`已启用官方内置模型「${m.name}」`);
     }
     const cfg: ApiConfig = {
       id: localId,
@@ -278,9 +353,9 @@ const SettingsSheet: React.FC = () => {
       setApiConfigs(list);
       await window.cnke.config.set('activeApiConfigId', localId);
       setActiveId(localId);
-      alert(`已导入并启用官方内置模型「${m.name}」`);
+      toast.success(`已导入并启用官方内置模型「${m.name}」`);
     } else {
-      alert(result.error || '导入失败');
+      toast.error(result.error || '导入失败');
     }
   };
 
@@ -293,10 +368,10 @@ const SettingsSheet: React.FC = () => {
       if (res.success) {
         setFeedbackMsg('');
         setFeedbackContact('');
-        alert('反馈已提交，感谢你的支持！');
+        toast.success('反馈已提交，感谢你的支持！');
         void loadFeedback();
       } else {
-        alert(res.error || '提交失败，请稍后重试');
+        toast.error(res.error || '提交失败，请稍后重试');
       }
     } finally {
       setFeedbackSending(false);
@@ -333,7 +408,7 @@ const SettingsSheet: React.FC = () => {
     };
     await window.cnke.config.set('agentConfig', next);
     setAgentCfg(next);
-    alert('Agent 设置已保存');
+    toast.success('Agent 设置已保存');
   };
 
   const saveApiConfig = async () => {
@@ -343,7 +418,7 @@ const SettingsSheet: React.FC = () => {
       setApiConfigs(((await window.cnke.config.getApiKeyConfigs()) || []) as ApiConfig[]);
       setEditing(null);
     } else {
-      alert(result.error);
+      toast.error(result.error);
     }
   };
 
@@ -387,7 +462,7 @@ const SettingsSheet: React.FC = () => {
     }
     const res = await window.cnke.mcp.addServer(payload);
     if (!res.success) {
-      alert(res.error || '保存失败');
+      toast.error(res.error || '保存失败');
       return;
     }
     await reloadMcpServers();
@@ -400,7 +475,7 @@ const SettingsSheet: React.FC = () => {
     if (result.success) {
       setSkills(result.skills);
     } else {
-      alert(result.error || '更新技能状态失败');
+      toast.error(result.error || '更新技能状态失败');
     }
   };
 
@@ -413,7 +488,7 @@ const SettingsSheet: React.FC = () => {
 
   return (
     <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setSettingsOpen(false)}>
-      <div className="bg-card border border-border rounded-xl shadow-2xl w-[700px] max-w-[94vw] max-h-[86vh] flex overflow-hidden" onClick={(e) => e.stopPropagation()}>
+      <div className="settings-sheet bg-card border border-border rounded-xl shadow-2xl w-[760px] max-w-[94vw] max-h-[86vh] flex overflow-hidden" onClick={(e) => e.stopPropagation()}>
         {/* 侧边栏 */}
         <div className="w-40 border-r border-border bg-secondary/20 p-2 flex flex-col shrink-0">
           <div className="flex items-center justify-between px-2 py-2">
@@ -731,103 +806,181 @@ const SettingsSheet: React.FC = () => {
 
               <div className="border-t border-border pt-3">
                 <div className="flex items-center justify-between mb-2">
-                  <h3 className="text-sm font-semibold">MCP 服务器</h3>
-                  <button
-                    onClick={() => setMcpEditing({ id: '', name: '', protocol: 'stdio', command: '', args: '', url: '', enabled: true })}
-                    className="flex items-center gap-1 text-xs bg-primary text-primary-foreground px-2 py-1 rounded-md hover:bg-primary/80 transition-colors"
-                  >
-                    <Plus className="w-3 h-3" /> 添加
-                  </button>
+                  <div className="flex items-center gap-1 bg-secondary rounded-md p-0.5">
+                    <button
+                      onClick={() => setMcpSubTab('installed')}
+                      className={`px-2.5 py-1 text-[11px] rounded transition-colors ${mcpSubTab === 'installed' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+                    >
+                      已装服务器 ({mcpServers.length})
+                    </button>
+                    <button
+                      onClick={() => { setMcpSubTab('catalog'); if (mcpCatalog.length === 0) void reloadMcpCatalog(); }}
+                      className={`px-2.5 py-1 text-[11px] rounded transition-colors ${mcpSubTab === 'catalog' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+                    >
+                      MCP 市场
+                    </button>
+                  </div>
+                  {mcpSubTab === 'installed' ? (
+                    <button
+                      onClick={() => setMcpEditing({ id: '', name: '', protocol: 'stdio', command: '', args: '', url: '', enabled: true })}
+                      className="flex items-center gap-1 text-xs bg-primary text-primary-foreground px-2 py-1 rounded-md hover:bg-primary/80 transition-colors"
+                    >
+                      <Plus className="w-3 h-3" /> 添加
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => void reloadMcpCatalog(true)}
+                      disabled={mcpCatalogLoading}
+                      className="flex items-center gap-1 text-[11px] border border-border rounded px-2 py-1 hover:bg-accent disabled:opacity-50"
+                    >
+                      <RefreshCw className={`w-3 h-3 ${mcpCatalogLoading ? 'animate-spin' : ''}`} /> 刷新目录
+                    </button>
+                  )}
                 </div>
-                {mcpServers.length === 0 ? (
-                  <div className="text-xs text-muted-foreground text-center py-5 border border-dashed border-border rounded-lg">暂无 MCP 服务器配置，点击右上角添加</div>
-                ) : (
-                  <div className="space-y-2">
-                    {mcpServers.map((s) => (
-                      <div key={s.id} className={`border rounded-lg overflow-hidden transition-colors ${mcpExpanded[s.id] ? 'border-primary/40 bg-secondary/10' : 'border-border'}`}>
-                        {/* 主行（点击展开工具详情） */}
-                        <div className="flex items-center justify-between px-3 py-2.5 cursor-pointer hover:bg-accent/30 transition-colors" onClick={() => void toggleMcpExpand(s.id)}>
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-1.5">
-                              {mcpExpanded[s.id]
-                                ? <ChevronDown className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-                                : <ChevronRight className="w-3.5 h-3.5 text-muted-foreground shrink-0" />}
-                              <span className={`w-2 h-2 rounded-full shrink-0 ${mcpDotClass(s)}`} />
-                              <span className="text-xs font-semibold">{s.name}</span>
-                              <span className="text-[10px] px-1 py-0.5 rounded bg-secondary text-muted-foreground shrink-0">{s.protocol}</span>
-                            </div>
-                            <div className="text-[11px] text-muted-foreground truncate mt-0.5 pl-5">{s.command ? `${s.command} ${(s.args || []).join(' ')}` : s.url}</div>
-                            <div className={`text-[11px] mt-0.5 pl-5 ${s.status === 'error' ? 'text-red-400' : 'text-muted-foreground'}`}>
-                              {s.status === 'error' ? `⚠ ${s.error || mcpStatusText(s)}` : mcpStatusText(s)}
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-1 ml-2 shrink-0" onClick={(e) => e.stopPropagation()}>
-                            <button
-                              onClick={() => { void (async () => {
-                                const r = await window.cnke.mcp.toggleServer(s.id, !s.enabled);
-                                if (!r.success) alert(r.error || '操作失败');
-                                await reloadMcpServers();
-                              })(); }}
-                              className={`px-2 py-1 text-[11px] rounded-md transition-colors ${s.enabled ? 'bg-secondary text-muted-foreground hover:bg-accent' : 'bg-primary/20 text-primary hover:bg-primary/30'}`}
-                            >
-                              {s.enabled ? '禁用' : '启用'}
-                            </button>
-                            <button
-                              onClick={() => void refreshMcpTools(s.id)}
-                              disabled={mcpToolsLoading[s.id]}
-                              className="p-1.5 hover:bg-accent rounded transition-colors disabled:opacity-50"
-                              title={s.status === 'error' ? '重新连接并获取工具' : '刷新工具列表'}
-                            >
-                              <RefreshCw className={`w-3.5 h-3.5 ${mcpToolsLoading[s.id] ? 'animate-spin' : ''}`} />
-                            </button>
-                            <button onClick={() => setMcpEditing({ id: s.id, name: s.name, protocol: s.protocol, command: s.command || '', args: (s.args || []).join(' '), url: s.url || '', enabled: s.enabled })} className="p-1.5 hover:bg-accent rounded transition-colors" title="编辑">
-                              <Pencil className="w-3.5 h-3.5" />
-                            </button>
-                            <button onClick={() => { void (async () => { await window.cnke.mcp.removeServer(s.id); await reloadMcpServers(); })(); }} className="p-1.5 hover:bg-red-500/20 hover:text-red-400 rounded transition-colors" title="删除">
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        </div>
-                        {/* 展开：工具列表 + 错误/stderr */}
-                        {mcpExpanded[s.id] && (
-                          <div className="border-t border-border px-3 py-2.5 space-y-2">
-                            {mcpToolsLoading[s.id] ? (
-                              <div className="text-[11px] text-muted-foreground flex items-center gap-1.5">
-                                <RefreshCw className="w-3 h-3 animate-spin" /> 获取工具中…
-                              </div>
-                            ) : (
-                              <>
-                                <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                                  <Wrench className="w-3 h-3" />
-                                  已发现工具（{(mcpTools[s.id] || []).length}）
+
+                {/* 已装服务器 */}
+                {mcpSubTab === 'installed' && (
+                  <>
+                    {mcpServers.length === 0 ? (
+                      <div className="text-xs text-muted-foreground text-center py-5 border border-dashed border-border rounded-lg">暂无 MCP 服务器配置，点击右上角添加或从 MCP 市场安装</div>
+                    ) : (
+                      <div className="space-y-2">
+                        {mcpServers.map((s) => (
+                          <div key={s.id} className={`border rounded-lg overflow-hidden transition-colors ${mcpExpanded[s.id] ? 'border-primary/40 bg-secondary/10' : 'border-border'}`}>
+                            <div className="flex items-center justify-between px-3 py-2.5 cursor-pointer hover:bg-accent/30 transition-colors" onClick={() => void toggleMcpExpand(s.id)}>
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-1.5">
+                                  {mcpExpanded[s.id]
+                                    ? <ChevronDown className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+                                    : <ChevronRight className="w-3.5 h-3.5 text-muted-foreground shrink-0" />}
+                                  <span className={`w-2 h-2 rounded-full shrink-0 ${mcpDotClass(s)}`} />
+                                  <span className="text-xs font-semibold">{s.name}</span>
+                                  <span className="text-[10px] px-1 py-0.5 rounded bg-secondary text-muted-foreground shrink-0">{s.protocol}</span>
                                 </div>
-                                {(mcpTools[s.id] || []).length === 0 ? (
-                                  <div className="text-[11px] text-muted-foreground/80 text-center py-2 border border-dashed border-border rounded">
-                                    {s.status === 'connected' ? '服务器未返回任何工具' : '服务器未连接，点右侧刷新按钮连接并获取工具'}
+                                <div className="text-[11px] text-muted-foreground truncate mt-0.5 pl-5">{s.command ? `${s.command} ${(Array.isArray(s.args) ? s.args.join(' ') : typeof s.args === 'string' ? s.args : '')}` : s.url}</div>
+                                <div className={`text-[11px] mt-0.5 pl-5 ${s.status === 'error' ? 'text-red-400' : 'text-muted-foreground'}`}>
+                                  {s.status === 'error' ? `⚠ ${s.error || mcpStatusText(s)}` : mcpStatusText(s)}
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-1 ml-2 shrink-0" onClick={(e) => e.stopPropagation()}>
+                                <button
+                                  onClick={() => { void (async () => {
+                                    const r = await window.cnke.mcp.toggleServer(s.id, !s.enabled);
+                                    if (!r.success) toast.error(r.error || '操作失败');
+                                    await reloadMcpServers();
+                                  })(); }}
+                                  className={`px-2 py-1 text-[11px] rounded-md transition-colors ${s.enabled ? 'bg-secondary text-muted-foreground hover:bg-accent' : 'bg-primary/20 text-primary hover:bg-primary/30'}`}
+                                >
+                                  {s.enabled ? '禁用' : '启用'}
+                                </button>
+                                <button
+                                  onClick={() => void refreshMcpTools(s.id)}
+                                  disabled={mcpToolsLoading[s.id]}
+                                  className="p-1.5 hover:bg-accent rounded transition-colors disabled:opacity-50"
+                                  title={s.status === 'error' ? '重新连接并获取工具' : '刷新工具列表'}
+                                >
+                                  <RefreshCw className={`w-3.5 h-3.5 ${mcpToolsLoading[s.id] ? 'animate-spin' : ''}`} />
+                                </button>
+                                <button onClick={() => setMcpEditing({ id: s.id, name: s.name, protocol: s.protocol, command: s.command || '', args: (Array.isArray(s.args) ? s.args.join(' ') : typeof s.args === 'string' ? s.args : ''), url: s.url || '', enabled: s.enabled })} className="p-1.5 hover:bg-accent rounded transition-colors" title="编辑">
+                                  <Pencil className="w-3.5 h-3.5" />
+                                </button>
+                                <button onClick={() => { void (async () => { await window.cnke.mcp.removeServer(s.id); await reloadMcpServers(); })(); }} className="p-1.5 hover:bg-red-500/20 hover:text-red-400 rounded transition-colors" title="删除">
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </div>
+                            {mcpExpanded[s.id] && (
+                              <div className="border-t border-border px-3 py-2.5 space-y-2">
+                                {mcpToolsLoading[s.id] ? (
+                                  <div className="text-[11px] text-muted-foreground flex items-center gap-1.5">
+                                    <RefreshCw className="w-3 h-3 animate-spin" /> 获取工具中…
                                   </div>
                                 ) : (
-                                  <div className="max-h-44 overflow-y-auto space-y-1">
-                                    {(mcpTools[s.id] || []).map((t) => (
-                                      <div key={t.name} className="flex items-center gap-2 bg-background/60 border border-border/60 rounded px-2 py-1" title={t.description || ''}>
-                                        <span className="text-[11px] font-mono text-cyan-300 shrink-0">{t.name}</span>
-                                        <span className="text-[10px] text-muted-foreground truncate">{t.description || '无描述'}</span>
+                                  <>
+                                    <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                                      <Wrench className="w-3 h-3" />
+                                      已发现工具（{(mcpTools[s.id] || []).length}）
+                                    </div>
+                                    {(mcpTools[s.id] || []).length === 0 ? (
+                                      <div className="text-[11px] text-muted-foreground/80 text-center py-2 border border-dashed border-border rounded">
+                                        {s.status === 'connected' ? '服务器未返回任何工具' : '服务器未连接，点右侧刷新按钮连接并获取工具'}
                                       </div>
-                                    ))}
-                                  </div>
+                                    ) : (
+                                      <div className="max-h-44 overflow-y-auto space-y-1">
+                                        {(mcpTools[s.id] || []).map((t) => (
+                                          <div key={t.name} className="flex items-center gap-2 bg-background/60 border border-border/60 rounded px-2 py-1" title={t.description || ''}>
+                                            <span className="text-[11px] font-mono text-cyan-300 shrink-0">{t.name}</span>
+                                            <span className="text-[10px] text-muted-foreground truncate">{t.description || '无描述'}</span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                    {(s.status === 'error' || s.error) && (
+                                      <div className="text-[11px] text-red-400/90 border border-red-500/20 bg-red-500/5 rounded px-2 py-1.5 whitespace-pre-wrap break-all">
+                                        {s.error}
+                                        {s.lastStderr ? `\n[stderr]\n${s.lastStderr.slice(-800)}` : ''}
+                                      </div>
+                                    )}
+                                  </>
                                 )}
-                                {(s.status === 'error' || s.error) && (
-                                  <div className="text-[11px] text-red-400/90 border border-red-500/20 bg-red-500/5 rounded px-2 py-1.5 whitespace-pre-wrap break-all">
-                                    {s.error}
-                                    {s.lastStderr ? `\n[stderr]\n${s.lastStderr.slice(-800)}` : ''}
-                                  </div>
-                                )}
-                              </>
+                              </div>
                             )}
                           </div>
-                        )}
+                        ))}
                       </div>
-                    ))}
-                  </div>
+                    )}
+                  </>
+                )}
+
+                {/* MCP 市场 */}
+                {mcpSubTab === 'catalog' && (
+                  <>
+                    {mcpCatalogLoading ? (
+                      <div className="text-xs text-muted-foreground text-center py-8 flex items-center justify-center gap-2">
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" /> 正在加载 MCP 目录…
+                      </div>
+                    ) : mcpCatalog.length === 0 ? (
+                      <div className="text-xs text-muted-foreground text-center py-5 border border-dashed border-border rounded-lg">
+                        目录为空，点击右上角"刷新目录"重试（离线预设始终可用）
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-2 gap-3 max-h-[440px] overflow-y-auto pr-1">
+                        {mcpCatalog.map((entry) => {
+                          const installed = mcpServers.some((s: any) =>
+                            (entry.source === 'builtin'
+                              ? s.command === entry.installConfig.command && (s.args || '').includes(entry.installConfig.args?.split(' ')[0] || '')
+                              : s.url === entry.installConfig.url)
+                          );
+                          return (
+                            <div key={entry.id} className="min-w-0 border border-border/80 bg-background/40 rounded-xl p-3 hover:border-primary/40 hover:bg-secondary/30 transition-colors">
+                              <div className="flex items-center gap-1.5">
+                                <span className={`text-[9px] px-1 py-0.5 rounded shrink-0 ${entry.source === 'builtin' ? 'bg-primary/20 text-primary' : 'bg-secondary text-muted-foreground'}`}>
+                                  {entry.source === 'builtin' ? '离线预设' : '官方目录'}
+                                </span>
+                                {entry.version && <span className="text-[9px] text-muted-foreground shrink-0">v{entry.version}</span>}
+                                <button
+                                  onClick={() => { void (async () => {
+                                    const r = await window.cnke.mcp.installFromCatalog(entry);
+                                    if (!r.success) toast.error(r.error || '安装失败');
+                                    await reloadMcpServers();
+                                  })(); }}
+                                  disabled={installed}
+                                  className={`ml-auto flex items-center gap-1 px-2 py-1 text-[10px] rounded-md shrink-0 transition-colors ${installed ? 'bg-secondary text-muted-foreground cursor-not-allowed' : 'bg-primary text-primary-foreground hover:bg-primary/80'}`}
+                                >
+                                  {installed ? '已装' : <><Plus className="w-2.5 h-2.5" />安装</>}
+                                </button>
+                              </div>
+                              <div className="text-[13px] font-semibold mt-3 truncate">{entry.name}</div>
+                              <p className="text-xs text-muted-foreground mt-1 leading-relaxed line-clamp-2 min-h-[39px]">{entry.description || '暂无描述'}</p>
+                              <div className="text-xs text-muted-foreground mt-3 pt-2 border-t border-border/60 font-mono truncate">
+                                {entry.installConfig.protocol === 'http' ? entry.installConfig.url : `${entry.installConfig.command} ${(entry.installConfig.args || '').split(' ').slice(0, 3).join(' ')}…`}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
 
@@ -884,87 +1037,67 @@ const SettingsSheet: React.FC = () => {
                 <div className="w-16 h-16 rounded-2xl mx-auto mb-3 overflow-hidden">
                   <img src="./logo.png" alt="CnkeIDE" className="w-16 h-16 object-contain" />
                 </div>
-                <h3 className="text-lg font-bold bg-gradient-to-r from-cyan-300 via-violet-300 to-fuchsia-300 bg-clip-text text-transparent">CnkeIDE</h3>
-                <p className="text-xs text-muted-foreground mt-1">独立 Electron 桌面 AI 编程 IDE</p>
-                <p className="text-xs text-muted-foreground mt-0.5">版本 {appVersion}</p>
+                <div className="flex items-center justify-center gap-1.5">
+                  <h3 className="text-lg font-bold bg-gradient-to-r from-cyan-300 via-violet-300 to-fuchsia-300 bg-clip-text text-transparent">CnkeIDE</h3>
+                  <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-gradient-to-r from-fuchsia-500 to-violet-500 text-white">专业版</span>
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">自研 Agent 内核的独立桌面 AI 编程 IDE</p>
+                <p className="text-xs text-muted-foreground mt-0.5">版本 {appVersion} · 全部能力已内置</p>
                 <div className="mt-3 text-[11px] text-muted-foreground leading-relaxed">
-                  <p>基于 Electron + React + CodeMirror 6</p>
-                  <p>自研 Agent 内核 · 多模型支持 · MCP 客户端 · 技能市场</p>
+                  <p>Electron + React + CodeMirror 6</p>
+                  <p>主进程与 Agent 子进程隔离 · 工作区文件不出本机</p>
                 </div>
               </div>
 
-              {/* 核心优势 */}
+              {/* 关键指标 */}
+              <div className="mt-4 grid grid-cols-2 gap-1.5">
+                {PRO_STATS.map((s) => (
+                  <div key={s.label} className="border border-border rounded-lg py-2 bg-secondary/30 text-center">
+                    <div className="text-sm font-bold bg-gradient-to-r from-cyan-300 to-violet-300 bg-clip-text text-transparent">{s.value}</div>
+                    <div className="text-[10px] text-muted-foreground mt-0.5">{s.label}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* 专业版能力 */}
               <div className="mt-5 text-left">
                 <div className="flex items-center gap-2 mb-2">
                   <Sparkles className="w-4 h-4 text-fuchsia-400" />
-                  <h3 className="text-sm font-semibold text-fuchsia-300">核心优势</h3>
+                  <h3 className="text-sm font-semibold text-fuchsia-300">专业版能力</h3>
                 </div>
 
-                {/* T0 级别：旗舰能力 */}
-                <div className="mb-1.5 flex items-center gap-1.5">
-                  <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-gradient-to-r from-fuchsia-500 to-violet-500 text-white">T0</span>
-                  <span className="text-[10px] text-muted-foreground">旗舰能力 · 业界领先</span>
-                </div>
-                <div className="grid grid-cols-1 gap-1.5 mb-3">
-                  {[
-                    { icon: BrainCircuit, title: '自研多 Agent 内核', desc: 'Ask / Craft / Plan / Debug 四模式，任务规划 + 并行调度 + 子 Agent 协作' },
-                    { icon: ShieldCheck, title: '工具审批与信任规则', desc: '按工具/路径/命令自动放行，Checkpoint 快照可一键回滚' },
-                    { icon: Boxes, title: 'extension / MCP 客户端', desc: '接入任意 MCP 服务器，技能市场即装即用' },
-                  ].map((f) => (
-                    <div key={f.title} className="flex items-start gap-2 border border-border rounded-lg p-2 bg-secondary/30">
-                      <f.icon className="w-4 h-4 text-fuchsia-400 mt-0.5 shrink-0" />
-                      <div className="min-w-0">
-                        <div className="text-xs font-medium text-foreground">{f.title}</div>
-                        <div className="text-[10px] text-muted-foreground leading-relaxed">{f.desc}</div>
-                      </div>
+                {PRO_GROUPS.map((g) => (
+                  <div key={g.tag} className="mb-3 last:mb-0">
+                    <div className="mb-1.5 flex items-center gap-1.5">
+                      <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded bg-gradient-to-r ${ACCENT_STYLES[g.accent].chip} text-white`}>{g.tag}</span>
+                      <span className="text-[10px] text-muted-foreground">{g.label}</span>
                     </div>
-                  ))}
-                </div>
+                    <div className="grid grid-cols-1 gap-1.5">
+                      {g.items.map((f) => (
+                        <div key={f.title} className="flex items-start gap-2 border border-border rounded-lg p-2 bg-secondary/30">
+                          <f.icon className={`w-4 h-4 mt-0.5 shrink-0 ${ACCENT_STYLES[g.accent].icon}`} />
+                          <div className="min-w-0">
+                            <div className="text-xs font-medium text-foreground">{f.title}</div>
+                            <div className="text-[10px] text-muted-foreground leading-relaxed">{f.desc}</div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
 
-                {/* T1 级别：核心能力 */}
-                <div className="mb-1.5 flex items-center gap-1.5">
-                  <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-gradient-to-r from-cyan-500 to-blue-500 text-white">T1</span>
-                  <span className="text-[10px] text-muted-foreground">核心能力</span>
+              {/* 专业版说明 */}
+              <div className="mt-4 text-left border border-violet-500/30 rounded-lg p-2.5 bg-violet-500/5">
+                <div className="flex items-center gap-1.5 mb-1">
+                  <ShieldCheck className="w-3.5 h-3.5 text-violet-400" />
+                  <span className="text-xs font-semibold text-violet-300">专业版说明</span>
                 </div>
-                <div className="grid grid-cols-1 gap-1.5 mb-3">
-                  {[
-                    { icon: Layers, title: '多模型支持与智能路由', desc: 'DeepSeek / GPT / Claude 等一键接入，按任务类型自动选模型 + 容错降级' },
-                    { icon: Zap, title: '并行工具调度', desc: '单轮多工具并发执行，指数退避重试，大幅提升效率' },
-                    { icon: Network, title: '联网搜索 / 页面抓取', desc: '多引擎降级（Bing / DuckDuckGo），实时信息检索' },
-                    { icon: GitBranch, title: '代码库语义检索', desc: '代码库索引 + Embedding 语义召回 + Git / 测试 / 格式化一体化' },
-                    { icon: TerminalSquare, title: '内置终端', desc: '交互式终端直接执行命令、运行测试，反馈闭环' },
-                    { icon: ScrollText, title: '会话压缩与记忆', desc: '长会话自动压缩上下文，跨会话持久记忆' },
-                  ].map((f) => (
-                    <div key={f.title} className="flex items-start gap-2 border border-border rounded-lg p-2 bg-secondary/30">
-                      <f.icon className="w-4 h-4 text-cyan-400 mt-0.5 shrink-0" />
-                      <div className="min-w-0">
-                        <div className="text-xs font-medium text-foreground">{f.title}</div>
-                        <div className="text-[10px] text-muted-foreground leading-relaxed">{f.desc}</div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                {/* T2 级别：体验优化 */}
-                <div className="mb-1.5 flex items-center gap-1.5">
-                  <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-gradient-to-r from-emerald-500 to-teal-500 text-white">T2</span>
-                  <span className="text-[10px] text-muted-foreground">体验优化</span>
-                </div>
-                <div className="grid grid-cols-1 gap-1.5">
-                  {[
-                    { icon: Zap, title: '深色 / 白色双主题', desc: '精致渐变 UI，编辑器字体与光标精心调校' },
-                    { icon: Cloud, title: '差分增量更新', desc: '后台静默检测，blockmap 差分下载，秒级升级' },
-                    { icon: Megaphone, title: '公告与反馈闭环', desc: '官方公告推送 + 意见反馈云端回复' },
-                  ].map((f) => (
-                    <div key={f.title} className="flex items-start gap-2 border border-border rounded-lg p-2 bg-secondary/30">
-                      <f.icon className="w-4 h-4 text-emerald-400 mt-0.5 shrink-0" />
-                      <div className="min-w-0">
-                        <div className="text-xs font-medium text-foreground">{f.title}</div>
-                        <div className="text-[10px] text-muted-foreground leading-relaxed">{f.desc}</div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                <ul className="space-y-1 text-[10px] text-muted-foreground leading-relaxed">
+                  <li>· 以上能力随客户端完整提供，无需授权码，也不另收版本费用。</li>
+                  <li>· 模型调用按你配置的服务商计费（API Key 自带），客户端不代收、不加价。</li>
+                  <li>· 更换服务商或模型不改变功能可用性，仅影响回答质量与推理速度。</li>
+                </ul>
               </div>
 
               {/* 远程更新 */}

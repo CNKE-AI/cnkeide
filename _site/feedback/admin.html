@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex">
+<title>反馈管理后台 · CnkeIDE</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
+  .header { background: #1e293b; padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #334155; position: sticky; top: 0; z-index: 10; flex-wrap: wrap; gap: 10px; }
+  .header h1 { font-size: 18px; font-weight: 600; }
+  .header .right { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .header nav a { color: #94a3b8; text-decoration: none; font-size: 13px; transition: color .2s; }
+  .header nav a:hover { color: #22d3ee; }
+  .badge { background: #ef4444; color: #fff; border-radius: 999px; padding: 2px 10px; font-size: 12px; font-weight: 600; }
+  .container { max-width: 900px; margin: 0 auto; padding: 24px; }
+  .login-card, .device-card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 20px; margin-bottom: 16px; }
+  .device-card.unread { border-color: #38bdf8; box-shadow: 0 0 0 1px #38bdf8; }
+  .device-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .device-head .device { font-size: 14px; font-weight: 600; color: #38bdf8; word-break: break-all; }
+  .item { border-top: 1px solid #334155; padding: 12px 0; }
+  .item .msg { font-size: 14px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+  .item .meta { font-size: 12px; color: #94a3b8; margin-top: 6px; display: flex; gap: 12px; flex-wrap: wrap; }
+  .item .reply { background: #0f172a; border-left: 3px solid #34d399; border-radius: 6px; padding: 8px 12px; margin-top: 8px; font-size: 13px; }
+  .reply-form { display: flex; gap: 8px; margin-top: 8px; }
+  .reply-form input { flex: 1; background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 8px 10px; color: #e2e8f0; font-size: 13px; outline: none; }
+  .reply-form input:focus { border-color: #38bdf8; }
+  button { background: #0ea5e9; color: #fff; border: none; border-radius: 6px; padding: 8px 16px; font-size: 13px; cursor: pointer; font-weight: 500; }
+  button:hover { background: #0284c7; }
+  button.secondary { background: #334155; }
+  button.secondary:hover { background: #475569; }
+  .empty { text-align: center; color: #64748b; padding: 40px 0; }
+  .time { color: #64748b; font-size: 12px; }
+  input[type="password"] { background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 8px 10px; color: #e2e8f0; width: 240px; max-width: 60vw; outline: none; }
+  .login-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #065f46; color: #fff; padding: 10px 20px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity .3s; z-index: 100; }
+  .toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>🐚 CnkeIDE 反馈管理后台</h1>
+  <div class="right">
+    <nav>
+      <a href="/feedback/">← 返回前台</a>
+      &nbsp;&nbsp;
+      <a href="/">官网首页</a>
+    </nav>
+    <span id="unreadBadge" class="badge" style="display:none">0 条未回复</span>
+    <button id="refreshBtn" class="secondary">刷新</button>
+  </div>
+</div>
+
+<div class="container">
+  <!-- 登录 -->
+  <div id="loginView" class="login-card">
+    <div style="margin-bottom:12px;font-size:14px;">请输入管理员 Token</div>
+    <div class="login-row">
+      <input type="password" id="tokenInput" placeholder="管理 Token">
+      <button id="loginBtn">登录</button>
+    </div>
+  </div>
+
+  <!-- 反馈列表 -->
+  <div id="listView" style="display:none"></div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script>
+const TOKEN_KEY = 'cnkeide_fb_token';
+let token = localStorage.getItem(TOKEN_KEY) || '';
+let pollingTimer = null;
+
+const $ = (id) => document.getElementById(id);
+
+function toast(msg) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2500);
+}
+
+function fmtTime(ms) {
+  const d = new Date(ms);
+  const pad = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+}
+
+function init() {
+  if (token) {
+    $('loginView').style.display = 'none';
+    startPolling();
+  }
+  $('loginBtn').onclick = () => {
+    token = $('tokenInput').value.trim();
+    if (!token) return;
+    localStorage.setItem(TOKEN_KEY, token);
+    $('loginView').style.display = 'none';
+    startPolling();
+  };
+  $('tokenInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('loginBtn').click(); });
+  $('refreshBtn').onclick = () => { loadList(); loadCount(); };
+}
+
+async function api(url, opts) {
+  const res = await fetch(url, opts);
+  return res.json();
+}
+
+async function loadCount() {
+  try {
+    const d = await api('/feedback/api.php?action=admin_count&token=' + encodeURIComponent(token));
+    const n = d.unread || 0;
+    const badge = $('unreadBadge');
+    if (n > 0) { badge.style.display = 'inline-block'; badge.textContent = n + ' 条未回复'; }
+    else badge.style.display = 'none';
+  } catch (e) {}
+}
+
+async function loadList() {
+  try {
+    const d = await api('/feedback/api.php?action=admin_list&token=' + encodeURIComponent(token));
+    if (!d.success) {
+      if (d.error === '未授权') { token = ''; localStorage.removeItem(TOKEN_KEY); location.reload(); return; }
+      toast(d.error || '加载失败'); return;
+    }
+    renderList(d.devices || []);
+  } catch (e) { toast('网络错误'); }
+}
+
+function renderList(devices) {
+  const view = $('listView');
+  if (devices.length === 0) {
+    view.innerHTML = '<div class="empty">暂无反馈</div>';
+    return;
+  }
+  let html = '';
+  devices.forEach(dev => {
+    const hasUnread = (dev.items || []).some(it => !it.replies || it.replies.length === 0);
+    html += '<div class="device-card' + (hasUnread ? ' unread' : '') + '">';
+    html += '<div class="device-head"><span class="device">设备: ' + esc(dev.device) + '</span><span class="time">' + (dev.items && dev.items.length) + ' 条</span></div>';
+    (dev.items || []).forEach(it => {
+      html += '<div class="item">';
+      html += '<div class="msg">' + esc(it.msg) + '</div>';
+      html += '<div class="meta">';
+      html += '<span>' + fmtTime(it.time) + '</span>';
+      if (it.contact) html += '<span>联系方式: ' + esc(it.contact) + '</span>';
+      if (it.version) html += '<span>版本: ' + esc(it.version) + '</span>';
+      if (it.replies && it.replies.length === 0) html += '<span style="color:#ef4444">未回复</span>';
+      html += '</div>';
+      (it.replies || []).forEach(r => {
+        html += '<div class="reply">回复: ' + esc(r.content) + ' <span class="time">(' + fmtTime(r.time) + ')</span></div>';
+      });
+      html += '<div class="reply-form">';
+      html += '<input id="reply_' + esc(dev.device) + '_' + esc(it.id) + '" placeholder="输入回复...">';
+      html += '<button onclick="reply(\'' + esc(dev.device) + '\',\'' + esc(it.id) + '\')">回复</button>';
+      html += '</div>';
+      html += '</div>';
+    });
+    html += '</div>';
+  });
+  view.innerHTML = html;
+  view.style.display = 'block';
+}
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+async function reply(device, msgId) {
+  const input = document.getElementById('reply_' + device + '_' + msgId);
+  const content = input.value.trim();
+  if (!content) return;
+  const fd = new FormData();
+  fd.append('action', 'reply');
+  fd.append('token', token);
+  fd.append('device', device);
+  fd.append('msg_id', msgId);
+  fd.append('content', content);
+  try {
+    const d = await api('/feedback/api.php', { method: 'POST', body: fd });
+    if (d.success) {
+      toast('回复成功');
+      loadList(); loadCount();
+    } else toast(d.error || '回复失败');
+  } catch (e) { toast('网络错误'); }
+}
+
+function startPolling() {
+  loadList(); loadCount();
+  pollingTimer = setInterval(() => { loadList(); loadCount(); }, 5000);
+}
+
+init();
+</script>
+</body>
+</html>

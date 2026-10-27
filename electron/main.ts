@@ -87,7 +87,21 @@ async function createWindow() {
       nodeIntegration: false,
       sandbox: false,
       webSecurity: true,
+      // 预览面板需要内嵌用户本地 dev server（跨源 iframe 无法注入脚本，只能用 webview）
+      webviewTag: true,
     },
+  });
+
+  // 预览 webview 的安全护栏：无论页面怎么声明，都强制关闭 Node 集成与外部 preload，
+  // 避免用户在内嵌预览里打开的任意站点拿到主进程能力
+  mainWindow.webContents.on('will-attach-webview', (_e, webPreferences) => {
+    delete (webPreferences as { preload?: string }).preload;
+    webPreferences.nodeIntegration = false;
+    webPreferences.contextIsolation = true;
+    webPreferences.webSecurity = true;
+  });
+  mainWindow.webContents.on('did-attach-webview', (_e, guest) => {
+    guest.setWindowOpenHandler(() => ({ action: 'deny' }));
   });
 
   const isDev = process.env.NODE_ENV === 'development' || !!process.env.VITE_DEV_SERVER_URL;
@@ -449,12 +463,15 @@ app.whenReady().then(async () => {
     .catch((e) => console.error('[pptmaster] 初始化异常:', e));
 
   // 监听 Agent 任务结束/异常，弹出系统通知
-  ipcMain.on('agent:notify', (_event, payload: { type: 'done' | 'error'; title?: string; message?: string }) => {
+  ipcMain.on('agent:notify', (_event, payload: { type: 'done' | 'error' | 'info'; title?: string; message?: string }) => {
     if (!payload) return;
     if (payload.type === 'done') {
       sendNotification(payload.title || '任务完成', payload.message || 'AI 已完成当前任务');
     } else if (payload.type === 'error') {
       sendNotification(payload.title || '任务异常', payload.message || 'AI 任务异常退出');
+    } else if (payload.type === 'info') {
+      // 一般性提示（如用户主动中止任务）——过去 type 不在白名单里会被静默丢弃
+      sendNotification(payload.title || '提示', payload.message || '');
     }
   });
 
@@ -516,8 +533,10 @@ app.on('window-all-closed', () => {
   }
 });
 
-// 安全设置：阻止创建额外的渲染进程
+// 安全设置：阻止普通窗口创建额外的渲染进程。主窗口的预览 webview 由专用护栏处理。
 app.on('web-contents-created', (_event, contents) => {
+  if (contents === mainWindow?.webContents) return;
+  contents.setWindowOpenHandler(() => ({ action: 'deny' }));
   contents.on('will-attach-webview', (event) => {
     event.preventDefault();
   });

@@ -194,6 +194,8 @@ export interface CnkeAPI {
     listTools: (serverId: string) => Promise<unknown[]>;
     refreshTools: (serverId: string) => Promise<{ success: boolean; tools?: unknown[]; error?: string }>;
     callTool: (serverId: string, toolName: string, args: unknown) => Promise<unknown>;
+    getCatalog: (forceRefresh?: boolean) => Promise<McpCatalogEntry[]>;
+    installFromCatalog: (entry: McpCatalogEntry) => Promise<{ success: boolean; error?: string }>;
     onStatusChanged: (cb: (status: unknown) => void) => () => void;
   };
   dialog: {
@@ -239,9 +241,9 @@ export interface CnkeAPI {
     getReleaseNotes: () => Promise<string>;
     onStatus: (cb: (status: UpdateStatus) => void) => () => void;
   };
-  /** 系统通知（任务结束 / 异常退出） */
+  /** 系统通知（任务结束 / 异常退出 / 一般提示） */
   notify: {
-    show: (payload: { type: 'done' | 'error'; title?: string; message?: string }) => void;
+    show: (payload: { type: 'done' | 'error' | 'info'; title?: string; message?: string }) => void;
   };
   /** 应用菜单事件（主进程菜单项 → 渲染层动作），返回取消订阅函数 */
   menu: {
@@ -455,8 +457,40 @@ export interface UpdateLogEntry {
   error?: string;
 }
 
+export interface McpCatalogEntry {
+  id: string;
+  name: string;
+  description: string;
+  source: 'registry' | 'builtin';
+  version?: string;
+  repositoryUrl?: string;
+  author?: string;
+  installConfig: {
+    protocol: 'stdio' | 'http';
+    command?: string;
+    args?: string;
+    url?: string;
+  };
+}
+
 declare global {
   interface Window {
     cnke: CnkeAPI;
+  }
+}
+
+/**
+ * Electron 专有的 <webview> 标签，React 内置 JSX 类型里没有。
+ * 仅预览面板使用（需要主进程 webPreferences.webviewTag = true）。
+ */
+declare module 'react' {
+  namespace JSX {
+    interface IntrinsicElements {
+      webview: import('react').DetailedHTMLProps<import('react').HTMLAttributes<HTMLElement>, HTMLElement> & {
+        src?: string;
+        allowpopups?: string;
+        partition?: string;
+      };
+    }
   }
 }

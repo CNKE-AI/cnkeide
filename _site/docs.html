@@ -1,0 +1,909 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="scroll-smooth">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>文档 · CnkeIDE</title>
+  <meta name="description" content="CnkeIDE — 本地优先 AI 编程 IDE 使用文档与指南。" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            base: '#0f172a',
+            'base-light': '#111c38',
+            'cyan-accent': '#22d3ee',
+            'cyan-bright': '#0ea5e9',
+            'blue-deep': '#0b1226',
+          },
+          fontFamily: {
+            mono: ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
+          },
+          boxShadow: {
+            glow: '0 0 0 1px rgba(34,211,238,.15), 0 0 24px rgba(34,211,238,.12)',
+            'glow-lg': '0 8px 40px rgba(14,165,233,.25)',
+          },
+        },
+      },
+    };
+  </script>
+  <style>
+    html, body { background-color: #0f172a; color: #e2e8f0; -webkit-font-smoothing: antialiased; }
+    .bg-grid {
+      background-image:
+        linear-gradient(rgba(34, 211, 238, 0.045) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(34, 211, 238, 0.045) 1px, transparent 1px);
+      background-size: 56px 56px;
+    }
+    .glow-orb { position: absolute; border-radius: 9999px; filter: blur(90px); opacity: .45; pointer-events: none; }
+    .glass-card {
+      background: linear-gradient(155deg, rgba(30,41,59,.62), rgba(15,23,42,.55));
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      border: 1px solid rgba(148,163,184,.12);
+      transition: all .35s cubic-bezier(.4,0,.2,1);
+    }
+    .glass-card:hover { border-color: rgba(34,211,238,.35); box-shadow: 0 12px 36px rgba(14,165,233,.15); }
+    .btn-primary {
+      background: linear-gradient(120deg, #0ea5e9, #22d3ee);
+      color: #06121f;
+      transition: all .3s ease;
+      box-shadow: 0 8px 24px rgba(14,165,233,.28);
+    }
+    .btn-primary:hover { box-shadow: 0 12px 32px rgba(34,211,238,.42); transform: translateY(-2px); filter: brightness(1.05); }
+    .text-gradient {
+      background: linear-gradient(100deg, #a5f3fc 0%, #22d3ee 45%, #0ea5e9 100%);
+      -webkit-background-clip: text; background-clip: text; color: transparent;
+    }
+    .nav-link { position: relative; color: #94a3b8; transition: color .25s; }
+    .nav-link:hover { color: #e2e8f0; }
+    .nav-link::after { content: ''; position: absolute; left: 0; bottom: -6px; width: 0; height: 2px; background: linear-gradient(90deg,#22d3ee,#0ea5e9); transition: width .3s ease; border-radius: 2px; }
+    .nav-link:hover::after { width: 100%; }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: #0f172a; }
+    ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 8px; }
+    ::-webkit-scrollbar-thumb:hover { background: #334155; }
+    .doc-section {
+      scroll-margin-top: 96px;
+    }
+    .doc-head {
+      display: flex; align-items: center; gap: 10px;
+      margin-bottom: 16px;
+    }
+    .doc-icon {
+      flex-shrink: 0; width: 34px; height: 34px;
+      border-radius: 10px;
+      background: linear-gradient(135deg, rgba(14,165,233,.18), rgba(34,211,238,.08));
+      border: 1px solid rgba(34,211,238,.25);
+      display: flex; align-items: center; justify-content: center;
+      color: #22d3ee;
+      font-size: 16px;
+    }
+    .toc-link {
+      display: block; padding: 7px 10px; border-radius: 8px;
+      font-size: 13px; color: #94a3b8; transition: all .2s;
+      border-left: 2px solid transparent;
+    }
+    .toc-link:hover { color: #e2e8f0; background: rgba(34,211,238,.06); }
+    .toc-link.active { color: #22d3ee; background: rgba(34,211,238,.1); border-left-color: #22d3ee; }
+    .feature-item {
+      display: flex; align-items: flex-start; gap: 12px;
+      padding: 10px 12px; border-radius: 10px;
+      transition: background .2s;
+    }
+    .feature-item:hover { background: rgba(34,211,238,.05); }
+  </style>
+</head>
+<body class="bg-base text-slate-200 font-sans overflow-x-hidden">
+
+  <!-- ===================== 背景 ===================== -->
+  <div class="fixed inset-0 -z-10 overflow-hidden">
+    <div class="absolute inset-0 bg-grid"></div>
+    <div class="glow-orb w-[520px] h-[520px] bg-cyan-500/30 -top-40 -left-40"></div>
+    <div class="glow-orb w-[480px] h-[480px] bg-sky-600/25 top-1/3 -right-40"></div>
+  </div>
+
+  <!-- ===================== 导航栏（与首页强关联） ===================== -->
+  <header class="fixed top-0 inset-x-0 z-50 backdrop-blur-md bg-base/70 border-b border-white/5">
+    <nav class="max-w-7xl mx-auto px-5 md:px-8 h-16 flex items-center justify-between">
+      <a href="index.html#home" class="flex items-center gap-2.5 group">
+        <div class="w-9 h-9 rounded-lg bg-gradient-to-br from-cyan-400 to-sky-600 flex items-center justify-center shadow-glow">
+          <svg viewBox="0 0 24 24" class="w-5 h-5 text-white" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z"></path></svg>
+        </div>
+        <div class="leading-tight">
+          <div class="text-white font-bold text-lg tracking-tight">CnkeIDE</div>
+          <div class="text-[10px] text-cyan-300/70 -mt-1 font-mono">AI 编程助手</div>
+        </div>
+      </a>
+      <div class="hidden md:flex items-center gap-7 text-sm font-medium">
+        <a href="index.html#home" class="nav-link">首页</a>
+        <a href="index.html#features" class="nav-link">功能特性</a>
+        <a href="index.html#roadmap" class="nav-link">迭代路线</a>
+        <a href="index.html#latest" class="nav-link">最新版本</a>
+        <a href="docs.html" class="text-cyan-300 font-semibold">文档</a>
+        <a href="/announcements/" class="nav-link">公告</a>
+        <a href="https://github.com/CNKE-AI/cnkeide" target="_blank" rel="noopener" class="nav-link">Github 仓库</a>
+        <a href="index.html#download" class="nav-link">下载</a>
+      </div>
+      <a href="/cnkeide/updates/CnkeIDE%20Setup%201.3.3.exe" download class="btn-primary hidden md:flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-bold">
+        <svg viewBox="0 0 24 24" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"></path><path d="M7 10l5 5 5-5"></path><path d="M12 15V3"></path></svg>
+        立即下载
+      </a>
+      <button id="mobile-menu-btn" class="md:hidden p-2 text-slate-300 hover:text-white">
+        <svg viewBox="0 0 24 24" class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+      </button>
+    </nav>
+    <div id="mobile-menu" class="md:hidden hidden bg-base/95 backdrop-blur-xl border-t border-white/5 px-6 py-4 flex flex-col gap-4 text-sm">
+      <a href="index.html#home" class="nav-link">首页</a>
+      <a href="index.html#features" class="nav-link">功能特性</a>
+      <a href="index.html#roadmap" class="nav-link">迭代路线</a>
+      <a href="index.html#latest" class="nav-link">最新版本</a>
+      <a href="docs.html" class="text-cyan-300 font-semibold">文档</a>
+      <a href="/announcements/" class="nav-link">公告</a>
+      <a href="https://github.com/CNKE-AI/cnkeide" target="_blank" rel="noopener" class="nav-link">Github 仓库</a>
+      <a href="index.html#download" class="nav-link">下载</a>
+      <a href="/cnkeide/updates/CnkeIDE%20Setup%201.3.3.exe" download class="btn-primary flex items-center justify-center px-5 py-2.5 rounded-lg text-sm font-bold mt-2">立即下载</a>
+    </div>
+  </header>
+
+  <!-- ===================== 主体双栏 ===================== -->
+  <div class="max-w-7xl mx-auto px-5 md:px-8 pt-28 pb-16">
+    <div class="flex flex-col lg:flex-row gap-8">
+
+      <!-- 左侧文档目录 -->
+      <aside class="lg:w-72 shrink-0">
+        <div class="sticky top-24 glass-card rounded-2xl p-5 max-h-[calc(100vh-120px)] overflow-y-auto">
+          <div class="flex items-center gap-2 mb-5">
+            <div class="w-7 h-7 rounded-lg bg-gradient-to-br from-cyan-400 to-sky-600 flex items-center justify-center text-white text-sm">📚</div>
+            <h3 class="font-semibold text-white">文档目录</h3>
+          </div>
+          <nav id="toc" class="space-y-4 text-sm">
+            <div>
+              <div class="text-slate-500 text-xs uppercase tracking-wider mb-1 px-1">快速开始</div>
+              <a href="#intro" class="toc-link active">软件介绍</a>
+              <a href="#system" class="toc-link">系统要求</a>
+              <a href="#install" class="toc-link">Windows 安装教程</a>
+              <a href="#workspace" class="toc-link">项目工作区入门</a>
+            </div>
+            <div>
+              <div class="text-slate-500 text-xs uppercase tracking-wider mb-1 px-1">配置指南</div>
+              <a href="#apiconfig" class="toc-link">API 模型配置</a>
+              <a href="#mcpconfig" class="toc-link">MCP 服务配置</a>
+              <a href="#skill" class="toc-link">Skill 技能管理</a>
+              <a href="#layerconfig" class="toc-link">全局 / 工作区分层配置</a>
+            </div>
+            <div>
+              <div class="text-slate-500 text-xs uppercase tracking-wider mb-1 px-1">Agent 核心能力</div>
+              <a href="#engine" class="toc-link">自研 Agent 引擎</a>
+              <a href="#modes" class="toc-link">Ask / Craft / Plan / Debug 四模式</a>
+              <a href="#breakrecover" class="toc-link">熔断 · 自愈 · 断点续跑</a>
+              <a href="#tokenmanage" class="toc-link">Token 上下文治理</a>
+              <a href="#plantools" class="toc-link">Plan 任务规划与并行调度</a>
+            </div>
+            <div>
+              <div class="text-slate-500 text-xs uppercase tracking-wider mb-1 px-1">特色功能</div>
+              <a href="#ppt" class="toc-link">AI 演示文稿生成</a>
+              <a href="#ppt-tpl" class="toc-link">在线模板库套用</a>
+              <a href="#ppt-export" class="toc-link">导出 PPTX / PDF</a>
+              <a href="#codebase" class="toc-link">代码库语义检索</a>
+              <a href="#modelrouting" class="toc-link">智能模型路由</a>
+              <a href="#rag" class="toc-link">文档问答 RAG</a>
+              <a href="#multimodal" class="toc-link">多模态粘贴截图</a>
+            </div>
+            <div>
+              <div class="text-slate-500 text-xs uppercase tracking-wider mb-1 px-1">安全与进程</div>
+              <a href="#procmanager" class="toc-link">全局进程管理器</a>
+              <a href="#mcpperm" class="toc-link">MCP 权限管控</a>
+              <a href="#highrisk" class="toc-link">高危操作拦截规则</a>
+              <a href="#auditlog" class="toc-link">审计日志</a>
+            </div>
+            <div>
+              <div class="text-slate-500 text-xs uppercase tracking-wider mb-1 px-1">IDE 使用手册</div>
+              <a href="#ctrlk" class="toc-link">内联对话 Ctrl+K</a>
+              <a href="#inline" class="toc-link">AI 行内补全</a>
+              <a href="#atfile" class="toc-link">@文件引用语法</a>
+              <a href="#gitsnap" class="toc-link">Git 快照与回滚</a>
+              <a href="#terminaldebug" class="toc-link">终端 / 调试器</a>
+              <a href="#sync" class="toc-link">四视图实时同步</a>
+            </div>
+            <div>
+              <div class="text-slate-500 text-xs uppercase tracking-wider mb-1 px-1">常见问题 FAQ</div>
+              <a href="#faq1" class="toc-link">僵尸进程如何处理</a>
+              <a href="#faq2" class="toc-link">MCP 启动失败排查</a>
+              <a href="#faq3" class="toc-link">Token 消耗过大</a>
+              <a href="#faq4" class="toc-link">模板套用与 PPT 常见问题</a>
+              <a href="#faq8" class="toc-link">命令行接入 CI 排查</a>
+              <a href="#faq9" class="toc-link">更新失败 / 卡住</a>
+            </div>
+            <div>
+              <div class="text-slate-500 text-xs uppercase tracking-wider mb-1 px-1">开发者与自动化</div>
+              <a href="#headless" class="toc-link">headless 命令行（v1.3.3+）</a>
+              <a href="#update" class="toc-link">软件更新与版本管理</a>
+              <a href="#community" class="toc-link">公告与意见反馈</a>
+              <a href="https://github.com/CNKE-AI/cnkeide" target="_blank" class="toc-link">Github 仓库</a>
+              <a href="#roadmap" class="toc-link">迭代 Roadmap</a>
+            </div>
+          </nav>
+        </div>
+      </aside>
+
+      <!-- 右侧文档内容 -->
+      <main class="flex-1 min-w-0">
+
+        <!-- 软件介绍 -->
+        <section id="intro" class="doc-section glass-card rounded-2xl p-6 md:p-8 mb-8">
+          <h1 class="text-3xl font-bold text-white mb-4">CnkeIDE 软件介绍</h1>
+          <div class="my-6 rounded-xl overflow-hidden border border-slate-700">
+            <img src="/ui.png" alt="CnkeIDE 软件界面" class="w-full" />
+          </div>
+          <blockquote class="border-l-4 border-cyan-400 pl-4 my-4 text-slate-300 italic">
+            本地优先 AI 编程 IDE，基于 Electron + React 构建，面向全栈开发者与 Agent 开发爱好者。
+          </blockquote>
+          <p class="mb-4 text-slate-300 leading-relaxed">市面上主流 AI IDE 普遍存在僵尸进程残留、上下文 Token 爆炸、任务中断不可恢复、MCP 无权限隔离、后台进程卡死等痛点。</p>
+          <p class="mb-4 text-slate-300 leading-relaxed">CnkeIDE 以自研 Agent 引擎为核心，完整实现进程生命周期管控、上下文智能压缩熔断、MCP 细粒度权限隔离、任务自愈、断点续跑、Git 任务快照审计全套能力。</p>
+          <p class="mb-6 text-slate-300 leading-relaxed">从 v1.3.3 起，同一套 Agent 内核还可脱离界面，在纯 Node 环境以 <strong class="text-cyan-300">headless 命令行</strong>运行，工具、审批策略、模型路由、任务计划与桌面端完全一致，可直接嵌入 CI 与脚本流水线。</p>
+
+          <h2 class="text-xl font-semibold mt-8 mb-4 text-white">核心能力</h2>
+          <ul class="space-y-2 text-slate-300">
+            <li class="feature-item"><span class="text-cyan-400 mt-0.5">▸</span><span><strong class="text-white">自研 Agent 引擎</strong>：完整进程治理、熔断保护、崩溃断点续跑、验证自愈，稳定高效。</span></li>
+            <li class="feature-item"><span class="text-cyan-400 mt-0.5">▸</span><span><strong class="text-white">完整 MCP 协议生态</strong>：支持 Stdio / SSE 类型 MCP 服务，工具 Schema 动态裁剪，独立权限管控，操作审计日志。</span></li>
+            <li class="feature-item"><span class="text-cyan-400 mt-0.5">▸</span><span><strong class="text-white">全局进程治理</strong>：统一子进程管理器，自动销毁僵尸进程，监听进程崩溃异常，防止内存 / CPU 泄漏。</span></li>
+            <li class="feature-item"><span class="text-cyan-400 mt-0.5">▸</span><span><strong class="text-white">上下文治理</strong>：长会话自动摘要压缩，工具调用记录限额，解决上下文爆炸，提升工具调用准确率。</span></li>
+            <li class="feature-item"><span class="text-cyan-400 mt-0.5">▸</span><span><strong class="text-white">Git 任务快照</strong>：每次 Agent 任务自动生成 Git 检查点，支持一键回滚到任意历史任务节点。</span></li>
+            <li class="feature-item"><span class="text-cyan-400 mt-0.5">▸</span><span><strong class="text-white">分层配置</strong>：全局配置 + 项目工作区独立配置，不同项目加载独立 MCP、Agent 规则。</span></li>
+            <li class="feature-item"><span class="text-cyan-400 mt-0.5">▸</span><span><strong class="text-white">headless 命令行</strong>：无界面运行同一内核，支持 NDJSON 事件流、语义化退出码与无人值守审批策略，适合 CI 与自动化。</span></li>
+          </ul>
+        </section>
+
+        <!-- 系统要求 -->
+        <section id="system" class="doc-section glass-card rounded-2xl p-6 md:p-8 mb-8">
+          <div class="doc-head"><div class="doc-icon">🖥️</div><h2 class="text-2xl font-bold text-white">系统要求</h2></div>
+          <ul class="list-disc pl-6 space-y-2 text-slate-300">
+            <li>Windows 10 / Windows 11，后续版本支持 MacOS、Linux</li>
+            <li>网络可正常访问大模型 API 接口</li>
+          </ul>
+        </section>
+
+        <!-- Windows 安装 -->
+        <section id="install" class="doc-section glass-card rounded-2xl p-6 md:p-8 mb-8">
+          <div class="doc-head"><div class="doc-icon">⬇️</div><h2 class="text-2xl font-bold text-white">Windows 安装教程</h2></div>
+          <ol class="list-decimal pl-6 space-y-2 text-slate-300">
+            <li>前往<a href="index.html#download" class="text-cyan-400 hover:underline">官网下载页面</a>获取安装包</li>
+            <li>运行安装程序完成安装</li>
+            <li>启动软件，新建或打开代码工作区</li>
+          </ol>
+        </section>
+
+        <!-- 工作区入门 -->
+        <section id="workspace" class="doc-section glass-card rounded-2xl p-6 md:p-8 mb-8">
+          <div class="doc-head"><div class="doc-icon">📁</div><h2 class="text-2xl font-bold text-white">项目工作区入门</h2></div>
+          <p class="text-slate-300 leading-relaxed">打开本地代码文件夹作为工作区，软件会在项目目录生成 <code class="bg-slate-800 px-2 py-0.5 rounded text-cyan-300 font-mono text-sm">.cnkeide</code> 目录，存放本项目独立配置、技能脚本。</p>
+        </section>
+
+        <!-- API 配置 -->
+        <section id="apiconfig" class="doc-section glass-card rounded-2xl p-6 md:p-8 mb-8">
+          <div class="doc-head"><div class="doc-icon">🔑</div><h2 class="text-2xl font-bold text-white">API 模型配置</h2></div>
+          <p class="text-slate-300 leading-relaxed">在「设置」页面填入 API Key、接口代理地址，选择对应模型，点击「测试连通性」确认接口正常。</p>
+        </section>
+
+        <!-- MCP 配置 -->
+        <section id="mcpconfig" class="doc-section glass-card rounded-2xl p-6 md:p-8 mb-8">
+          <div class="doc-head"><div class="doc-icon">🔌</div><h2 class="text-2xl font-bold text-white">MCP 服务配置</h2></div>
+          <p class="text-slate-300 leading-relaxed">支持 Stdio、SSE 两种 MCP 服务，可单独启用 / 禁用，可配置目录读写、Shell 执行、网络访问权限。</p>
+        </section>
+
+        <!-- Skill -->
+        <section id="skill" class="doc-section glass-card rounded-2xl p-6 md:p-8 mb-8">
+          <div class="doc-head"><div class="doc-icon">🎯</div><h2 class="text-2xl font-bold text-white">Skill 技能管理</h2></div>
+          <p class="text-slate-300 leading-relaxed">加载本地 <code class="bg-slate-800 px-2 py-0.5 rounded text-cyan-300 font-mono text-sm">.cnkeide/skills</code> 技能目录，实现 Agent 能力扩展。</p>
+        </section>
+
+        <!-- 分层配置 -->
+        <section id="layerconfig" class="doc-section glass-card rounded-2xl p-6 md:p-8 mb-8">
+          <div class="doc-head"><div class="doc-icon">🧩</div><h2 class="text-2xl font-bold text-white">全局 / 工作区分层配置</h2></div>
+          <ul class="list-disc pl-6 space-y-2 text-slate-300">
+            <li><strong class="text-white">全局配置</strong>：所有工作区公用配置，保存在软件用户目录。</li>
+            <li><strong class="text-white">工作区配置</strong>：保存在项目目录，打开项目自动加载独立 MCP、Agent 参数。</li>
+          </ul>
+        </section>
+
+        <!-- Agent 引擎 -->
+        <section id="engine" class="doc-section glass-card rounded-2xl p-6 md:p-8 mb-8">
+          <div class="doc-head"><div class="doc-icon">🤖</div><h2 class="text-2xl font-bold text-white">自研 Agent 引擎</h2></div>
+          <ul class="list-disc pl-6 space-y-2 text-slate-300">
+            <li>内置完整进程管理、熔断保护、自愈恢复逻辑；</li>
+            <li>崩溃断点续跑，任务中断可恢复继续执行；</li>
+            <li>工具调用统一调度，危险操作自动拦截确认。</li>
+          </ul>
+        </section>
+
+        <!-- 四模式 -->
+        <section id="modes" class="doc-section glass-card rounded-2xl p-6 md:p-8 mb-8">
+          <div class="doc-head"><div class="doc-icon">🔀</div><h2 class="text-2xl font-bold text-white">Ask / Craft / Plan / Debug 四运行模式</h2></div>
+          <ul class="list-disc pl-6 space-y-2 text-slate-300">
+            <li><strong class="text-cyan-300">Ask 问答</strong>：仅对话，不修改代码，专注解释与讨论。</li>
+            <li><strong class="text-violet-300">Craft 快速</strong>：读写文件执行命令，局部精准改动，自动完成开发任务。</li>
+            <li><strong class="text-emerald-300">Plan 深度</strong>：全量 Agent，先生成完整方案，确认后执行，规划 + 工具 + 自愈。</li>
+            <li><strong class="text-amber-300">Debug 调试</strong>：围绕报错与异常推进，优先读取日志、运行测试、定位根因后再改动。</li>
+          </ul>
+          <p class="mt-4 text-slate-300 leading-relaxed">输入框上方可随时切换模式；命令行下用 <code class="px-1.5 py-0.5 rounded bg-white/10 font-mono text-xs">--mode ask|craft|plan|debug</code> 指定。</p>
+        </section>
+
+        <!-- 熔断自愈 -->
+        <section id="breakrecover" class="doc-section glass-card rounded-2xl p-6 md:p-8 mb-8">
+          <div class="doc-head"><div class="doc-icon">🛡️</div><h2 class="text-2xl font-bold text-white">熔断 · 自愈 · 断点续跑</h2></div>
+          <ul class="list-disc pl-6 space-y-2 text-slate-300">
+            <li><strong class="text-white">熔断条件</strong>：Token 上限、最大执行时长、连续工具失败次数，触发暂停任务。</li>
+            <li><strong class="text-white">自愈</strong>：自动尝试修复报错，可自定义自愈最大轮次。</li>
+            <li><strong class="text-white">断点续跑</strong>：软件崩溃重启后，恢复上一轮任务继续执行。</li>
+          </ul>
+        </section>
+
+        <!-- Token 治理 -->
+        <section id="tokenmanage" class="doc-section glass-card rounded-2xl p-6 md:p-8 mb-8">
+          <div class="doc-head"><div class="doc-icon">📊</div><h2 class="text-2xl font-bold text-white">Token 上下文治理</h2></div>
+          <p class="text-slate-300 leading-relaxed">开启会话自动摘要压缩，设置工具调用历史限额，MCP 工具 Schema 动态裁剪，缓解长会话 Token 爆炸问题。</p>
+        </section>
+
+        <!-- PPT 总览 -->
+        <section id="ppt" class="doc-section glass-card rounded-2xl p-6 md:p-8 mb-8">
+          <div class="doc-head"><div class="doc-icon">📽️</div><h2 class="text-2xl font-bold text-white">AI 演示文稿生成</h2></div>
+          <p class="text-slate-300 leading-relaxed mb-4">
+            在侧边栏选择「演示文稿」即可打开独立的 PPT 工作台。核心价值是
+            <strong class="text-white">把「介绍 / 汇报一个项目」这件事交给 AI</strong>：
+            自动读取当前工作区的 README、目录结构与文档，提炼出项目定位、功能、技术栈与架构亮点，
+            生成逻辑递进的大纲，再套用模板输出可交付的 PPTX 文件。
+          </p>
+
+          <h3 class="text-lg font-semibold text-white mt-6 mb-3">三种创建方式</h3>
+          <div class="grid md:grid-cols-3 gap-4 mb-2">
+            <div class="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
+              <div class="text-cyan-300 font-semibold mb-2 text-sm">① 项目一键成稿</div>
+              <p class="text-slate-400 text-sm leading-relaxed">深度扫描工作区，自动提炼大纲，适合给现有项目做汇报材料。</p>
+            </div>
+            <div class="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
+              <div class="text-cyan-300 font-semibold mb-2 text-sm">② 一句话生成</div>
+              <p class="text-slate-400 text-sm leading-relaxed">直接输入演示主题（如「新能源汽车行业分析」），从零生成大纲。</p>
+            </div>
+            <div class="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
+              <div class="text-cyan-300 font-semibold mb-2 text-sm">③ 在线模板库</div>
+              <p class="text-slate-400 text-sm leading-relaxed">浏览服务器模板库，下载真实模板后套用，快速产出专业排版。</p>
+            </div>
+          </div>
+
+          <h3 class="text-lg font-semibold text-white mt-6 mb-3">大纲可视化精修</h3>
+          <ul class="list-disc pl-6 space-y-2 text-slate-300">
+            <li>左侧逐页展开，直接编辑每页<strong class="text-white">标题</strong>与<strong class="text-white">要点条目</strong>，支持增删页、调整顺序</li>
+            <li>支持<strong class="text-white">单页 AI 细化</strong>与<strong class="text-white">全部 AI 细化</strong>：把粗略要点扩写成完整表述</li>
+            <li>细化时可附加个性化要求（如「偏技术向，多给数据」「语言口语化」），AI 会按约束重写</li>
+            <li>在大纲确认前可反复调整，避免生成后返工</li>
+          </ul>
+
+          <div class="rounded-xl border border-cyan-500/25 bg-cyan-500/5 p-4 mt-5">
+            <p class="text-slate-300 text-sm leading-relaxed">
+              <strong class="text-cyan-300">提示：</strong>项目一键成稿依赖工作区内的 README 与文档。
+              想让生成的 PPT 更准确，建议先在项目里补一份写得清楚的 README，AI 不会凭空编造项目功能。
+            </p>
+          </div>
+        </section>
+
+        <!-- PPT 模板库 -->
+        <section id="ppt-tpl" class="doc-section glass-card rounded-2xl p-6 md:p-8 mb-8">
+          <div class="doc-head"><div class="doc-icon">🧩</div><h2 class="text-2xl font-bold text-white">在线模板库套用</h2></div>
+          <p class="text-slate-300 leading-relaxed mb-4">
+            模板库内置在服务器端，客户端可直接浏览、搜索、下载并套用真实 PPTX 模板，
+            比内置主题更贴近实际汇报场景（尤其是国内各类评审、答辩、总结模板）。
+          </p>
+
+          <h3 class="text-lg font-semibold text-white mt-6 mb-3">操作步骤</h3>
+          <ol class="list-decimal pl-6 space-y-2 text-slate-300">
+            <li>在 PPT 工作台切换到顶部「<strong class="text-white">模板库</strong>」标签页</li>
+            <li>用<strong class="text-white">分类筛选</strong>（文化 / 节日 / 科技 / 教育 / 营销 / 商务等）或<strong class="text-white">关键词搜索</strong>缩小范围</li>
+            <li>浏览缩略图，选定后点击「<strong class="text-white">下载模板</strong>」，模板会缓存到本地</li>
+            <li>点击「<strong class="text-white">套用此模板并保存到工作区</strong>」，大纲内容会自动写入模板的标题位与正文位</li>
+            <li>生成结果保存在当前工作区，可直接在 PowerPoint / WPS 中继续编辑</li>
+          </ol>
+
+          <h3 class="text-lg font-semibold text-white mt-6 mb-3">套用逻辑说明</h3>
+          <ul class="list-disc pl-6 space-y-2 text-slate-300">
+            <li>套用采用<strong class="text-white">版式识别</strong>策略：自动区分封面页、目录页、分节页、内容页、结尾页，按类型分别填充</li>
+            <li>模板自带的<strong class="text-white">装饰性元素会原样保留</strong>——单字水印（如「淡」「雅」「壹」）、序号、分隔符不会被当作占位内容覆盖</li>
+            <li>模板自带的<strong class="text-white">装饰性成句文案</strong>（诗句、引文、标语，如「路漫漫其修远兮」）同样受保护，不会被大纲内容顶替</li>
+            <li>若模板某页版式无法识别，会退化为占位符替换策略，尽可能保留原设计</li>
+          </ul>
+        </section>
+
+        <!-- PPT 导出 -->
+        <section id="ppt-export" class="doc-section glass-card rounded-2xl p-6 md:p-8 mb-8">
+          <div class="doc-head"><div class="doc-icon">📤</div><h2 class="text-2xl font-bold text-white">导出 PPTX / PDF</h2></div>
+          <p class="text-slate-300 leading-relaxed mb-4">生成完成后可导出为可编辑的 PPTX 或用于分享的 PDF。</p>
+
+          <h3 class="text-lg font-semibold text-white mt-6 mb-3">内置主题与版式</h3>
+          <p class="text-slate-300 leading-relaxed mb-3">不套用服务器模板时，可使用内置主题直接生成：</p>
+          <div class="grid md:grid-cols-2 gap-4">
+            <div class="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
+              <div class="text-cyan-300 font-semibold mb-2 text-sm">四套主题</div>
+              <ul class="list-disc pl-5 space-y-1 text-slate-300 text-sm">
+                <li>商业风格 — 企业汇报、方案提案</li>
+                <li>学术风格 — 答辩、课题汇报</li>
+                <li>中国风 — 传统文化、节庆主题</li>
+                <li>插画风格 — 轻松场景、科普分享</li>
+              </ul>
+            </div>
+            <div class="rounded-xl border border-slate-700/60 bg-slate-900/40 p-4">
+              <div class="text-cyan-300 font-semibold mb-2 text-sm">六种版式</div>
+              <ul class="list-disc pl-5 space-y-1 text-slate-300 text-sm">
+                <li>封面版式 — 主标题 + 副标题</li>
+                <li>目录版式 — 章节导航</li>
+                <li>分节版式 — 章节过渡页</li>
+                <li>内容版式 — 标题 + 要点列表</li>
+                <li>数据版式 — 数字 / 指标强调</li>
+                <li>结尾版式 — 总结与致谢</li>
+              </ul>
+            </div>
+          </div>
+
+          <h3 class="text-lg font-semibold text-white mt-6 mb-3">支持的页面元素</h3>
+          <p class="text-slate-300 leading-relaxed">
+            页面内可承载<strong class="text-white">图片</strong>、<strong class="text-white">表格</strong>与
+            <strong class="text-white">图表</strong>（柱状图 / 折线图 / 饼图），
+            适合需要展示数据趋势或产品截图的场景。
+          </p>
+        </section>
+
+        <!-- 代码库检索 -->
+        <section id="codebase" class="doc-section glass-card rounded-2xl p-6 md:p-8 mb-8">
+          <div class="doc-head"><div class="doc-icon">🔍</div><h2 class="text-2xl font-bold text-white">代码库语义检索</h2></div>
+          <p class="text-slate-300 leading-relaxed mb-4">
+            让 AI 在大型项目里也能快速找对上下文，而不是靠你手动翻文件复制粘贴。
+          </p>
+          <ul class="list-disc pl-6 space-y-2 text-slate-300">
+            <li><strong class="text-white">三路召回融合</strong>：关键词检索 + 语义向量检索 + 符号检索，结果按加权融合后排序，比单一策略更稳</li>
+            <li><strong class="text-white">符号级理解</strong>：按函数 / 类 / 方法切分代码块，能直接定位定义与引用关系</li>
+            <li><strong class="text-white">增量索引</strong>：文件内容未变则跳过重建，重复检索不重复计算</li>
+            <li><strong class="text-white">引用语法</strong>：<code class="bg-slate-800 px-2 py-0.5 rounded text-cyan-300 font-mono text-sm">@文件</code> 注入文件内容、<code class="bg-slate-800 px-2 py-0.5 rounded text-cyan-300 font-mono text-sm">@目录</code> 注入目录清单、<code class="bg-slate-800 px-2 py-0.5 rounded text-cyan-300 font-mono text-sm">#codebase 你的问题</code> 触发仓库级检索</li>
+            <li><strong class="text-white">无需额外配置</strong>：复用你已配置的模型接口做向量化，不强制再申请一套 API</li>
+          </ul>
+        </section>
+
+        <!-- 模型路由 -->
+        <section id="modelrouting" class="doc-section glass-card rounded-2xl p-6 md:p-8 mb-8">
+          <div class="doc-head"><div class="doc-icon">🧠</div><h2 class="text-2xl font-bold text-white">智能模型路由</h2></div>
+          <p class="text-slate-300 leading-relaxed mb-4">
+            配置了多个模型时，不必每次手动切换——软件会根据任务特征自动选型，在效果与成本之间取平衡。
+          </p>
+          <ul class="list-disc pl-6 space-y-2 text-slate-300">
+            <li><strong class="text-white">能力矩阵</strong>：内置国内主流模型的能力档案，按 旗舰 / 标准 / 快速 / 推理 四档归类</li>
+            <li><strong class="text-white">任务识别</strong>：自动区分视觉理解、深度推理、规划、编码、摘要、闲聊等任务类型</li>
+            <li><strong class="text-white">手动覆盖</strong>：在对话中用 <code class="bg-slate-800 px-2 py-0.5 rounded text-cyan-300 font-mono text-sm">@模型名</code> 可强制指定，优先级最高</li>
+            <li><strong class="text-white">一致性保证</strong>：同一轮任务内不会中途切换模型，避免上下文理解漂移</li>
+          </ul>
+          <div class="rounded-xl border border-cyan-500/25 bg-cyan-500/5 p-4 mt-5">
+            <p class="text-slate-300 text-sm leading-relaxed">
+              <strong class="text-cyan-300">可关闭：</strong>在设置的 Agent 行为中关闭「智能路由」后，
+              将始终使用当前激活的模型，行为完全可控。
+            </p>
+          </div>
+        </section>
+
+        <!-- RAG -->
+        <section id="rag" class="doc-section glass-card rounded-2xl p-6 md:p-8 mb-8">
+          <div class="doc-head"><div class="doc-icon">📚</div><h2 class="text-2xl font-bold text-white">文档问答 RAG</h2></div>
+          <p class="text-slate-300 leading-relaxed mb-4">
+            把长文档交给 AI 检索问答，不必再把整份资料复制进对话框。
+          </p>
+
+          <h3 class="text-lg font-semibold text-white mt-6 mb-3">支持的格式</h3>
+          <div class="flex flex-wrap gap-2 mb-2">
+            <span class="px-3 py-1 rounded-lg bg-white/5 border border-slate-700 text-xs text-slate-300 font-mono">.pdf</span>
+            <span class="px-3 py-1 rounded-lg bg-white/5 border border-slate-700 text-xs text-slate-300 font-mono">.docx</span>
+            <span class="px-3 py-1 rounded-lg bg-white/5 border border-slate-700 text-xs text-slate-300 font-mono">.md</span>
+            <span class="px-3 py-1 rounded-lg bg-white/5 border border-slate-700 text-xs text-slate-300 font-mono">.txt</span>
+            <span class="px-3 py-1 rounded-lg bg-white/5 border border-slate-700 text-xs text-slate-300 font-mono">.html</span>
+            <span class="px-3 py-1 rounded-lg bg-white/5 border border-slate-700 text-xs text-slate-300 font-mono">.csv</span>
+            <span class="px-3 py-1 rounded-lg bg-white/5 border border-slate-700 text-xs text-slate-300 font-mono">.xlsx / .xls / .ods</span>
+          </div>
+
+          <h3 class="text-lg font-semibold text-white mt-6 mb-3">工作方式</h3>
+          <ul class="list-disc pl-6 space-y-2 text-slate-300">
+            <li>文档<strong class="text-white">本地解析并切块建索引</strong>，按段落优先、长段落滑窗重叠的方式分块</li>
+            <li>提问时检索最相关的若干片段作为上下文交给模型，回答会<strong class="text-white">附带来源编号引用</strong></li>
+            <li>表格文件会自动截断超大数据（前 4 个工作表、每表前 500 行），避免一次性撑爆上下文</li>
+            <li>未配置向量模型时自动降级为关键词检索，功能可用性不受影响</li>
+          </ul>
+        </section>
+
+        <!-- 进程管理 -->
+        <section id="procmanager" class="doc-section glass-card rounded-2xl p-6 md:p-8 mb-8">
+          <div class="doc-head"><div class="doc-icon">⚙️</div><h2 class="text-2xl font-bold text-white">全局进程管理器</h2></div>
+          <p class="text-slate-300 leading-relaxed">统一管控终端、扩展、浏览器、Agent 所有子进程；关闭工作区自动销毁全部进程，杜绝僵尸进程。</p>
+        </section>
+
+        <!-- MCP 权限 -->
+        <section id="mcpperm" class="doc-section glass-card rounded-2xl p-6 md:p-8 mb-8">
+          <div class="doc-head"><div class="doc-icon">🔐</div><h2 class="text-2xl font-bold text-white">MCP 权限管控</h2></div>
+          <p class="text-slate-300 leading-relaxed">限制每个 MCP 服务读写目录、Shell 执行、网络访问，防止 MCP 服务越权操作本地文件。</p>
+        </section>
+
+        <!-- 高危拦截 -->
+        <section id="highrisk" class="doc-section glass-card rounded-2xl p-6 md:p-8 mb-8">
+          <div class="doc-head"><div class="doc-icon">⚠️</div><h2 class="text-2xl font-bold text-white">高危操作拦截规则</h2></div>
+          <p class="text-slate-300 leading-relaxed">高危 Shell 命令、大文件覆盖、目录删除操作弹窗确认，超时拒绝执行，保护本地代码安全。</p>
+        </section>
+
+        <!-- 审计日志 -->
+        <section id="auditlog" class="doc-section glass-card rounded-2xl p-6 md:p-8 mb-8">
+          <div class="doc-head"><div class="doc-icon">📜</div><h2 class="text-2xl font-bold text-white">审计日志</h2></div>
+          <p class="text-slate-300 leading-relaxed">完整记录全部文件修改、命令执行、工具调用，支持查询与导出审计记录。</p>
+        </section>
+
+        <!-- 内联对话 -->
+        <section id="ctrlk" class="doc-section glass-card rounded-2xl p-6 md:p-8 mb-8">
+          <div class="doc-head"><div class="doc-icon">⌨️</div><h2 class="text-2xl font-bold text-white">编辑器内联对话 Ctrl+K</h2></div>
+          <p class="text-slate-300 leading-relaxed">选中代码，按下 <code class="bg-slate-800 px-2 py-0.5 rounded text-cyan-300 font-mono text-sm">Ctrl+K</code> 唤起内联 AI 对话，直接修改选中片段，实时预览 Diff 变更。</p>
+        </section>
+
+        <!-- AI 行内补全 -->
+        <section id="inline" class="doc-section glass-card rounded-2xl p-6 md:p-8 mb-8">
+          <div class="doc-head"><div class="doc-icon">✨</div><h2 class="text-2xl font-bold text-white">AI 行内补全（ghost-text）</h2></div>
+          <p class="text-slate-300 leading-relaxed mb-4">在编辑器里正常敲代码，光标处会以灰色 ghost-text 形式给出补全建议，按 <code class="bg-slate-800 px-2 py-0.5 rounded text-cyan-300 font-mono text-sm">Tab</code> 采纳，继续输入或按 <code class="bg-slate-800 px-2 py-0.5 rounded text-cyan-300 font-mono text-sm">Esc</code> 忽略。</p>
+          <ul class="list-disc pl-6 space-y-2 text-slate-300">
+            <li><strong class="text-white">上下文感知</strong>：提示由当前文件内容 + 光标前后代码构造，不需要额外写说明。</li>
+            <li><strong class="text-white">成本可控</strong>：结果做 LRU 缓存，同一位置重复触发不重复请求；并发去重，快速连打不会堆积请求。</li>
+            <li><strong class="text-white">随时打断</strong>：按 <code class="bg-slate-800 px-2 py-0.5 rounded text-cyan-300 font-mono text-sm">Esc</code> 立即取消在途请求，不阻塞输入。</li>
+            <li><strong class="text-white">可关闭</strong>：设置 → 编辑器 内可整体开关，不想用时零打扰。</li>
+          </ul>
+        </section>
+
+        <!-- @引用 -->
+        <section id="atfile" class="doc-section glass-card rounded-2xl p-6 md:p-8 mb-8">
+          <div class="doc-head"><div class="doc-icon">@</div><h2 class="text-2xl font-bold text-white">@文件引用语法</h2></div>
+          <p class="text-slate-300 leading-relaxed">对话输入框使用 <code class="bg-slate-800 px-2 py-0.5 rounded text-cyan-300 font-mono text-sm">@文件名</code>，将指定文件送入模型上下文。</p>
+        </section>
+
+        <!-- Git 快照 -->
+        <section id="gitsnap" class="doc-section glass-card rounded-2xl p-6 md:p-8 mb-8">
+          <div class="doc-head"><div class="doc-icon">🌿</div><h2 class="text-2xl font-bold text-white">Git 任务快照与回滚</h2></div>
+          <p class="text-slate-300 leading-relaxed">Agent 每次执行任务自动生成 Git 快照检查点，可以一键回滚到任务执行前的代码状态。</p>
+        </section>
+
+        <!-- 终端调试 -->
+        <section id="terminaldebug" class="doc-section glass-card rounded-2xl p-6 md:p-8 mb-8">
+          <div class="doc-head"><div class="doc-icon">🖥️</div><h2 class="text-2xl font-bold text-white">终端 / 调试器使用</h2></div>
+          <p class="text-slate-300 leading-relaxed">内置终端与调试面板，Agent 执行的 Shell 命令可以直接在内置终端回放查看。</p>
+        </section>
+
+        <!-- 四视图同步 -->
+        <section id="sync" class="doc-section glass-card rounded-2xl p-6 md:p-8 mb-8">
+          <div class="doc-head"><div class="doc-icon">🔗</div><h2 class="text-2xl font-bold text-white">四视图实时同步（v1.2.17+）</h2></div>
+          <p class="text-slate-300 leading-relaxed mb-4">工作区、资源管理器、编辑器、终端四个视图共享同一份数据源，任一视图中的导航或操作都会实时同步到其他视图，无需手动切换或刷新。</p>
+          <div class="space-y-3">
+            <div class="rounded-xl border border-cyan-500/20 bg-cyan-500/[0.04] p-4">
+              <h3 class="text-base font-semibold text-cyan-300 mb-1.5">📁 文件变更自动刷新</h3>
+              <p class="text-slate-300 leading-relaxed text-sm">主进程递归监听工作区目录（跳过 node_modules/.git 等），文件增删改后 debounce 合并，只刷新受影响目录而非全树重载。资源管理器中被修改的文件 3 秒琥珀色高亮，无需点"刷新"按钮。</p>
+            </div>
+            <div class="rounded-xl border border-violet-500/20 bg-violet-500/[0.04] p-4">
+              <h3 class="text-base font-semibold text-violet-300 mb-1.5">🤖 Agent 终端联动</h3>
+              <p class="text-slate-300 leading-relaxed text-sm">终端面板新增 "Agent" 标签，实时展示 Agent 的思考阶段、工具调用、命令输出、文件变更。Agent 运行时自动切换到 Agent 标签；即使停在 Shell 标签，顶部状态栏也会显示 Agent 运行指示（阶段 + 耗时 + 工具数 + 错误数）。</p>
+            </div>
+            <div class="rounded-xl border border-amber-500/20 bg-amber-500/[0.04] p-4">
+              <h3 class="text-base font-semibold text-amber-300 mb-1.5">📝 编辑器自动跟随</h3>
+              <p class="text-slate-300 leading-relaxed text-sm">Agent 写入文件后，编辑器标签出现 Bot 图标。无本地修改的文件自动重载最新内容；有本地未保存修改的文件显示 stale 提示条（"重新加载" / "保留我的改动"），避免覆盖用户编辑。Agent 正在修改当前文件时，编辑器顶部显示紫色实时提示。</p>
+            </div>
+            <div class="rounded-xl border border-emerald-500/20 bg-emerald-500/[0.04] p-4">
+              <h3 class="text-base font-semibold text-emerald-300 mb-1.5">🔄 跨视图单一数据源</h3>
+              <p class="text-slate-300 leading-relaxed text-sm">资源管理器、编辑器、终端共享同一份文件树状态和 Agent 活动状态（Zustand store）。一处变更处处同步：Agent 改文件 → 编辑器自动重载 + 资源管理器高亮 + 终端显示变更日志，全部自动完成。</p>
+            </div>
+          </div>
+        </section>
+
+        <!-- FAQ -->
+        <!-- Plan 任务规划 -->
+        <section id="plantools" class="doc-section glass-card rounded-2xl p-6 md:p-8 mb-8">
+          <div class="doc-head"><div class="doc-icon">🧭</div><h2 class="text-2xl font-bold text-white">Plan 任务规划与并行调度</h2></div>
+          <ul class="list-disc pl-6 space-y-2 text-slate-300">
+            <li><strong class="text-white">任务计划状态机</strong>：多步骤任务先建计划，步骤状态严格单向推进（待办 → 进行中 → 已完成 / 失败 / 跳过），终态不可回退，避免跑飞。</li>
+            <li><strong class="text-white">计划工具</strong>：<code class="px-1.5 py-0.5 rounded bg-white/10 font-mono text-xs">create_plan</code> / <code class="px-1.5 py-0.5 rounded bg-white/10 font-mono text-xs">add_plan_item</code> / <code class="px-1.5 py-0.5 rounded bg-white/10 font-mono text-xs">update_plan_status</code> / <code class="px-1.5 py-0.5 rounded bg-white/10 font-mono text-xs">get_plan</code>，进度可视化。</li>
+            <li><strong class="text-white">并行工具调度</strong>：按 DAG 拓扑排序并发执行，只读工具可并发、同文件写入串行、终端命令全局串行，默认并发上限 4，单个工具仍走审批。</li>
+            <li><strong class="text-white">失败处理</strong>：某步骤失败会标记该节点并回注结果，Agent 依据计划继续或补步骤，而不是整轮重来。</li>
+          </ul>
+        </section>
+
+        <!-- 多模态 -->
+        <section id="multimodal" class="doc-section glass-card rounded-2xl p-6 md:p-8 mb-8">
+          <div class="doc-head"><div class="doc-icon">🖼️</div><h2 class="text-2xl font-bold text-white">多模态粘贴截图</h2></div>
+          <ul class="list-disc pl-6 space-y-2 text-slate-300">
+            <li><strong class="text-white">直接粘贴</strong>：在输入框 Ctrl+V 粘贴截图，自动转多模态消息发给模型，无需先存成文件。</li>
+            <li><strong class="text-white">可叠加文字</strong>：截图 + 文字说明一起发送；也支持只发图片不写文字。</li>
+            <li><strong class="text-white">会随会话保存</strong>：图片与消息一起持久化，重新打开会话仍能看到，导出 / 分叉 / 回滚均保留。</li>
+            <li><strong class="text-white">模型要求</strong>：需所选模型支持视觉输入（如 Qwen-VL、GLM-4V 等）；纯文本模型只收到文字部分。</li>
+          </ul>
+        </section>
+
+        <!-- headless -->
+        <section id="headless" class="doc-section glass-card rounded-2xl p-6 md:p-8 mb-8">
+          <div class="doc-head"><div class="doc-icon">⌨️</div><h2 class="text-2xl font-bold text-white">headless 命令行（v1.3.3+）</h2></div>
+          <p class="text-slate-300 leading-relaxed mb-4">把 IDE 内的 Agent 内核搬到纯 Node 进程运行，用于 CI、脚本、管道等无窗口场景。工具、审批策略、模型路由、任务计划、文档检索与桌面端完全一致，差别只在窗口适配层。</p>
+
+          <h3 class="text-lg font-semibold text-white mt-6 mb-3">典型用法</h3>
+          <pre class="rounded-xl bg-slate-950/70 border border-slate-700/60 p-4 overflow-x-auto text-xs font-mono text-slate-300 leading-relaxed"># 一次性任务
+cnkeide -p "把这个报错修掉" --cwd ./repo
+
+# 从管道读任务
+git diff | cnkeide --stdin --mode debug
+
+# CI 内机器可读输出
+cnkeide -p "修复 lint" --json --approve-policy never
+
+# 只取最终文本，方便 shell 变量
+TEXT=$(cnkeide -p "总结这次改动" --final-only)</pre>
+
+          <h3 class="text-lg font-semibold text-white mt-6 mb-3">常用参数</h3>
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm text-slate-300 border border-slate-700/60 rounded-xl overflow-hidden">
+              <thead class="bg-white/5 text-slate-200"><tr><th class="text-left px-4 py-2 font-semibold">参数</th><th class="text-left px-4 py-2 font-semibold">说明</th></tr></thead>
+              <tbody>
+                <tr><td class="px-4 py-2 font-mono text-cyan-300 whitespace-nowrap">-p, --prompt</td><td class="px-4 py-2">任务描述，或用位置参数直接跟文本</td></tr>
+                <tr><td class="px-4 py-2 font-mono text-cyan-300 whitespace-nowrap">--stdin</td><td class="px-4 py-2">从标准输入读取任务（与 -p 同时存在时拼接）</td></tr>
+                <tr><td class="px-4 py-2 font-mono text-cyan-300 whitespace-nowrap">--cwd</td><td class="px-4 py-2">工作区根目录，工具相对路径以此为根</td></tr>
+                <tr><td class="px-4 py-2 font-mono text-cyan-300 whitespace-nowrap">--mode</td><td class="px-4 py-2">ask / craft / plan / debug</td></tr>
+                <tr><td class="px-4 py-2 font-mono text-cyan-300 whitespace-nowrap">--model</td><td class="px-4 py-2">按配置 ID 或模型名锁定模型，命中后关闭自动路由</td></tr>
+                <tr><td class="px-4 py-2 font-mono text-cyan-300 whitespace-nowrap">--json</td><td class="px-4 py-2">NDJSON 事件流，每行一个 JSON 对象</td></tr>
+                <tr><td class="px-4 py-2 font-mono text-cyan-300 whitespace-nowrap">--final-only</td><td class="px-4 py-2">只输出最终文本</td></tr>
+                <tr><td class="px-4 py-2 font-mono text-cyan-300 whitespace-nowrap">--approve-policy</td><td class="px-4 py-2">never / untrusted（默认）/ on-request</td></tr>
+                <tr><td class="px-4 py-2 font-mono text-cyan-300 whitespace-nowrap">--allow-tool</td><td class="px-4 py-2">额外放行的工具，可重复或逗号分隔，* 表示全部</td></tr>
+                <tr><td class="px-4 py-2 font-mono text-cyan-300 whitespace-nowrap">--allow-command-pattern</td><td class="px-4 py-2">execute_command 允许的命令正则，可重复</td></tr>
+                <tr><td class="px-4 py-2 font-mono text-cyan-300 whitespace-nowrap">--data-dir</td><td class="px-4 py-2">指定数据目录（默认 ~/.cnkeide）</td></tr>
+                <tr><td class="px-4 py-2 font-mono text-cyan-300 whitespace-nowrap">--timeout / --max-turns</td><td class="px-4 py-2">整体超时（秒）与 Agent 最大轮次</td></tr>
+                <tr><td class="px-4 py-2 font-mono text-cyan-300 whitespace-nowrap">--mcp</td><td class="px-4 py-2">启动已配置的 MCP 服务（默认关闭，避免静默拉起常驻进程）</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3 class="text-lg font-semibold text-white mt-6 mb-3">输出与退出码</h3>
+          <ul class="list-disc pl-6 space-y-2 text-slate-300">
+            <li><strong class="text-white">stdout 只有数据</strong>：默认流式文本，<code class="px-1.5 py-0.5 rounded bg-white/10 font-mono text-xs">--json</code> 为事件流，<code class="px-1.5 py-0.5 rounded bg-white/10 font-mono text-xs">--final-only</code> 只有最终结果；所有日志走 stderr，管道友好。</li>
+            <li><strong class="text-white">事件类型</strong>：run_start、assistant_delta、thinking、tool_call、tool_result、context_state、usage、error、run_end。</li>
+            <li><strong class="text-white">退出码</strong>：0 成功 / 1 失败 / 2 用法错误 / 3 审批被拒 / 4 上下文超限 / 124 超时。</li>
+          </ul>
+
+          <h3 class="text-lg font-semibold text-white mt-6 mb-3">无人值守审批</h3>
+          <ul class="list-disc pl-6 space-y-2 text-slate-300">
+            <li>无窗口时不再等弹窗超时：命中审批规则后交给命令行裁决器判断。</li>
+            <li><code class="px-1.5 py-0.5 rounded bg-white/10 font-mono text-xs">untrusted</code>（默认）只放行只读工具，写文件与执行命令一律拒绝且不落盘。</li>
+            <li>需要放开时用 <code class="px-1.5 py-0.5 rounded bg-white/10 font-mono text-xs">--allow-tool</code> / <code class="px-1.5 py-0.5 rounded bg-white/10 font-mono text-xs">--allow-command-pattern</code> 精确授权，或 <code class="px-1.5 py-0.5 rounded bg-white/10 font-mono text-xs">--approve-policy never</code> 全放行（建议只用于 CI 容器）。</li>
+          </ul>
+
+          <h3 class="text-lg font-semibold text-white mt-6 mb-3">数据目录</h3>
+          <p class="text-slate-300 leading-relaxed">命令行默认使用 <code class="px-1.5 py-0.5 rounded bg-white/10 font-mono text-xs">~/.cnkeide</code>，与桌面端隔离，避免脚本运行改写桌面配置。要复用桌面端已配好的模型：</p>
+          <pre class="mt-3 rounded-xl bg-slate-950/70 border border-slate-700/60 p-4 overflow-x-auto text-xs font-mono text-slate-300">cnkeide -p "..." --data-dir "%APPDATA%/CnkeIDE"</pre>
+        </section>
+
+        <!-- 更新 -->
+        <section id="update" class="doc-section glass-card rounded-2xl p-6 md:p-8 mb-8">
+          <div class="doc-head"><div class="doc-icon">🔄</div><h2 class="text-2xl font-bold text-white">软件更新与版本管理</h2></div>
+          <ul class="list-disc pl-6 space-y-2 text-slate-300">
+            <li><strong class="text-white">检查更新</strong>：设置 → 关于 → 软件更新，可手动检查；启动后也会自动静默检查一次。</li>
+            <li><strong class="text-white">增量热更新</strong>：基于 blockmap 差分下载，只传变更部分；下载完成校验 SHA512 后才允许安装。</li>
+            <li><strong class="text-white">失败重试</strong>：网络中断自动重试（默认 3 次，指数退避），也可点取消后重新下载。</li>
+            <li><strong class="text-white">强制更新兜底</strong>：服务端可下发最低可用版本，当前版本过低时会弹不可跳过的提示，避免旧版本连接新接口失败。</li>
+            <li><strong class="text-white">手动覆盖安装</strong>：自动更新异常时，直接从下载页覆盖安装即可，会话、工作区与模型配置全部保留。</li>
+          </ul>
+          <p class="mt-4 text-slate-300 leading-relaxed">每次更新的详细说明见 <a href="/cnkeide/updates/releasenotes.txt" target="_blank" rel="noopener" class="text-cyan-300 underline decoration-cyan-400/40 hover:text-white transition">更新说明</a>，历史版本与公告见 <a href="/announcements/" class="text-cyan-300 underline decoration-cyan-400/40 hover:text-white transition">公告中心</a>。</p>
+        </section>
+
+        <!-- 公告反馈 -->
+        <section id="community" class="doc-section glass-card rounded-2xl p-6 md:p-8 mb-8">
+          <div class="doc-head"><div class="doc-icon">📣</div><h2 class="text-2xl font-bold text-white">公告与意见反馈</h2></div>
+          <ul class="list-disc pl-6 space-y-2 text-slate-300">
+            <li><strong class="text-white">应用内公告</strong>：版本更新、重要变更会以公告形式弹出，可在公告中心查看历史，同一条只需读一次。</li>
+            <li><strong class="text-white">网页公告中心</strong>：<a href="/announcements/" class="text-cyan-300 underline decoration-cyan-400/40 hover:text-white transition">ai.cnkes.cn/announcements/</a>，与客户端同源，不装软件也能看。</li>
+            <li><strong class="text-white">意见反馈</strong>：<a href="/feedback/" class="text-cyan-300 underline decoration-cyan-400/40 hover:text-white transition">ai.cnkes.cn/feedback/</a>，提交问题与建议，可附联系方式；也可在应用内反馈入口提交。</li>
+            <li><strong class="text-white">问题定位建议</strong>：反馈时附上版本号、模型配置（勿贴 API Key）、复现步骤与截图，处理更快。</li>
+          </ul>
+        </section>
+
+        <section id="faq" class="doc-section glass-card rounded-2xl p-6 md:p-8 mb-8">
+          <div class="doc-head"><div class="doc-icon">❓</div><h2 class="text-2xl font-bold text-white">常见问题</h2></div>
+          <div class="space-y-4">
+            <div id="faq1" class="rounded-xl border border-slate-700/60 bg-slate-900/40 p-5">
+              <h3 class="text-base font-semibold text-white mb-2">FAQ：僵尸进程如何处理？</h3>
+              <p class="text-slate-300 leading-relaxed">新版本全局进程管理器自动处理；旧版本手动关闭全部子进程，重启软件。</p>
+            </div>
+            <div id="faq2" class="rounded-xl border border-slate-700/60 bg-slate-900/40 p-5">
+              <h3 class="text-base font-semibold text-white mb-2">FAQ：MCP 服务启动失败？</h3>
+              <p class="text-slate-300 leading-relaxed">打开 MCP 日志面板，查看启动报错，检查命令路径、权限配置。</p>
+            </div>
+            <div id="faq3" class="rounded-xl border border-slate-700/60 bg-slate-900/40 p-5">
+              <h3 class="text-base font-semibold text-white mb-2">FAQ：Token 消耗太高？</h3>
+              <p class="text-slate-300 leading-relaxed">开启会话自动压缩，调小工具调用历史限额，开启 MCP 工具动态裁剪。</p>
+            </div>
+
+            <div id="faq4" class="rounded-xl border border-slate-700/60 bg-slate-900/40 p-5">
+              <h3 class="text-base font-semibold text-white mb-2">FAQ：套用模板时提示「请先生成大纲」？</h3>
+              <p class="text-slate-300 leading-relaxed">套用模板需要先有大纲作为填充内容。请先在「AI 主题生成」中生成并确认大纲，再切换到模板库操作。</p>
+            </div>
+            <div id="faq5" class="rounded-xl border border-slate-700/60 bg-slate-900/40 p-5">
+              <h3 class="text-base font-semibold text-white mb-2">FAQ：生成的 PPT 里文字位置不对？</h3>
+              <p class="text-slate-300 leading-relaxed">说明该模板版式较特殊，软件已退化为占位符替换策略。建议换用同分类下版式更规整的模板，或改用内置主题生成。</p>
+            </div>
+            <div id="faq6" class="rounded-xl border border-slate-700/60 bg-slate-900/40 p-5">
+              <h3 class="text-base font-semibold text-white mb-2">FAQ：模板库加载不出来？</h3>
+              <p class="text-slate-300 leading-relaxed">模板库需联网访问服务器。请检查网络连通性与代理设置；缩略图较大时首屏加载稍慢，属正常现象。</p>
+            </div>
+            <div id="faq7" class="rounded-xl border border-slate-700/60 bg-slate-900/40 p-5">
+              <h3 class="text-base font-semibold text-white mb-2">FAQ：项目一键成稿的内容不准确？</h3>
+              <p class="text-slate-300 leading-relaxed">该功能完全基于工作区内的 README 与文档提炼，不会编造未提及的功能。请先完善项目 README，或在生成前指定关注方向。</p>
+            </div>
+            <div id="faq8" class="rounded-xl border border-slate-700/60 bg-slate-900/40 p-5">
+              <h3 class="text-base font-semibold text-white mb-2">FAQ：命令行接入 CI 后跑不通 / 判断不了结果？</h3>
+              <p class="text-slate-300 leading-relaxed">先在本地用 <code class="px-1.5 py-0.5 rounded bg-white/10 font-mono text-xs">cnkeide -p "..." --json</code> 复现。退出码即结论：0 成功、1 失败、2 参数错、3 审批被拒、4 上下文超限、124 超时，CI 里直接判退出码即可。若全是被拒，说明默认策略拦住了写操作，按需加 <code class="px-1.5 py-0.5 rounded bg-white/10 font-mono text-xs">--allow-tool</code> 或 <code class="px-1.5 py-0.5 rounded bg-white/10 font-mono text-xs">--allow-command-pattern</code>；容器内可直接用 <code class="px-1.5 py-0.5 rounded bg-white/10 font-mono text-xs">--approve-policy never</code>。模型配置需通过 <code class="px-1.5 py-0.5 rounded bg-white/10 font-mono text-xs">--data-dir</code> 指向已有配置，否则会按默认 <code class="px-1.5 py-0.5 rounded bg-white/10 font-mono text-xs">~/.cnkeide</code> 报未配置。</p>
+            </div>
+            <div id="faq9" class="rounded-xl border border-slate-700/60 bg-slate-900/40 p-5">
+              <h3 class="text-base font-semibold text-white mb-2">FAQ：更新失败、卡在「正在安装」怎么办？</h3>
+              <p class="text-slate-300 leading-relaxed">多为旧进程未退出导致文件被占用。先在任务管理器结束所有 CnkeIDE 相关进程，再重新检查更新；仍不行就重启系统后手动安装最新包覆盖，会话与配置都在用户数据目录，不会丢失。</p>
+            </div>
+          </div>
+        </section>
+
+        <!-- Roadmap -->
+        <section id="roadmap" class="doc-section glass-card rounded-2xl p-6 md:p-8 mb-8">
+          <div class="doc-head"><div class="doc-icon">🗺️</div><h2 class="text-2xl font-bold text-white">迭代 Roadmap</h2></div>
+          <!-- 已交付 -->
+          <div class="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4 mb-4">
+            <h3 class="font-semibold text-emerald-300 mb-3">v1.3.3 已交付</h3>
+            <ul class="list-disc pl-5 space-y-1.5 text-slate-300 text-sm">
+              <li>AI 演示文稿生成（项目一键成稿 / 主题生成）</li>
+              <li>在线模板库：分类筛选 + 搜索 + 下载套用</li>
+              <li>PPTX / PDF 导出，支持图表与表格</li>
+              <li>代码库语义检索（三路召回 + 符号级切分）</li>
+              <li>智能模型路由（国内主流模型能力矩阵）</li>
+              <li>文档问答 RAG（PDF / DOCX / Markdown / 表格）</li>
+              <li>客户端增量热更新（差分下载 + 完整性校验）</li>
+              <li>四视图实时同步（工作区 / 资源管理器 / 编辑器 / 终端）</li>
+              <li>Agent 终端联动（双标签 + 实时运行状态 + 自动跟随）</li>
+              <li>文件变更自动刷新（目录级增量 + 跨视图广播）</li>
+              <li>编辑器自动跟随 Agent（自动重载 / stale 提示条）</li>
+              <li>headless 命令行（同一内核无界面运行 / NDJSON / 退出码）</li>
+              <li>Ask / Craft / Plan / Debug 四运行模式</li>
+              <li>Plan 任务规划工具与步骤状态机</li>
+              <li>并行工具调度（DAG / 同文件串行）</li>
+              <li>多模态粘贴截图（随会话持久化）</li>
+              <li>上下文 Token 实时显示与自动压缩</li>
+              <li>强制更新兜底与差分热更新</li>
+              <li>公告中心与意见反馈入口</li>
+            </ul>
+          </div>
+          <div class="grid md:grid-cols-3 gap-4">
+            <div class="rounded-xl border border-cyan-500/30 bg-cyan-500/5 p-4">
+              <h3 class="font-semibold text-cyan-300 mb-3">高优先级</h3>
+              <ul class="list-disc pl-5 space-y-1.5 text-slate-300 text-sm">
+                <li>安装包瘦身</li>
+                <li>Agent 熔断可视化面板</li>
+                <li>MCP 权限管控界面</li>
+                <li>Linux 版本</li>
+              </ul>
+            </div>
+            <div class="rounded-xl border border-violet-500/30 bg-violet-500/5 p-4">
+              <h3 class="font-semibold text-violet-300 mb-3">中优先级</h3>
+              <ul class="list-disc pl-5 space-y-1.5 text-slate-300 text-sm">
+                <li>编辑器补全增强</li>
+                <li>Agent 任务可视化面板</li>
+                <li>Git 操作 UI 界面</li>
+                <li>MCP 日志面板</li>
+                <li>快捷键自定义</li>
+                <li>分层配置可视化界面</li>
+              </ul>
+            </div>
+            <div class="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4">
+              <h3 class="font-semibold text-emerald-300 mb-3">远期规划</h3>
+              <ul class="list-disc pl-5 space-y-1.5 text-slate-300 text-sm">
+                <li>Agent 角色模板市场</li>
+                <li>Figma 转代码能力</li>
+                <li>多模态能力增强</li>
+                <li>会话分组管理</li>
+                <li>多 Agent 协作</li>
+                <li>项目代码体检</li>
+                <li>全自动测试生成体系</li>
+              </ul>
+            </div>
+          </div>
+        </section>
+
+      </main>
+    </div>
+  </div>
+
+  <!-- ===================== 页脚（与首页一致） ===================== -->
+  <footer class="border-t border-white/5 py-10">
+    <div class="max-w-7xl mx-auto px-5 md:px-8 flex flex-col md:flex-row items-center justify-between gap-6">
+      <div class="flex items-center gap-2.5">
+        <div class="w-7 h-7 rounded-lg bg-gradient-to-br from-cyan-400 to-sky-600 flex items-center justify-center">
+          <svg viewBox="0 0 24 24" class="w-4 h-4 text-white" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z"></path></svg>
+        </div>
+        <div class="leading-tight">
+          <div class="text-white font-bold text-sm">CnkeIDE</div>
+          <div class="text-[9px] text-cyan-300/70 -mt-0.5 font-mono">CnkeClaw</div>
+        </div>
+      </div>
+      <div class="flex flex-wrap items-center justify-center md:justify-end gap-x-6 gap-y-2 text-sm text-slate-400">
+        <a href="index.html#home" class="hover:text-white transition">首页</a>
+        <a href="index.html#latest" class="hover:text-white transition">更新日志</a>
+        <a href="/announcements/" class="hover:text-white transition">公告中心</a>
+        <a href="/feedback/" class="hover:text-white transition">意见反馈</a>
+        <a href="https://github.com/CNKE-AI/cnkeide" target="_blank" rel="noopener" class="hover:text-white transition">Github</a>
+        <a href="index.html#download" class="hover:text-white transition">下载</a>
+        <span class="text-slate-600">© 2026 CnkeIDE · <span id="footer-ver" class="font-mono">v1.3.3</span></span>
+      </div>
+    </div>
+    <div class="max-w-7xl mx-auto px-5 md:px-8 mt-6 pt-4 border-t border-white/5 text-xs text-slate-500 text-center">
+      免责声明：CnkeIDE 为自研 AI 编程工具，仅用于学习与研究用途。请在遵守当地法律法规的前提下使用。
+    </div>
+  </footer>
+
+  <script>
+    // 移动端菜单
+    const btn = document.getElementById('mobile-menu-btn');
+    const menu = document.getElementById('mobile-menu');
+    if (btn && menu) btn.addEventListener('click', () => menu.classList.toggle('hidden'));
+
+    // 平滑滚动到锚点
+    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+      anchor.addEventListener('click', function (e) {
+        const targetId = this.getAttribute('href');
+        const targetDom = document.querySelector(targetId);
+        if (targetDom) {
+          e.preventDefault();
+          targetDom.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      });
+    });
+
+    // 左侧目录高亮当前章节
+    const sections = document.querySelectorAll('.doc-section');
+    const tocLinks = document.querySelectorAll('.toc-link');
+    const tocObserver = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          tocLinks.forEach(l => l.classList.remove('active'));
+          const id = entry.target.getAttribute('id');
+          const link = document.querySelector('.toc-link[href="#' + id + '"]');
+          if (link) link.classList.add('active');
+        }
+      });
+    }, { rootMargin: '-100px 0px -60% 0px' });
+    sections.forEach(s => tocObserver.observe(s));
+
+    // ===== 动态下载地址：自动读取 latest.yml 最新版本 =====
+    (function autoUpdateDownload() {
+      fetch('/cnkeide/updates/latest.yml', { cache: 'no-store' })
+        .then(function (res) { if (!res.ok) throw new Error('HTTP ' + res.status); return res.text(); })
+        .then(function (yml) {
+          var m = yml.match(/^\s*(?:-\s+)?url:\s*(.+)$/m) || yml.match(/^\s*path:\s*(.+)$/m);
+          if (!m) return;
+          var fileName = m[1].trim().replace(/ /g, '%20');
+          var href = '/cnkeide/updates/' + fileName;
+          document.querySelectorAll('a[download][href*="/cnkeide/updates/"]').forEach(function (a) {
+            if (/\.exe$/i.test(a.getAttribute('href'))) a.setAttribute('href', href);
+          });
+        })
+        .catch(function () {});
+    })();
+
+    // 页脚版本号跟随 latest.yml
+    (function syncFooterVersion() {
+      fetch('/cnkeide/updates/latest.yml', { cache: 'no-store' })
+        .then(function (r) { return r.ok ? r.text() : ''; })
+        .then(function (yml) {
+          var m = yml.match(/^\s*version:\s*([0-9.]+)/m);
+          if (!m) return;
+          var el = document.getElementById('footer-ver');
+          if (el) el.textContent = 'v' + m[1];
+        })
+        .catch(function () {});
+    })();
+  </script>
+</body>
+</html>

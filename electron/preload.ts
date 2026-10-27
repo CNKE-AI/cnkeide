@@ -160,6 +160,8 @@ const mcpApi = {
   listTools: (serverId: string) => ipcRenderer.invoke('mcp:listTools', serverId),
   refreshTools: (serverId: string) => ipcRenderer.invoke('mcp:refreshTools', serverId),
   callTool: (serverId: string, toolName: string, args: unknown) => ipcRenderer.invoke('mcp:callTool', serverId, toolName, args),
+  getCatalog: (forceRefresh = false) => ipcRenderer.invoke('mcp:getCatalog', forceRefresh),
+  installFromCatalog: (entry: any) => ipcRenderer.invoke('mcp:installFromCatalog', entry),
   onStatusChanged: (cb: (status: unknown) => void) => {
     const handler = (_e: Electron.IpcRendererEvent, status: unknown) => cb(status);
     ipcRenderer.on('mcp:status-changed', handler);

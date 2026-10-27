@@ -1,6 +1,24 @@
 import type { ChildProcess } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { spawnSafe, sanitizeEnv } from '../core-fork/util/SafeSpawn';
+
+/**
+ * 杀掉子进程及其全部子孙进程。
+ * Windows 下 child.kill() 只杀直接子进程（powershell），它启动的构建/测试命令会残留，
+ * 因此用 taskkill /T；POSIX 下退化为 kill pid（spawn 未 setpgid）。
+ */
+function killProcessTree(child: ChildProcess, isWin: boolean): void {
+  try {
+    if (isWin && typeof child.pid === 'number') {
+      execFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], () => {});
+    } else {
+      child.kill('SIGKILL');
+    }
+  } catch {
+    /* 进程可能已退出 */
+  }
+}
 
 export interface TerminalSession {
   pid: number;
@@ -191,7 +209,8 @@ export class TerminalAdapter extends EventEmitter {
     return Array.from(this.sessions.keys());
   }
 
-  async exec(cmd: string, cwd: string, timeout: number = 30000): Promise<{ success: boolean; stdout?: string; stderr?: string; error?: string }> {
+  async exec(cmd: string, cwd: string, timeout: number = 30000, signal?: AbortSignal): Promise<{ success: boolean; stdout?: string; stderr?: string; error?: string }> {
+    if (signal?.aborted) return { success: false, error: '已中止' };
     return new Promise((resolve) => {
       const isWin = process.platform === 'win32';
       let shell: string;
@@ -215,24 +234,38 @@ export class TerminalAdapter extends EventEmitter {
       let stdout = '';
       let stderr = '';
       let timer: NodeJS.Timeout | null = null;
+      let settled = false;
 
       child.stdout?.on('data', (data: Buffer) => { stdout += decodeOutput(data); });
       child.stderr?.on('data', (data: Buffer) => { stderr += decodeOutput(data); });
 
-      child.on('close', (code: number | null) => {
+      const finish = (r: { success: boolean; stdout?: string; stderr?: string; error?: string }) => {
+        if (settled) return;
+        settled = true;
         if (timer) clearTimeout(timer);
-        resolve(code === 0 ? { success: true, stdout, stderr } : { success: false, stdout, stderr, error: `Exit code: ${code}` });
+        signal?.removeEventListener('abort', onAbort);
+        resolve(r);
+      };
+
+      // 用户点「停止」/ 任务取消：连同子进程树一起杀掉，否则 powershell 下的孙进程会残留
+      const onAbort = () => {
+        killProcessTree(child, isWin);
+        finish({ success: false, stdout, stderr, error: '已中止' });
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+
+      child.on('close', (code: number | null) => {
+        finish(code === 0 ? { success: true, stdout, stderr } : { success: false, stdout, stderr, error: `Exit code: ${code}` });
       });
 
       child.on('error', (err: Error) => {
-        if (timer) clearTimeout(timer);
-        resolve({ success: false, stdout, stderr, error: err.message });
+        finish({ success: false, stdout, stderr, error: err.message });
       });
 
       if (timeout > 0) {
         timer = setTimeout(() => {
-          child.kill('SIGKILL');
-          resolve({ success: false, stdout, stderr, error: 'Timeout' });
+          killProcessTree(child, isWin);
+          finish({ success: false, stdout, stderr, error: 'Timeout' });
         }, timeout);
       }
     });

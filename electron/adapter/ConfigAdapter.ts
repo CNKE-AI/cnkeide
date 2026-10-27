@@ -1,12 +1,12 @@
-import { app } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { resolveUserDataDir } from '../util/paths';
 
 /**
  * ConfigAdapter - 配置适配层
  * 替换 VSCode globalState / workspace configuration
- * 全部写入 Electron userData 目录的本地 JSON 文件
+ * 全部写入本地 JSON 文件（Electron 下为 userData，CLI 下为 ~/.cnkeide）
  */
 export class ConfigAdapter {
   private configDir: string = '';
@@ -17,16 +17,28 @@ export class ConfigAdapter {
   private writeFailures = 0;
   /** 主窗口引用：写盘失败时用于向用户可见地报警（否则设置会静默丢失） */
   private onWriteFailure?: (message: string) => void;
+  /** 显式数据目录（CLI / 测试注入）；为空时使用环境默认目录 */
+  private userDataDirOverride?: string;
+
+  constructor(userDataDir?: string) {
+    this.userDataDirOverride = userDataDir;
+  }
+
+  /** 当前使用的用户数据根目录（init 之后可用） */
+  getUserDataDir(): string {
+    return this.userDataDirOverride || resolveUserDataDir();
+  }
 
   async init(): Promise<void> {
-    this.configDir = path.join(app.getPath('userData'), 'config');
+    const userDataDir = this.getUserDataDir();
+    this.configDir = path.join(userDataDir, 'config');
     this.dataFile = path.join(this.configDir, 'app-config.json');
 
     // 迁移旧 productName（cnke-claw）的配置：之前 productName 从 cnke-claw 改为 CnkeIDE，
-    // 导致 app.getPath('userData') 变化，旧配置（工作区/API Key 等）在新目录找不到。
+    // 导致 userData 目录变化，旧配置（工作区/API Key 等）在新目录找不到。
     // 检测到新配置不存在时，从旧目录复制一份，实现无缝迁移。
     if (!existsSync(this.dataFile)) {
-      const oldUserData = path.join(path.dirname(app.getPath('userData')), 'cnke-claw');
+      const oldUserData = path.join(path.dirname(userDataDir), 'cnke-claw');
       const oldConfigFile = path.join(oldUserData, 'config', 'app-config.json');
       if (existsSync(oldConfigFile)) {
         try {

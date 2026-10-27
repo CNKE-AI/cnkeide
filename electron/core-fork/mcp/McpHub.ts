@@ -112,6 +112,13 @@ function serializeToolContent(content: unknown): string {
   return parts.join('\n').trim();
 }
 
+export function normalizeMcpArgs(args: unknown): string[] {
+  if (Array.isArray(args)) return args.filter((arg): arg is string => typeof arg === 'string');
+  if (typeof args !== 'string') return [];
+  return (args.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [])
+    .map((arg) => arg.replace(/"([^"]*)"|'([^']*)'/g, (_match, doubleQuoted, singleQuoted) => doubleQuoted ?? singleQuoted));
+}
+
 function plainEnv(): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined) env[k] = v;
@@ -139,7 +146,8 @@ export class McpHub {
   }
 
   listServers(): McpServerConfig[] {
-    return this.config.get<McpServerConfig[]>('mcpServers', []);
+    const servers = this.config.get<McpServerConfig[]>('mcpServers', []);
+    return servers.map((server) => ({ ...server, args: normalizeMcpArgs(server.args) }));
   }
 
   /** 应用启动时自动连接所有 enabled 服务器（启动恢复）。并发执行：单台坏配置不再串行拖慢整条启动链 */
@@ -150,6 +158,7 @@ export class McpHub {
 
   /** 新增（无 id）或整体更新（带 id，供编辑） */
   async addServer(cfg: McpServerConfig): Promise<{ success: boolean; error?: string }> {
+    cfg = { ...cfg, args: normalizeMcpArgs(cfg.args) };
     const servers = this.listServers();
     const existed = cfg.id && servers.some((s) => s.id === cfg.id);
     if (existed) {

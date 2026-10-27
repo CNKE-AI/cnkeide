@@ -7,6 +7,7 @@ import {
   FolderPlus, FilePlus, Trash2, Edit3, FolderOpen as OpenFolderIcon, Scissors, Loader2,
 } from 'lucide-react';
 
+import { toast } from '../../utils/toast';
 /* ---------- 文件图标（按扩展名着色） ---------- */
 const FileIcon: React.FC<{ name: string }> = ({ name }) => {
   const ext = name.split('.').pop()?.toLowerCase() ?? '';
@@ -140,7 +141,7 @@ const FileTree: React.FC = () => {
     if (result.success) {
       await refreshDir(parent);
     } else {
-      alert(result.error);
+      toast.error(result.error);
     }
   };
 
@@ -152,7 +153,7 @@ const FileTree: React.FC = () => {
     const target = window.cnke.path.join(parent, name);
     const result = await window.cnke.fs.createDir(target);
     if (result.success) await refreshDir(parent);
-    else alert(result.error);
+    else toast.error(result.error);
   };
 
   const doRename = async (node: FileNode) => {
@@ -166,7 +167,7 @@ const FileTree: React.FC = () => {
       if (selectedPath === node.path) setSelectedPath(newPath);
       await refreshDir(parent);
     } else {
-      alert(result.error);
+      toast.error(result.error);
     }
   };
 
@@ -178,7 +179,7 @@ const FileTree: React.FC = () => {
       if (selectedPath === node.path) setSelectedPath(null);
       await refreshDir(parentDirOf(node));
     } else {
-      alert(result.error);
+      toast.error(result.error);
     }
   };
 

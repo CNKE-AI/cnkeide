@@ -1,0 +1,769 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="scroll-smooth">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CnkeIDE · 本地优先 AI 编程 IDE</title>
+  <meta name="description" content="CnkeIDE（原名 CnkeIDE）— 本地优先开源 AI 编程 IDE，基于 Electron + React，自研 Agent 智能开发环境，深度兼容 MCP 协议，同一内核可在纯 Node 环境以命令行（headless CLI）无界面运行。" />
+
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            base: '#0f172a',
+            'base-light': '#111c38',
+            'cyan-accent': '#22d3ee',
+            'cyan-bright': '#0ea5e9',
+            'blue-deep': '#0b1226',
+          },
+          fontFamily: {
+            mono: ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
+          },
+          boxShadow: {
+            glow: '0 0 0 1px rgba(34,211,238,.15), 0 0 24px rgba(34,211,238,.12)',
+            'glow-lg': '0 8px 40px rgba(14,165,233,.25)',
+          },
+          backdropBlur: {
+            xs: '2px',
+          },
+        },
+      },
+    };
+  </script>
+
+  <style>
+    /* 基础全局样式 */
+    html, body {
+      background-color: #0f172a;
+      color: #e2e8f0;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* 背景网格与光晕 */
+    .bg-grid {
+      background-image:
+        linear-gradient(rgba(34, 211, 238, 0.045) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(34, 211, 238, 0.045) 1px, transparent 1px);
+      background-size: 56px 56px;
+    }
+    .glow-orb {
+      position: absolute;
+      border-radius: 9999px;
+      filter: blur(90px);
+      opacity: .45;
+      pointer-events: none;
+    }
+
+    /* 毛玻璃卡片 */
+    .glass-card {
+      background: linear-gradient(155deg, rgba(30,41,59,.62), rgba(15,23,42,.55));
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      border: 1px solid rgba(148,163,184,.12);
+      transition: all .35s cubic-bezier(.4,0,.2,1);
+    }
+    .glass-card:hover {
+      border-color: rgba(34,211,238,.35);
+      transform: translateY(-6px);
+      box-shadow: 0 16px 40px rgba(14,165,233,.18), 0 0 0 1px rgba(34,211,238,.1);
+    }
+
+    /* 主按钮 */
+    .btn-primary {
+      background: linear-gradient(120deg, #0ea5e9, #22d3ee);
+      color: #06121f;
+      transition: all .3s ease;
+      box-shadow: 0 8px 24px rgba(14,165,233,.28);
+    }
+    .btn-primary:hover {
+      box-shadow: 0 12px 32px rgba(34,211,238,.42);
+      transform: translateY(-2px);
+      filter: brightness(1.05);
+    }
+
+    /* 渐变文字 */
+    .text-gradient {
+      background: linear-gradient(100deg, #a5f3fc 0%, #22d3ee 45%, #0ea5e9 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+
+    /* 导航菜单项 */
+    .nav-link {
+      position: relative;
+      color: #94a3b8;
+      transition: color .25s;
+    }
+    .nav-link:hover { color: #e2e8f0; }
+    .nav-link::after {
+      content: '';
+      position: absolute;
+      left: 0; bottom: -6px;
+      width: 0; height: 2px;
+      background: linear-gradient(90deg,#22d3ee,#0ea5e9);
+      transition: width .3s ease;
+      border-radius: 2px;
+    }
+    .nav-link:hover::after { width: 100%; }
+
+    /* 滚动条 */
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: #0f172a; }
+    ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 8px; }
+    ::-webkit-scrollbar-thumb:hover { background: #334155; }
+
+    /* 平滑进入动画 */
+    .reveal { opacity: 0; transform: translateY(28px); transition: all .7s cubic-bezier(.4,0,.2,1); }
+    .reveal.in-view { opacity: 1; transform: translateY(0); }
+  </style>
+</head>
+
+<body class="bg-base text-slate-200 font-sans overflow-x-hidden">
+
+  <!-- ===================== 背景 ===================== -->
+  <div class="fixed inset-0 -z-10 overflow-hidden">
+    <div class="absolute inset-0 bg-grid"></div>
+    <div class="glow-orb w-[520px] h-[520px] bg-cyan-500/30 -top-40 -left-40"></div>
+    <div class="glow-orb w-[480px] h-[480px] bg-sky-600/25 top-1/3 -right-40"></div>
+    <div class="glow-orb w-[520px] h-[520px] bg-indigo-600/20 bottom-0 left-1/3"></div>
+  </div>
+
+  <!-- ===================== 导航栏 ===================== -->
+  <header class="fixed top-0 inset-x-0 z-50 backdrop-blur-md bg-base/70 border-b border-white/5">
+    <nav class="max-w-7xl mx-auto px-5 md:px-8 h-16 flex items-center justify-between">
+      <!-- Logo -->
+      <a href="#home" class="flex items-center gap-2.5 group">
+        <div class="w-9 h-9 rounded-lg bg-gradient-to-br from-cyan-400 to-sky-600 flex items-center justify-center shadow-glow">
+          <svg viewBox="0 0 24 24" class="w-5 h-5 text-white" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z"></path>
+          </svg>
+        </div>
+        <div class="leading-tight">
+          <div class="text-white font-bold text-lg tracking-tight">CnkeIDE</div>
+          <div class="text-[10px] text-cyan-300/70 -mt-1 font-mono">CnkeClaw</div>
+        </div>
+      </a>
+
+      <!-- 导航菜单 -->
+      <div class="hidden md:flex items-center gap-7 text-sm font-medium">
+        <a href="#home" class="nav-link">首页</a>
+        <a href="#features" class="nav-link">功能特性</a>
+        <a href="#highlights" class="nav-link">特色功能</a>
+        <a href="#roadmap" class="nav-link">迭代路线</a>
+        <a href="#latest" class="nav-link">最新版本</a>
+        <a href="docs.html" class="nav-link">文档</a>
+        <a href="/announcements/" class="nav-link">公告</a>
+        <a href="/feedback/" class="nav-link">反馈</a>
+        <a href="https://github.com/CNKE-AI/cnkeide" target="_blank" rel="noopener" class="nav-link">Github 仓库</a>
+        <a href="#download" class="nav-link">下载</a>
+      </div>
+
+      <!-- 立即下载按钮 -->
+      <a href="/cnkeide/updates/CnkeIDE%20Setup%201.3.3.exe" download class="btn-primary hidden md:flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-bold">
+        <svg viewBox="0 0 24 24" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"></path>
+          <path d="M7 10l5 5 5-5"></path>
+          <path d="M12 15V3"></path>
+        </svg>
+        立即下载
+      </a>
+
+      <!-- 移动端菜单按钮 -->
+      <button id="mobile-menu-btn" class="md:hidden p-2 text-slate-300 hover:text-white">
+        <svg id="menu-icon" viewBox="0 0 24 24" class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+      </button>
+    </nav>
+
+    <!-- 移动端下拉菜单 -->
+    <div id="mobile-menu" class="md:hidden hidden bg-base/95 backdrop-blur-xl border-t border-white/5 px-6 py-4 flex flex-col gap-4 text-sm">
+      <a href="#home" class="nav-link">首页</a>
+      <a href="#features" class="nav-link">功能特性</a>
+      <a href="#highlights" class="nav-link">特色功能</a>
+      <a href="#roadmap" class="nav-link">迭代路线</a>
+      <a href="#latest" class="nav-link">最新版本</a>
+      <a href="docs.html" class="nav-link">文档</a>
+      <a href="/announcements/" class="nav-link">公告</a>
+      <a href="/feedback/" class="nav-link">反馈</a>
+      <a href="https://github.com/CNKE-AI/cnkeide" target="_blank" rel="noopener" class="nav-link">Github 仓库</a>
+      <a href="#download" class="nav-link">下载</a>
+      <a href="/cnkeide/updates/CnkeIDE%20Setup%201.3.3.exe" download class="btn-primary flex items-center justify-center px-5 py-2.5 rounded-lg text-sm font-bold mt-2">立即下载</a>
+    </div>
+  </header>
+
+  <!-- ===================== Hero 首屏 ===================== -->
+  <section id="home" class="relative pt-28 md:pt-36 pb-20 md:pb-28">
+    <div class="max-w-7xl mx-auto px-5 md:px-8 grid lg:grid-cols-2 gap-12 lg:gap-10 items-center">
+      <!-- 左侧文案 -->
+      <div class="reveal">
+        <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-cyan-400/25 bg-cyan-400/5 text-cyan-300 text-xs font-mono mb-6">
+          <span class="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse"></span>
+          Open Source · Local-First · MCP Ready · CLI Ready
+        </div>
+
+        <h1 class="text-4xl md:text-5xl font-extrabold leading-tight tracking-tight text-white">
+          CnkeIDE<br />
+          <span class="text-gradient">本地优先 AI 编程 IDE</span>
+        </h1>
+
+        <p class="mt-6 text-lg md:text-xl text-slate-300 leading-relaxed max-w-xl">
+          自研 <span class="text-cyan-300 font-semibold">Agent</span> 智能开发环境，深度兼容
+          <span class="text-cyan-300 font-semibold">MCP 协议</span>，四种工作模式（问答 Ask / 快速 Craft / 深度 Plan / 调试 Debug），面向全栈开发者。
+        </p>
+
+        <p class="mt-4 text-slate-400 text-base leading-relaxed max-w-xl">
+          流式响应 + 思考过程展示 + 工具调用可视化，内置代码快照回滚、多模型路由、联网检索与语义搜索，解决传统 AI IDE 的上下文爆炸、僵尸进程、任务中断三大痛点；同一套内核还能以命令行（headless CLI）无界面运行，直接接入 CI 与脚本流水线。
+        </p>
+
+        <!-- 按钮组 -->
+        <div class="mt-8 flex flex-wrap gap-3">
+          <a href="/cnkeide/updates/CnkeIDE%20Setup%201.3.3.exe" download class="btn-primary inline-flex items-center gap-2 px-6 py-3 rounded-lg text-base font-bold">
+            <svg viewBox="0 0 24 24" class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"></path><path d="M7 10l5 5 5-5"></path><path d="M12 15V3"></path>
+            </svg>
+            Windows 下载
+          </a>
+          <a href="https://github.com/CNKE-AI/cnkeide" target="_blank" rel="noopener" class="inline-flex items-center gap-2 px-6 py-3 rounded-lg border border-white/15 bg-white/5 text-slate-200 font-semibold hover:bg-white/10 hover:border-cyan-400/40 transition">
+            <svg viewBox="0 0 24 24" class="w-5 h-5" fill="currentColor"><path d="M12 .5C5.7.5.5 5.7.5 12c0 5.1 3.3 9.4 7.9 10.9.6.1.8-.3.8-.6v-2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.3-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1.1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.8-1.6-2.7-.3-5.5-1.3-5.5-5.9 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.5.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 016 0c2.3-1.5 3.3-1.2 3.3-1.2.9 1.7.2 2.9.1 3.2.8.8 1.2 1.9 1.2 3.2 0 4.6-2.8 5.6-5.5 5.9.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6 4.6-1.5 7.9-5.8 7.9-10.9C23.5 5.7 18.3.5 12 .5z"/></svg>
+            Github
+          </a>
+          <a href="docs.html" class="inline-flex items-center gap-2 px-6 py-3 rounded-lg text-slate-300 font-semibold hover:text-white transition">
+            查看文档
+            <svg viewBox="0 0 24 24" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+          </a>
+        </div>
+
+        <!-- 迷你 stats -->
+        <div class="mt-10 flex flex-wrap gap-x-8 gap-y-4 text-sm">
+          <div><div class="text-2xl font-bold text-white font-mono">4</div><div class="text-slate-500">工作模式</div></div>
+          <div><div class="text-2xl font-bold text-white font-mono">39</div><div class="text-slate-500">内置工具</div></div>
+          <div><div class="text-2xl font-bold text-white font-mono">100%</div><div class="text-slate-500">MCP 兼容</div></div>
+          <div><div class="text-2xl font-bold text-white font-mono">0</div><div class="text-slate-500">僵尸进程</div></div>
+        </div>
+      </div>
+
+      <!-- 右侧截图 -->
+      <div class="reveal relative">
+        <div class="absolute -inset-4 bg-gradient-to-tr from-cyan-500/20 via-sky-500/10 to-transparent rounded-3xl blur-2xl -z-10"></div>
+        <div class="relative rounded-2xl overflow-hidden border border-white/10 shadow-2xl shadow-glow-lg">
+          <img src="./ui.png" alt="CnkeIDE 界面截图" class="w-full h-auto block" />
+          <!-- 顶部窗口条 -->
+          <div class="absolute top-0 inset-x-0 h-9 bg-base/70 backdrop-blur-sm border-b border-white/5 flex items-center px-4 gap-1.5">
+            <span class="w-3 h-3 rounded-full bg-red-500/70"></span>
+            <span class="w-3 h-3 rounded-full bg-yellow-500/70"></span>
+            <span class="w-3 h-3 rounded-full bg-green-500/70"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== 核心优势（4 卡片） ===================== -->
+  <section id="features" class="py-20 md:py-24">
+    <div class="max-w-7xl mx-auto px-5 md:px-8">
+      <div class="text-center max-w-2xl mx-auto mb-14 reveal">
+        <div class="text-cyan-400 font-mono text-sm mb-3">// CORE ADVANTAGES</div>
+        <h2 class="text-3xl md:text-4xl font-extrabold text-white tracking-tight">核心优势</h2>
+        <p class="mt-4 text-slate-400">为全栈开发者打造的生产力基建，从底层引擎到生态治理，全方位解决 AI 编码的真实痛点。</p>
+      </div>
+
+      <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-5">
+        <!-- 卡片1 -->
+        <div class="glass-card rounded-2xl p-6 reveal">
+          <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-cyan-400/20 to-sky-600/20 border border-cyan-400/20 flex items-center justify-center text-2xl mb-5">🔧</div>
+          <h3 class="text-white font-bold text-lg mb-2.5">自研 Agent 引擎</h3>
+          <p class="text-slate-400 text-sm leading-relaxed">架构师 / 开发者 / 调试器 / 问答四模式，流式响应 + 思考过程展示，工具调用可视化。</p>
+        </div>
+        <!-- 卡片2 -->
+        <div class="glass-card rounded-2xl p-6 reveal">
+          <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-cyan-400/20 to-sky-600/20 border border-cyan-400/20 flex items-center justify-center text-2xl mb-5">📦</div>
+          <h3 class="text-white font-bold text-lg mb-2.5">完整 MCP 生态支持</h3>
+          <p class="text-slate-400 text-sm leading-relaxed">stdio + HTTP 双协议，多服务器管理，第三方 MCP 一键接入，动态裁剪工具 schema。</p>
+        </div>
+        <!-- 卡片3 -->
+        <div class="glass-card rounded-2xl p-6 reveal">
+          <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-cyan-400/20 to-sky-600/20 border border-cyan-400/20 flex items-center justify-center text-2xl mb-5">🛡️</div>
+          <h3 class="text-white font-bold text-lg mb-2.5">强安全与进程治理</h3>
+          <p class="text-slate-400 text-sm leading-relaxed">工具调用审批弹窗 + 信任规则自动放行，高危命令拦截、权限隔离、完整审计日志。</p>
+        </div>
+        <!-- 卡片4 -->
+        <div class="glass-card rounded-2xl p-6 reveal">
+          <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-cyan-400/20 to-sky-600/20 border border-cyan-400/20 flex items-center justify-center text-2xl mb-5">⚡</div>
+          <h3 class="text-white font-bold text-lg mb-2.5">代码快照与回滚</h3>
+          <p class="text-slate-400 text-sm leading-relaxed">每轮对话前自动快照，Checkpoint 一键回滚；会话自动摘要压缩，解决长会话 token 爆炸。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== 特色功能 ===================== -->
+  <section id="highlights" class="py-20 md:py-24">
+    <div class="max-w-7xl mx-auto px-5 md:px-8">
+      <div class="text-center max-w-2xl mx-auto mb-14 reveal">
+        <div class="text-cyan-400 font-mono text-sm mb-3">// HIGHLIGHTS</div>
+        <h2 class="text-3xl md:text-4xl font-extrabold text-white tracking-tight">特色功能</h2>
+        <p class="mt-4 text-slate-400">除了常规 AI 编码能力，这些是 CnkeIDE 独有的差异化能力，开箱即用。</p>
+      </div>
+
+      <!-- 主推：自研 Agent 内核 -->
+      <div class="relative rounded-3xl border border-cyan-400/20 bg-gradient-to-br from-slate-900/70 to-slate-900/30 backdrop-blur-xl p-8 md:p-12 overflow-hidden reveal mb-6">
+        <div class="glow-orb w-80 h-80 bg-violet-500/20 -top-20 -right-20"></div>
+        <div class="relative grid lg:grid-cols-2 gap-10 items-center">
+          <div>
+            <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-violet-400/25 bg-violet-400/5 text-violet-300 text-xs font-mono mb-5">
+              <span class="w-1.5 h-1.5 rounded-full bg-violet-400 animate-pulse"></span>
+              内核与界面解耦
+            </div>
+            <h3 class="text-2xl md:text-3xl font-extrabold text-white tracking-tight mb-4">
+              自研 Agent 内核<br /><span class="text-gradient">会规划、能并行、跑飞了有兜底</span>
+            </h3>
+            <p class="text-slate-400 leading-relaxed mb-6">
+              从 Agent 循环、LLM 客户端、工具链、任务规划器到检索引擎全部自研，不依赖任何编辑器模块。
+              多步任务先立计划再逐步推进，工具按依赖关系并行调度，异常时自动熔断而不是原地打转。
+            </p>
+            <ul class="space-y-3 text-sm text-slate-300 mb-7">
+              <li class="flex gap-2.5"><span class="text-violet-400 mt-0.5">▸</span><span><strong class="text-white">四种工作模式</strong>：Ask 只读问答 / Craft 快速改码 / Plan 深度规划 / Debug 定位缺陷，工具权限与迭代上限随模式自动收紧</span></li>
+              <li class="flex gap-2.5"><span class="text-violet-400 mt-0.5">▸</span><span><strong class="text-white">任务计划状态机</strong>：待办 → 进行中 → 已完成 / 失败 / 跳过，终态不可回退；计划面板可跳过、重试、中止，进度实时推送</span></li>
+              <li class="flex gap-2.5"><span class="text-violet-400 mt-0.5">▸</span><span><strong class="text-white">并行工具调度</strong>：按 DAG 拓扑排序并发执行，只读工具并发、同路径写串行、终端命令全局串行，默认并发上限 4</span></li>
+              <li class="flex gap-2.5"><span class="text-violet-400 mt-0.5">▸</span><span><strong class="text-white">容错与熔断</strong>：指数退避重试 + 单次 / 总超时双约束 + 主备模型 Fallback，连续失败自动终止，不空转烧 token</span></li>
+            </ul>
+            <div class="flex flex-wrap gap-3">
+              <a href="#download" class="btn-primary inline-flex items-center gap-2 px-6 py-3 rounded-lg text-sm font-bold">
+                <svg viewBox="0 0 24 24" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"></path><path d="M7 10l5 5 5-5"></path><path d="M12 15V3"></path></svg>
+                立即体验
+              </a>
+              <a href="docs.html#engine" class="inline-flex items-center gap-2 px-6 py-3 rounded-lg border border-white/15 bg-white/5 text-slate-200 font-semibold hover:bg-white/10 hover:border-cyan-400/40 transition text-sm">
+                查看使用文档
+                <svg viewBox="0 0 24 24" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+              </a>
+            </div>
+          </div>
+
+          <!-- 右侧能力网格 -->
+          <div class="grid grid-cols-2 gap-4">
+            <div class="rounded-2xl border border-white/10 bg-white/5 p-5">
+              <div class="text-2xl mb-2.5">⚙️</div>
+              <div class="text-white font-bold text-sm mb-1">4 种运行模式</div>
+              <div class="text-slate-400 text-xs leading-relaxed">Ask / Craft / Plan / Debug</div>
+            </div>
+            <div class="rounded-2xl border border-white/10 bg-white/5 p-5">
+              <div class="text-2xl mb-2.5">🗂️</div>
+              <div class="text-white font-bold text-sm mb-1">5 个计划工具</div>
+              <div class="text-slate-400 text-xs leading-relaxed">建计划 / 加步骤 / 更新状态 / 查询 / 收尾</div>
+            </div>
+            <div class="rounded-2xl border border-white/10 bg-white/5 p-5">
+              <div class="text-2xl mb-2.5">🔀</div>
+              <div class="text-white font-bold text-sm mb-1">并发上限 4</div>
+              <div class="text-slate-400 text-xs leading-relaxed">DAG 拓扑排序 + 写冲突串行</div>
+            </div>
+            <div class="rounded-2xl border border-white/10 bg-white/5 p-5">
+              <div class="text-2xl mb-2.5">🧰</div>
+              <div class="text-white font-bold text-sm mb-1">39 项内置工具</div>
+              <div class="text-slate-400 text-xs leading-relaxed">文件 / 检索 / 命令 / Git / RAG / 浏览器</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 次级特色：四栏 -->
+      <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-5">
+        <div class="glass-card rounded-2xl p-6 reveal">
+          <div class="w-11 h-11 rounded-xl bg-gradient-to-br from-cyan-400/20 to-sky-600/20 border border-cyan-400/20 flex items-center justify-center text-xl mb-4">🔍</div>
+          <h3 class="text-white font-bold text-base mb-2">代码库语义检索</h3>
+          <p class="text-slate-400 text-sm leading-relaxed">关键词 + 语义向量 + 符号三路召回融合，配合 @文件 / @目录 / #codebase 引用，快速把相关上下文喂给模型。</p>
+        </div>
+        <div class="glass-card rounded-2xl p-6 reveal">
+          <div class="w-11 h-11 rounded-xl bg-gradient-to-br from-cyan-400/20 to-sky-600/20 border border-cyan-400/20 flex items-center justify-center text-xl mb-4">🧠</div>
+          <h3 class="text-white font-bold text-base mb-2">智能模型路由</h3>
+          <p class="text-slate-400 text-sm leading-relaxed">内置国内主流模型能力矩阵（旗舰 / 标准 / 快速 / 推理四档），按任务特征自动选型，也可用 @模型 手动指定。</p>
+        </div>
+        <div class="glass-card rounded-2xl p-6 reveal">
+          <div class="w-11 h-11 rounded-xl bg-gradient-to-br from-cyan-400/20 to-sky-600/20 border border-cyan-400/20 flex items-center justify-center text-xl mb-4">📚</div>
+          <h3 class="text-white font-bold text-base mb-2">文档问答 RAG</h3>
+          <p class="text-slate-400 text-sm leading-relaxed">直接上传 PDF / DOCX / Markdown / 表格，本地切块建索引后检索问答，长文档不必手动复制粘贴。</p>
+        </div>
+        <div class="glass-card rounded-2xl p-6 reveal">
+          <div class="w-11 h-11 rounded-xl bg-gradient-to-br from-cyan-400/20 to-sky-600/20 border border-cyan-400/20 flex items-center justify-center text-xl mb-4">⌨️</div>
+          <h3 class="text-white font-bold text-base mb-2">headless 命令行</h3>
+          <p class="text-slate-400 text-sm leading-relaxed">v1.3.3 起同一套内核可在纯 Node 无界面运行：一条命令跑任务，NDJSON 事件流 + 语义化退出码，审批策略可配，直接接入 CI 与脚本流水线。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== 完整功能特性（三栏） ===================== -->
+  <section class="py-20 md:py-24">
+    <div class="max-w-7xl mx-auto px-5 md:px-8">
+      <div class="text-center max-w-2xl mx-auto mb-14 reveal">
+        <div class="text-cyan-400 font-mono text-sm mb-3">// FULL FEATURE SET</div>
+        <h2 class="text-3xl md:text-4xl font-extrabold text-white tracking-tight">完整功能特性</h2>
+      </div>
+
+      <div class="grid md:grid-cols-3 gap-6">
+        <!-- 底层架构能力 -->
+        <div class="glass-card rounded-2xl p-7 reveal">
+          <div class="flex items-center gap-2.5 mb-6">
+            <span class="w-9 h-9 rounded-lg bg-cyan-400/10 border border-cyan-400/25 flex items-center justify-center text-cyan-300">⚙️</span>
+            <h3 class="text-white font-bold text-lg">底层架构能力</h3>
+          </div>
+          <ul class="space-y-3.5 text-slate-400 text-sm leading-relaxed">
+            <li class="flex gap-2.5"><span class="text-cyan-400 mt-0.5">▸</span>本地优先本地推理</li>
+            <li class="flex gap-2.5"><span class="text-cyan-400 mt-0.5">▸</span>Electron + React 跨平台</li>
+            <li class="flex gap-2.5"><span class="text-cyan-400 mt-0.5">▸</span>自研 Agent 引擎</li>
+            <li class="flex gap-2.5"><span class="text-cyan-400 mt-0.5">▸</span>进程治理与自愈熔断</li>
+            <li class="flex gap-2.5"><span class="text-cyan-400 mt-0.5">▸</span>上下文 Token 治理</li>
+            <li class="flex gap-2.5"><span class="text-cyan-400 mt-0.5">▸</span>Git 任务快照回滚</li>
+            <li class="flex gap-2.5"><span class="text-cyan-400 mt-0.5">▸</span>headless 无界面运行（CLI）</li>
+            <li class="flex gap-2.5"><span class="text-cyan-400 mt-0.5">▸</span>并行工具调度（DAG）</li>
+          </ul>
+        </div>
+
+        <!-- IDE 编辑器能力 -->
+        <div class="glass-card rounded-2xl p-7 reveal">
+          <div class="flex items-center gap-2.5 mb-6">
+            <span class="w-9 h-9 rounded-lg bg-cyan-400/10 border border-cyan-400/25 flex items-center justify-center text-cyan-300">🖥️</span>
+            <h3 class="text-white font-bold text-lg">IDE 编辑器能力</h3>
+          </div>
+          <ul class="space-y-3.5 text-slate-400 text-sm leading-relaxed">
+            <li class="flex gap-2.5"><span class="text-cyan-400 mt-0.5">▸</span>AI 辅助自动编码</li>
+            <li class="flex gap-2.5"><span class="text-cyan-400 mt-0.5">▸</span>智能调试与自修复</li>
+            <li class="flex gap-2.5"><span class="text-cyan-400 mt-0.5">▸</span>断点续跑任务管理</li>
+            <li class="flex gap-2.5"><span class="text-cyan-400 mt-0.5">▸</span>多语言语法高亮</li>
+            <li class="flex gap-2.5"><span class="text-cyan-400 mt-0.5">▸</span>代码符号与引用导航</li>
+            <li class="flex gap-2.5"><span class="text-cyan-400 mt-0.5">▸</span>终端集成与诊断</li>
+            <li class="flex gap-2.5"><span class="text-cyan-400 mt-0.5">▸</span>多模态粘贴截图</li>
+            <li class="flex gap-2.5"><span class="text-cyan-400 mt-0.5">▸</span>AI 行内补全（ghost-text）</li>
+            <li class="flex gap-2.5"><span class="text-cyan-400 mt-0.5">▸</span>内联对话 Ctrl+K</li>
+          </ul>
+        </div>
+
+        <!-- 生态拓展能力 -->
+        <div class="glass-card rounded-2xl p-7 reveal">
+          <div class="flex items-center gap-2.5 mb-6">
+            <span class="w-9 h-9 rounded-lg bg-cyan-400/10 border border-cyan-400/25 flex items-center justify-center text-cyan-300">🧩</span>
+            <h3 class="text-white font-bold text-lg">生态拓展能力</h3>
+          </div>
+          <ul class="space-y-3.5 text-slate-400 text-sm leading-relaxed">
+            <li class="flex gap-2.5"><span class="text-cyan-400 mt-0.5">▸</span>MCP 服务一键安装</li>
+            <li class="flex gap-2.5"><span class="text-cyan-400 mt-0.5">▸</span>MCP 权限管控</li>
+            <li class="flex gap-2.5"><span class="text-cyan-400 mt-0.5">▸</span>schema 动态裁剪</li>
+            <li class="flex gap-2.5"><span class="text-cyan-400 mt-0.5">▸</span>插件与扩展系统</li>
+            <li class="flex gap-2.5"><span class="text-cyan-400 mt-0.5">▸</span>Skill 技能包管理</li>
+            <li class="flex gap-2.5"><span class="text-cyan-400 mt-0.5">▸</span>操作审计日志</li>
+            <li class="flex gap-2.5"><span class="text-cyan-400 mt-0.5">▸</span>开放 API 与脚本</li>
+            <li class="flex gap-2.5"><span class="text-cyan-400 mt-0.5">▸</span>增量热更新（差分下载）</li>
+            <li class="flex gap-2.5"><span class="text-cyan-400 mt-0.5">▸</span>公告 / 意见反馈通道</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== 迭代路线 Roadmap ===================== -->
+  <section id="roadmap" class="py-20 md:py-24">
+    <div class="max-w-7xl mx-auto px-5 md:px-8">
+      <div class="text-center max-w-2xl mx-auto mb-14 reveal">
+        <div class="text-cyan-400 font-mono text-sm mb-3">// ROADMAP</div>
+        <h2 class="text-3xl md:text-4xl font-extrabold text-white tracking-tight">迭代路线</h2>
+        <p class="mt-4 text-slate-400">围绕反馈与需求清单持续演进，按优先级分级推进，先落地核心，再逐步扩展。</p>
+      </div>
+
+      <!-- 已上线 -->
+      <div class="rounded-2xl border border-emerald-400/25 bg-emerald-400/[0.04] backdrop-blur-xl p-6 md:p-8 mb-6 reveal">
+        <div class="flex flex-wrap items-center gap-3 mb-5">
+          <span class="inline-flex items-center gap-1.5 text-sm font-mono text-emerald-300 bg-emerald-400/10 px-3 py-1 rounded-md">已上线</span>
+          <span class="text-white font-bold">v1.3.3 已交付能力</span>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <span class="px-2.5 py-1 rounded-lg bg-white/5 border border-emerald-400/20 text-xs text-slate-200">AI 演示文稿生成</span>
+          <span class="px-2.5 py-1 rounded-lg bg-white/5 border border-emerald-400/20 text-xs text-slate-200">在线模板库套用</span>
+          <span class="px-2.5 py-1 rounded-lg bg-white/5 border border-emerald-400/20 text-xs text-slate-200">PPTX / PDF 导出</span>
+          <span class="px-2.5 py-1 rounded-lg bg-white/5 border border-emerald-400/20 text-xs text-slate-200">代码库语义检索</span>
+          <span class="px-2.5 py-1 rounded-lg bg-white/5 border border-emerald-400/20 text-xs text-slate-200">智能模型路由</span>
+          <span class="px-2.5 py-1 rounded-lg bg-white/5 border border-emerald-400/20 text-xs text-slate-200">文档问答 RAG</span>
+          <span class="px-2.5 py-1 rounded-lg bg-white/5 border border-emerald-400/20 text-xs text-slate-200">Checkpoint 回滚</span>
+          <span class="px-2.5 py-1 rounded-lg bg-white/5 border border-emerald-400/20 text-xs text-slate-200">增量热更新</span>
+          <span class="px-2.5 py-1 rounded-lg bg-white/5 border border-emerald-400/20 text-xs text-slate-200">四视图实时同步</span>
+          <span class="px-2.5 py-1 rounded-lg bg-white/5 border border-emerald-400/20 text-xs text-slate-200">Agent 终端联动</span>
+          <span class="px-2.5 py-1 rounded-lg bg-white/5 border border-emerald-400/20 text-xs text-slate-200">文件变更自动刷新</span>
+          <span class="px-2.5 py-1 rounded-lg bg-white/5 border border-emerald-400/20 text-xs text-slate-200">headless 命令行 CLI</span>
+          <span class="px-2.5 py-1 rounded-lg bg-white/5 border border-emerald-400/20 text-xs text-slate-200">Ask / Craft / Plan / Debug 四模式</span>
+          <span class="px-2.5 py-1 rounded-lg bg-white/5 border border-emerald-400/20 text-xs text-slate-200">Plan 任务规划工具</span>
+          <span class="px-2.5 py-1 rounded-lg bg-white/5 border border-emerald-400/20 text-xs text-slate-200">并行工具调度 DAG</span>
+          <span class="px-2.5 py-1 rounded-lg bg-white/5 border border-emerald-400/20 text-xs text-slate-200">多模态粘贴截图</span>
+          <span class="px-2.5 py-1 rounded-lg bg-white/5 border border-emerald-400/20 text-xs text-slate-200">上下文 Token 实时显示</span>
+          <span class="px-2.5 py-1 rounded-lg bg-white/5 border border-emerald-400/20 text-xs text-slate-200">AI 行内补全（ghost-text）</span>
+          <span class="px-2.5 py-1 rounded-lg bg-white/5 border border-emerald-400/20 text-xs text-slate-200">Skill 技能包</span>
+          <span class="px-2.5 py-1 rounded-lg bg-white/5 border border-emerald-400/20 text-xs text-slate-200">全局错误边界 / 窗口保护</span>
+          <span class="px-2.5 py-1 rounded-lg bg-white/5 border border-emerald-400/20 text-xs text-slate-200">强制更新兜底</span>
+          <span class="px-2.5 py-1 rounded-lg bg-white/5 border border-emerald-400/20 text-xs text-slate-200">公告 / 意见反馈入口</span>
+        </div>
+      </div>
+
+      <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-5">
+        <!-- 高优先级 -->
+        <div class="glass-card rounded-2xl p-6 reveal border-t-2 border-t-cyan-400">
+          <div class="flex items-center gap-2 mb-5">
+            <span class="text-sm font-mono text-cyan-300 bg-cyan-400/10 px-2.5 py-1 rounded-md">P0</span>
+            <span class="text-white font-bold">高优先级</span>
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <span class="px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 text-xs text-slate-300">安装包瘦身</span>
+            <span class="px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 text-xs text-slate-300">Agent 熔断可视化面板</span>
+            <span class="px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 text-xs text-slate-300">MCP 权限管控界面</span>
+            <span class="px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 text-xs text-slate-300">Linux 版本</span>
+          </div>
+        </div>
+        <!-- 中优先级 -->
+        <div class="glass-card rounded-2xl p-6 reveal border-t-2 border-t-sky-400">
+          <div class="flex items-center gap-2 mb-5">
+            <span class="text-sm font-mono text-sky-300 bg-sky-400/10 px-2.5 py-1 rounded-md">P1</span>
+            <span class="text-white font-bold">中优先级</span>
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <span class="px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 text-xs text-slate-300">编辑器补全增强</span>
+            <span class="px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 text-xs text-slate-300">Git 操作 UI</span>
+            <span class="px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 text-xs text-slate-300">快捷键自定义</span>
+            <span class="px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 text-xs text-slate-300">会话分组管理</span>
+          </div>
+        </div>
+        <!-- 低优先级 -->
+        <div class="glass-card rounded-2xl p-6 reveal border-t-2 border-t-emerald-400">
+          <div class="flex items-center gap-2 mb-5">
+            <span class="text-sm font-mono text-emerald-300 bg-emerald-400/10 px-2.5 py-1 rounded-md">P2</span>
+            <span class="text-white font-bold">低优先级</span>
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <span class="px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 text-xs text-slate-300">插件系统</span>
+            <span class="px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 text-xs text-slate-300">多语言界面</span>
+            <span class="px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 text-xs text-slate-300">免安装便携版</span>
+            <span class="px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 text-xs text-slate-300">终端主题</span>
+          </div>
+        </div>
+        <!-- 远期规划 -->
+        <div class="glass-card rounded-2xl p-6 reveal border-t-2 border-t-fuchsia-400">
+          <div class="flex items-center gap-2 mb-5">
+            <span class="text-sm font-mono text-fuchsia-300 bg-fuchsia-400/10 px-2.5 py-1 rounded-md">∞</span>
+            <span class="text-white font-bold">远期规划</span>
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <span class="px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 text-xs text-slate-300">私有化部署</span>
+            <span class="px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 text-xs text-slate-300">团队协作</span>
+            <span class="px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 text-xs text-slate-300">云端同步</span>
+            <span class="px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 text-xs text-slate-300">模型市场</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== 最新版本 ===================== -->
+  <section id="latest" class="py-20 md:py-24">
+    <div class="max-w-7xl mx-auto px-5 md:px-8">
+      <div class="relative rounded-3xl border border-cyan-400/20 bg-gradient-to-br from-slate-900/70 to-slate-900/30 backdrop-blur-xl p-8 md:p-12 overflow-hidden reveal">
+        <div class="glow-orb w-80 h-80 bg-cyan-500/20 -top-24 -right-24"></div>
+        <div class="relative flex flex-col lg:flex-row lg:items-start gap-10">
+          <div class="flex-1 min-w-0">
+            <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-cyan-400/25 bg-cyan-400/5 text-cyan-300 text-xs font-mono mb-5">
+              <span class="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse"></span>
+              LATEST · <span id="latest-ver" class="text-white">v1.3.3</span>
+            </div>
+            <h2 class="text-2xl md:text-3xl font-extrabold text-white tracking-tight mb-5">
+              这一版：同一套内核，<span class="text-gradient">可以没有界面</span>
+            </h2>
+            <ul class="space-y-3.5 text-sm text-slate-300">
+              <li class="flex gap-2.5"><span class="text-cyan-400 mt-0.5">▸</span><span><strong class="text-white">一条命令跑任务</strong>：<code class="px-1.5 py-0.5 rounded bg-white/10 font-mono text-xs">cnkeide -p "重构 utils" --final-only</code> 只输出最终结论，方便管道与脚本取值</span></li>
+              <li class="flex gap-2.5"><span class="text-cyan-400 mt-0.5">▸</span><span><strong class="text-white">事件流可编程</strong>：<code class="px-1.5 py-0.5 rounded bg-white/10 font-mono text-xs">--json</code> 输出 NDJSON（run_start / assistant_delta / tool_call / tool_result / usage / run_end），进度可被程序解析</span></li>
+              <li class="flex gap-2.5"><span class="text-cyan-400 mt-0.5">▸</span><span><strong class="text-white">无人值守更安全</strong>：默认只读工具放行、写操作与命令拒绝且不落盘，可按工具与命令模式精确授权；退出码 0/1/2/3/4/124 语义明确</span></li>
+              <li class="flex gap-2.5"><span class="text-cyan-400 mt-0.5">▸</span><span><strong class="text-white">桌面端零变化</strong>：审批弹窗、窗口标题、会话与模型配置全部沿用原路径，升级无需重新配置</span></li>
+            </ul>
+          </div>
+          <div class="lg:w-64 shrink-0 flex flex-col gap-3">
+            <a href="/cnkeide/updates/releasenotes.txt" target="_blank" rel="noopener" class="inline-flex items-center justify-between gap-2 px-5 py-3 rounded-xl border border-white/15 bg-white/5 text-slate-200 font-semibold hover:bg-white/10 hover:border-cyan-400/40 transition text-sm">
+              完整更新说明
+              <svg viewBox="0 0 24 24" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+            </a>
+            <a href="docs.html#headless" class="inline-flex items-center justify-between gap-2 px-5 py-3 rounded-xl border border-white/15 bg-white/5 text-slate-200 font-semibold hover:bg-white/10 hover:border-cyan-400/40 transition text-sm">
+              命令行使用文档
+              <svg viewBox="0 0 24 24" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+            </a>
+            <a href="/announcements/" class="inline-flex items-center justify-between gap-2 px-5 py-3 rounded-xl border border-white/15 bg-white/5 text-slate-200 font-semibold hover:bg-white/10 hover:border-cyan-400/40 transition text-sm">
+              历史版本与公告
+              <svg viewBox="0 0 24 24" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+            </a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== 数据亮点 ===================== -->
+  <section class="py-20 md:py-24">
+    <div class="max-w-7xl mx-auto px-5 md:px-8">
+      <div class="relative rounded-3xl border border-white/10 bg-gradient-to-br from-slate-900/60 to-slate-900/30 backdrop-blur-xl p-10 md:p-14 overflow-hidden reveal">
+        <div class="glow-orb w-80 h-80 bg-cyan-500/20 -top-20 -right-20"></div>
+        <div class="grid md:grid-cols-4 gap-8">
+          <div class="relative">
+            <div class="text-3xl font-extrabold text-gradient mb-2">🔒</div>
+            <h3 class="text-white font-bold text-lg mb-1">本地优先</h3>
+            <p class="text-slate-400 text-sm">保护隐私，数据留在本地</p>
+          </div>
+          <div class="relative">
+            <div class="text-3xl font-extrabold text-gradient mb-2">📦</div>
+            <h3 class="text-white font-bold text-lg mb-1">MCP 协议</h3>
+            <p class="text-slate-400 text-sm">完全兼容，无缝对接</p>
+          </div>
+          <div class="relative">
+            <div class="text-3xl font-extrabold text-gradient mb-2">🔄</div>
+            <h3 class="text-white font-bold text-lg mb-1">Agent 自愈</h3>
+            <p class="text-slate-400 text-sm">任务自动恢复，崩溃即重启</p>
+          </div>
+          <div class="relative">
+            <div class="text-3xl font-extrabold text-gradient mb-2">⏱️</div>
+            <h3 class="text-white font-bold text-lg mb-1">Git 快照</h3>
+            <p class="text-slate-400 text-sm">任务快照与一键回滚</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== 下载区块 ===================== -->
+  <section id="download" class="py-20 md:py-24">
+    <div class="max-w-7xl mx-auto px-5 md:px-8">
+      <div class="relative rounded-3xl overflow-hidden border border-cyan-400/20 bg-gradient-to-br from-slate-900 to-blue-deep p-10 md:p-16 text-center reveal">
+        <div class="absolute inset-0 bg-grid opacity-60"></div>
+        <div class="glow-orb w-96 h-96 bg-cyan-500/20 top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2"></div>
+
+        <div class="relative">
+          <h2 class="text-3xl md:text-4xl font-extrabold text-white tracking-tight">现在开始，使用 CnkeIDE</h2>
+          <p class="mt-4 text-slate-400 max-w-xl mx-auto">一键下载 Windows 版本，本地优先，隐私安全，马上体验自研 AI 编码的流畅体验。</p>
+          <p class="mt-3 inline-flex flex-wrap items-center justify-center gap-2 text-sm font-mono text-cyan-300/90">
+            <span class="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse"></span>
+            当前版本 <span id="download-ver" class="text-white font-bold">v1.3.3</span>
+            <span class="text-slate-600">·</span>
+            <a href="/cnkeide/updates/releasenotes.txt" target="_blank" rel="noopener" class="underline decoration-cyan-400/40 hover:text-white transition">更新说明</a>
+            <span class="text-slate-600">·</span>
+            <span class="text-slate-400">支持增量热更新</span>
+          </p>
+
+          <div class="mt-10 flex flex-col sm:flex-row items-center justify-center gap-4">
+            <a href="/cnkeide/updates/CnkeIDE%20Setup%201.3.3.exe" download class="btn-primary inline-flex items-center gap-2.5 px-8 py-4 rounded-xl text-lg font-bold">
+              <svg viewBox="0 0 24 24" class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"></path><path d="M7 10l5 5 5-5"></path><path d="M12 15V3"></path>
+              </svg>
+              下载 Windows 版本
+            </a>
+            <a href="https://github.com/CNKE-AI/cnkeide" target="_blank" rel="noopener" class="inline-flex items-center gap-2 px-8 py-4 rounded-xl border border-white/15 bg-white/5 text-slate-200 font-bold hover:bg-white/10 hover:border-cyan-400/40 transition">
+              <svg viewBox="0 0 24 24" class="w-6 h-6" fill="currentColor"><path d="M12 .5C5.7.5.5 5.7.5 12c0 5.1 3.3 9.4 7.9 10.9.6.1.8-.3.8-.6v-2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.3-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1.1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.8-1.6-2.7-.3-5.5-1.3-5.5-5.9 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.5.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 016 0c2.3-1.5 3.3-1.2 3.3-1.2.9 1.7.2 2.9.1 3.2.8.8 1.2 1.9 1.2 3.2 0 4.6-2.8 5.6-5.5 5.9.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6 4.6-1.5 7.9-5.8 7.9-10.9C23.5 5.7 18.3.5 12 .5z"/></svg>
+              Github
+            </a>
+          </div>
+
+          <!-- 支持架构 -->
+          <div class="mt-8 flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-sm text-slate-500">
+            <span class="inline-flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-green-400"></span>Windows 10 / 11 · x64</span>
+            <span class="inline-flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-slate-600"></span>Mac（即将支持）</span>
+            <span class="inline-flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-slate-600"></span>Linux（即将支持）</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== 页脚 ===================== -->
+  <footer class="border-t border-white/5 py-10">
+    <div class="max-w-7xl mx-auto px-5 md:px-8 flex flex-col md:flex-row items-center justify-between gap-6">
+      <div class="flex items-center gap-2.5">
+        <div class="w-7 h-7 rounded-lg bg-gradient-to-br from-cyan-400 to-sky-600 flex items-center justify-center">
+          <svg viewBox="0 0 24 24" class="w-4 h-4 text-white" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z"></path></svg>
+        </div>
+        <div class="leading-tight">
+          <div class="text-white font-bold text-sm">CnkeIDE</div>
+          <div class="text-[9px] text-cyan-300/70 -mt-0.5 font-mono">CnkeClaw</div>
+        </div>
+      </div>
+
+      <div class="flex flex-wrap items-center justify-center md:justify-end gap-x-6 gap-y-2 text-sm text-slate-400">
+        <a href="#latest" class="hover:text-white transition">更新日志</a>
+        <a href="/announcements/" class="hover:text-white transition">公告中心</a>
+        <a href="/feedback/" class="hover:text-white transition">意见反馈</a>
+        <a href="https://github.com/CNKE-AI/cnkeide" target="_blank" rel="noopener" class="hover:text-white transition">Github</a>
+        <a href="docs.html" class="hover:text-white transition">文档</a>
+        <span class="text-slate-600">© 2026 CnkeIDE · <span id="footer-ver" class="font-mono">v1.3.3</span></span>
+      </div>
+    </div>
+    <div class="max-w-7xl mx-auto px-5 md:px-8 mt-6 pt-4 border-t border-white/5 text-xs text-slate-500 text-center">
+      免责声明：CnkeIDE 为开源项目，仅用于学习与研究用途。请在遵守当地法律法规的前提下使用。
+    </div>
+  </footer>
+
+  <!-- ===================== 脚本 ===================== -->
+  <script>
+    // 移动端菜单开关
+    const btn = document.getElementById('mobile-menu-btn');
+    const menu = document.getElementById('mobile-menu');
+    if (btn && menu) {
+      btn.addEventListener('click', () => menu.classList.toggle('hidden'));
+    }
+
+    // 滚动进入动画
+    const revealEls = document.querySelectorAll('.reveal');
+    const io = new IntersectionObserver((entries) => {
+      entries.forEach(e => {
+        if (e.isIntersecting) e.target.classList.add('in-view');
+      });
+    }, { threshold: 0.12 });
+    revealEls.forEach(el => io.observe(el));
+
+    // ===== 动态下载地址：自动读取 latest.yml 最新版本 =====
+    // 每次打包上传新版本后，无需手动修改下方下载链接，
+    // 页面加载时从 /cnkeide/updates/latest.yml 解析最新安装包文件名并统一更新。
+    (function autoUpdateDownload() {
+      const UPDATES_URL = '/cnkeide/updates/latest.yml';
+      fetch(UPDATES_URL, { cache: 'no-store' })
+        .then(function (res) {
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          return res.text();
+        })
+        .then(function (yml) {
+          // 从 latest.yml 的 files[0].url 或 path 提取文件名
+          var m = yml.match(/^\s*(?:-\s+)?url:\s*(.+)$/m) || yml.match(/^\s*path:\s*(.+)$/m);
+          if (!m) return;
+          var fileName = m[1].trim();
+          var encoded = fileName.replace(/ /g, '%20');
+          var href = '/cnkeide/updates/' + encoded;
+          // 更新所有指向 updates 目录的 exe 下载链接
+          document.querySelectorAll('a[download][href*="/cnkeide/updates/"]').forEach(function (a) {
+            if (/\.exe$/i.test(a.getAttribute('href'))) {
+              a.setAttribute('href', href);
+            }
+          });
+        })
+        .catch(function () {
+          // 读取失败时保留静态兜底链接，不做任何改动
+        });
+    })();
+
+    // ===== 版本号联动：把 latest.yml 的版本写进下载区 / 最新版本区块 / 页脚 =====
+    (function syncVersionLabel() {
+      fetch('/cnkeide/updates/latest.yml', { cache: 'no-store' })
+        .then(function (r) { return r.ok ? r.text() : ''; })
+        .then(function (yml) {
+          var m = yml.match(/^\s*version:\s*([0-9.]+)/m);
+          if (!m) return;
+          var v = 'v' + m[1];
+          ['latest-ver', 'download-ver', 'footer-ver'].forEach(function (id) {
+            var el = document.getElementById(id);
+            if (el) el.textContent = v;
+          });
+        })
+        .catch(function () { /* 静态兜底 */ });
+    })();
+  </script>
+</body>
+</html>

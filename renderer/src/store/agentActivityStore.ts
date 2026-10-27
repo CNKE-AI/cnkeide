@@ -23,6 +23,20 @@ export interface AgentTouchedFile {
   toolName: string;
 }
 
+/**
+ * Agent 对某个文件的最近一次内容修改（W19）。
+ * before/after 来自工具结果的 diff 元数据，用于编辑器内一键撤销。
+ */
+export interface AgentFileEdit {
+  path: string;
+  /** 修改前内容；新建文件为 undefined */
+  before?: string;
+  /** 修改后内容；删除文件为 undefined */
+  after?: string;
+  at: number;
+  toolName: string;
+}
+
 const MAX_ACTIVITY_LINES = 2000;
 
 interface AgentActivityState {
@@ -44,6 +58,8 @@ interface AgentActivityState {
   touchedFiles: Map<string, AgentTouchedFile>;
   /** 已写入（新增/修改）的文件路径，用于编辑器"外部已修改"提示 */
   modifiedFiles: Set<string>;
+  /** 每个文件最近一次被 Agent 修改的前后内容（路径 → 编辑记录），用于一键撤销 */
+  agentEdits: Map<string, AgentFileEdit>;
   /** 待用户处理的审批请求数 */
   pendingApprovals: number;
 
@@ -67,6 +83,13 @@ interface AgentActivityState {
   markModified: (path: string, toolName: string, action?: AgentTouchedFile['action']) => void;
   /** 清除某文件的"已修改"标记（编辑器保存后调用） */
   clearModified: (path: string) => void;
+  /**
+   * 记录一次 Agent 写入前后内容（供编辑器一键撤销）。
+   * 同一文件重复写入时保留最早一次的 before —— 撤销应回到"Agent 动手之前"的状态。
+   */
+  recordAgentEdit: (edit: AgentFileEdit) => void;
+  /** 丢弃某文件的撤销记录（撤销完成或用户已手动保存后调用） */
+  clearAgentEdit: (path: string) => void;
   /** 审批计数 */
   setPendingApprovals: (n: number) => void;
   /**
@@ -122,6 +145,7 @@ export const useAgentActivityStore = create<AgentActivityState>((set, get) => ({
   lines: [],
   touchedFiles: new Map(),
   modifiedFiles: new Set(),
+  agentEdits: new Map(),
   pendingApprovals: 0,
 
   pushLine: (text, kind = 'info') => {
@@ -212,11 +236,32 @@ export const useAgentActivityStore = create<AgentActivityState>((set, get) => ({
 
   setPendingApprovals: (n) => set({ pendingApprovals: Math.max(0, n) }),
 
+  recordAgentEdit: (edit) => {
+    if (!edit.path) return;
+    set((s) => {
+      const edits = new Map(s.agentEdits);
+      const prev = edits.get(edit.path);
+      // 保留最早的 before：撤销要回到 Agent 第一次动手之前
+      edits.set(edit.path, prev ? { ...edit, before: prev.before } : edit);
+      return { agentEdits: edits };
+    });
+  },
+
+  clearAgentEdit: (path) => {
+    set((s) => {
+      if (!s.agentEdits.has(path)) return {};
+      const edits = new Map(s.agentEdits);
+      edits.delete(path);
+      return { agentEdits: edits };
+    });
+  },
+
   resetWorkspaceState: () =>
     set({
       lines: [],
       touchedFiles: new Map(),
       modifiedFiles: new Set(),
+      agentEdits: new Map(),
       phase: 'idle',
       currentTool: null,
       startedAt: null,

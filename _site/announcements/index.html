@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>公告中心 · CnkeIDE</title>
+  <meta name="description" content="CnkeIDE 官方公告中心 — 版本更新、功能发布、重要通知第一时间查看。" />
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            base: '#0f172a',
+            'cyan-accent': '#22d3ee',
+            'cyan-bright': '#0ea5e9',
+          },
+          boxShadow: {
+            glow: '0 0 0 1px rgba(34,211,238,.15), 0 0 24px rgba(34,211,238,.12)',
+          },
+        },
+      },
+    };
+  </script>
+
+  <style>
+    html, body { background-color: #0f172a; color: #e2e8f0; -webkit-font-smoothing: antialiased; }
+    .bg-grid {
+      background-image:
+        linear-gradient(rgba(34,211,238,.045) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(34,211,238,.045) 1px, transparent 1px);
+      background-size: 56px 56px;
+    }
+    .glow-orb { position: absolute; border-radius: 9999px; filter: blur(90px); opacity: .45; pointer-events: none; }
+    .glass-card {
+      background: linear-gradient(155deg, rgba(30,41,59,.62), rgba(15,23,42,.55));
+      backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+      border: 1px solid rgba(148,163,184,.12);
+      transition: all .35s cubic-bezier(.4,0,.2,1);
+    }
+    .glass-card:hover { border-color: rgba(34,211,238,.35); box-shadow: 0 16px 40px rgba(14,165,233,.18), 0 0 0 1px rgba(34,211,238,.1); }
+    .text-gradient { background: linear-gradient(100deg,#a5f3fc 0%,#22d3ee 45%,#0ea5e9 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .btn-primary { background: linear-gradient(120deg,#0ea5e9,#22d3ee); color: #06121f; transition: all .3s ease; box-shadow: 0 8px 24px rgba(14,165,233,.28); }
+    .btn-primary:hover { box-shadow: 0 12px 32px rgba(34,211,238,.42); transform: translateY(-2px); filter: brightness(1.05); }
+    .btn-primary:disabled { opacity: .5; cursor: not-allowed; transform: none; }
+    .nav-link { position: relative; color: #94a3b8; transition: color .25s; }
+    .nav-link:hover { color: #e2e8f0; }
+    .nav-link::after { content: ''; position: absolute; left: 0; bottom: -6px; width: 0; height: 2px; background: linear-gradient(90deg,#22d3ee,#0ea5e9); transition: width .3s ease; border-radius: 2px; }
+    .nav-link:hover::after { width: 100%; }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: #0f172a; }
+    ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 8px; }
+    ::-webkit-scrollbar-thumb:hover { background: #334155; }
+    .ann-body { white-space: pre-wrap; word-break: break-word; line-height: 1.75; }
+    @keyframes fadeSlideIn { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
+    .ann-item { animation: fadeSlideIn .45s cubic-bezier(.4,0,.2,1) both; }
+    .badge { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; padding: 2px 10px; border-radius: 999px; border: 1px solid; }
+    .badge-info    { color: #67e8f9; border-color: rgba(34,211,238,.35); background: rgba(34,211,238,.08); }
+    .badge-warning { color: #fcd34d; border-color: rgba(251,191,36,.35); background: rgba(251,191,36,.08); }
+    .badge-urgent  { color: #f87171; border-color: rgba(239,68,68,.4);  background: rgba(239,68,68,.1); }
+    .spinner { width: 18px; height: 18px; border: 2px solid rgba(34,211,238,.25); border-top-color: #22d3ee; border-radius: 50%; animation: spin .8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body class="min-h-screen">
+
+  <!-- 背景 -->
+  <div class="fixed inset-0 -z-10 overflow-hidden">
+    <div class="absolute inset-0 bg-grid"></div>
+    <div class="glow-orb w-[520px] h-[520px] bg-cyan-500/25 -top-40 -left-40"></div>
+    <div class="glow-orb w-[480px] h-[480px] bg-sky-600/20 top-1/3 -right-40"></div>
+  </div>
+
+  <!-- 导航栏 -->
+  <header class="sticky top-0 z-50 backdrop-blur-md bg-[#0f172a]/70 border-b border-white/5">
+    <nav class="max-w-5xl mx-auto px-5 md:px-8 h-16 flex items-center justify-between">
+      <a href="/" class="flex items-center gap-2.5 group">
+        <div class="w-9 h-9 rounded-lg bg-gradient-to-br from-cyan-400 to-sky-600 flex items-center justify-center shadow-glow">
+          <svg viewBox="0 0 24 24" class="w-5 h-5 text-white" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z"></path>
+          </svg>
+        </div>
+        <div class="leading-tight">
+          <div class="text-white font-bold text-lg tracking-tight">公告中心</div>
+          <div class="text-[10px] text-cyan-300/70 -mt-1 font-mono">CnkeIDE</div>
+        </div>
+      </a>
+      <div class="flex items-center gap-5 text-sm font-medium">
+        <a href="/" class="nav-link">官网首页</a>
+        <a href="/#features" class="nav-link hidden md:block">功能特性</a>
+        <a href="/#roadmap" class="nav-link hidden md:block">迭代路线</a>
+        <a href="/#latest" class="nav-link hidden md:block">最新版本</a>
+        <a href="/docs.html" class="nav-link hidden sm:block">文档</a>
+        <a href="/feedback/" class="nav-link">意见反馈</a>
+      </div>
+    </nav>
+  </header>
+
+  <!-- 主内容 -->
+  <main class="max-w-5xl mx-auto px-5 md:px-8 py-10 md:py-14">
+    <div class="flex items-end justify-between flex-wrap gap-4 mb-8">
+      <div>
+        <h1 class="text-3xl md:text-4xl font-extrabold tracking-tight text-white">
+          官方<span class="text-gradient">公告</span>
+        </h1>
+        <p class="mt-2 text-slate-400 text-sm">版本更新、功能发布与重要通知，与客户端内公告实时同步。</p>
+      </div>
+      <button id="refreshBtn" class="btn-primary inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold">
+        <svg id="refreshIcon" viewBox="0 0 24 24" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 12a9 9 0 11-2.64-6.36"></path><path d="M21 3v6h-6"></path>
+        </svg>
+        刷新
+      </button>
+    </div>
+
+    <!-- 状态区 -->
+    <div id="statusBox" class="glass-card rounded-2xl p-12 flex flex-col items-center justify-center gap-4">
+      <div class="spinner"></div>
+      <div class="text-slate-400 text-sm">正在加载公告…</div>
+    </div>
+
+    <!-- 公告列表 -->
+    <div id="annList" class="flex flex-col gap-4" style="display:none"></div>
+  </main>
+
+  <!-- 页脚 -->
+  <footer class="border-t border-white/5 mt-10">
+    <div class="max-w-5xl mx-auto px-5 md:px-8 py-6 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-500">
+      <div>© 2026 CnkeIDE · 本地优先 AI 编程 IDE · <span data-live-version class="font-mono text-slate-400">v1.3.3</span></div>
+      <div class="flex items-center gap-4">
+        <a href="/docs.html" class="hover:text-cyan-300 transition-colors">文档</a>
+        <a href="/#latest" class="hover:text-cyan-300 transition-colors">更新日志</a>
+        <a href="/feedback/" class="hover:text-cyan-300 transition-colors">意见反馈</a>
+        <a href="https://github.com/CNKE-AI/cnkeide" target="_blank" rel="noopener" class="hover:text-cyan-300 transition-colors">Github</a>
+        <a href="/" class="hover:text-cyan-300 transition-colors">返回官网</a>
+      </div>
+    </div>
+  </footer>
+
+<script>
+/* 版本号动态回填（失败保留静态兜底） */
+(function () {
+  var els = document.querySelectorAll('[data-live-version]');
+  if (!els.length) return;
+  fetch('/cnkeide/updates/latest.yml', { cache: 'no-store' })
+    .then(function (r) { return r.ok ? r.text() : Promise.reject(r.status); })
+    .then(function (t) {
+      var m = /^\s*version:\s*(.+)$/m.exec(t);
+      if (!m) return;
+      var v = m[1].trim().replace(/^["']|["']$/g, '');
+      els.forEach(function (el) { el.textContent = 'v' + v.replace(/^v/, ''); });
+    })
+    .catch(function () {});
+})();
+</script>
+<script>
+const API = '/cnkeide/config/api.php';
+const $ = (id) => document.getElementById(id);
+let lastIds = '';
+let pollTimer = null;
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function fmtDate(s) {
+  // createdAt 格式 'YYYY-MM-DD HH:MM:SS'
+  if (!s) return '';
+  return String(s).replace('T', ' ').slice(0, 19);
+}
+
+const TYPE_LABEL = { info: '公告', warning: '注意', urgent: '重要' };
+
+function badge(type) {
+  const t = (type === 'warning' || type === 'urgent') ? type : 'info';
+  return '<span class="badge badge-' + t + '">' + (TYPE_LABEL[t] || '公告') + '</span>';
+}
+
+async function load() {
+  try {
+    const res = await fetch(API + '?action=announcements&platform=web&channel=web', { cache: 'no-store' });
+    const data = await res.json();
+    if (!data || !data.success) throw new Error((data && data.error) || '加载失败');
+    render(data.announcements || []);
+  } catch (e) {
+    showError(e.message || '网络错误');
+  }
+}
+
+function render(list) {
+  const box = $('statusBox');
+  const wrap = $('annList');
+  if (!list.length) {
+    box.style.display = 'flex';
+    wrap.style.display = 'none';
+    box.innerHTML =
+      '<svg viewBox="0 0 24 24" class="w-12 h-12 text-slate-600" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 00-12 0c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 01-3.46 0"></path></svg>' +
+      '<div class="text-slate-400">暂无公告</div>' +
+      '<div class="text-slate-600 text-xs">官方公告发布后，会实时出现在这里</div>';
+    lastIds = '';
+    return;
+  }
+  const ids = list.map(a => a.id).join(',');
+  const isFirst = lastIds === '';
+  const changed = ids !== lastIds;
+  lastIds = ids;
+
+  if (isFirst || changed) {
+    box.style.display = 'none';
+    wrap.style.display = 'flex';
+    wrap.innerHTML = list.map((a, i) =>
+      '<article class="ann-item glass-card rounded-2xl p-6" style="animation-delay:' + (i * 60) + 'ms">' +
+        '<div class="flex items-center gap-3 flex-wrap mb-3">' +
+          badge(a.type) +
+          '<h2 class="text-lg md:text-xl font-bold text-white">' + esc(a.title) + '</h2>' +
+        '</div>' +
+        '<div class="text-xs text-slate-500 mb-4 font-mono">' + esc(fmtDate(a.createdAt)) + '</div>' +
+        '<div class="ann-body text-slate-300 text-sm md:text-[15px]">' + esc(a.content) + '</div>' +
+      '</article>'
+    ).join('');
+  }
+}
+
+function showError(msg) {
+  const box = $('statusBox');
+  box.style.display = 'flex';
+  $('annList').style.display = 'none';
+  box.innerHTML =
+    '<svg viewBox="0 0 24 24" class="w-12 h-12 text-red-400/70" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>' +
+    '<div class="text-red-300 text-sm">' + esc(msg) + '</div>' +
+    '<button onclick="load()" class="btn-primary px-4 py-2 rounded-lg text-sm font-bold mt-1">重试</button>';
+}
+
+$('refreshBtn').onclick = () => {
+  const icon = $('refreshIcon');
+  icon.style.transition = 'transform .6s';
+  icon.style.transform = 'rotate(720deg)';
+  setTimeout(() => { icon.style.transition = 'none'; icon.style.transform = ''; }, 650);
+  load();
+};
+
+// 初始加载 + 60s 轮询；页面回到前台时立即刷新
+load();
+pollTimer = setInterval(() => { if (!document.hidden) load(); }, 60000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
+</script>
+</body>
+</html>

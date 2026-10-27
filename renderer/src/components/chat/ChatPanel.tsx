@@ -9,20 +9,20 @@ import ToolCallView from './ToolCallView';
 import { MemoryPanel } from './MemoryPanel';
 import {
   Send, Square, Brain, Hammer, Bug, MessageCircleQuestion,
-  Plus, Trash2, ChevronDown, ChevronRight, Paperclip, Sparkles, Zap, MessageCircle,
-  Copy, Check, Wand2, RotateCcw, RefreshCw, FileText, BrainCircuit, BookmarkPlus, X, FolderPlus, AtSign, CornerUpLeft,
-  Presentation,
+  Plus, ChevronDown, ChevronRight, Paperclip, Sparkles, Zap, MessageCircle,
+  Copy, Check, Wand2, RefreshCw, FileText, BookmarkPlus, X, AtSign, CornerUpLeft,
+  Presentation, ArrowDown,
 } from 'lucide-react';
+import { toast } from '../../utils/toast';
 import RefPicker from './RefPicker';
 import { resolveAllRefs } from '../../utils/promptRefs';
 import ContextBar from './ContextBar';
 import PlanPanel from './PlanPanel';
 import ModelSwitcher from './ModelSwitcher';
-import SessionToolbar from './SessionToolbar';
+import ChatHeader from './ChatHeader';
 import CheckpointPanel from './CheckpointPanel';
 import ApprovalRulesPanel from './ApprovalRulesPanel';
 import { useUiStore } from '../../store/uiStore';
-import { History, ShieldCheck } from 'lucide-react';
 
 const MODES: { id: AgentMode; label: string; icon: React.ReactNode; color: string }[] = [
   { id: 'ask', label: 'Ask', icon: <MessageCircleQuestion className="w-3.5 h-3.5" />, color: 'text-amber-400' },
@@ -394,16 +394,31 @@ const SubRow: React.FC<{ color: string; label: string; value: number }> = ({ col
  */
 interface MessageBubbleProps {
   msg: ChatMessage;
+  /** 该消息是否正在流式输出：内容还没写完时跳过高亮等昂贵处理 */
+  streaming?: boolean;
   onRegenerate?: (id: string) => void;
   onRemember?: (content: string) => Promise<boolean>;
   onRollbackTo?: (id: string) => void;
 }
 
-const MessageBubble = React.memo(({ msg, onRegenerate, onRemember, onRollbackTo }: MessageBubbleProps) => {
+/** 气泡时间戳：同一天只显示 时:分，跨天带日期 */
+const fmtTime = (ts?: number): string => {
+  if (!ts) return '';
+  const d = new Date(ts);
+  const now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return sameDay ? `${hh}:${mm}` : `${d.getMonth() + 1}/${d.getDate()} ${hh}:${mm}`;
+};
+
+const MessageBubble = React.memo(({ msg, streaming, onRegenerate, onRemember, onRollbackTo }: MessageBubbleProps) => {
   const [thinkingOpen, setThinkingOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [tokenOpen, setTokenOpen] = useState(false);
   const [remembered, setRemembered] = useState(false);
+  /** 失败消息：chatStore 用 `Error: ...` 作为内容标记 */
+  const isError = msg.role === 'assistant' && msg.content.startsWith('Error:');
 
   const handleRemember = async () => {
     if (!onRemember) return;
@@ -424,8 +439,8 @@ const MessageBubble = React.memo(({ msg, onRegenerate, onRemember, onRollbackTo 
 
   if (msg.role === 'user') {
     return (
-      <div className="flex justify-end mb-3">
-        <div className="max-w-[85%] bg-primary/15 border border-primary/20 rounded-2xl rounded-tr-md px-3.5 py-2.5 shadow-sm">
+      <div className="chat-msg flex justify-end mb-5">
+        <div className="max-w-[85%] bg-primary/10 border border-primary/15 rounded-2xl rounded-tr-md px-4 py-3 shadow-sm">
           {msg.files && msg.files.length > 0 && (
             <div className="flex flex-wrap gap-1.5 mb-1.5">
               {msg.files.map((f) => (
@@ -448,15 +463,19 @@ const MessageBubble = React.memo(({ msg, onRegenerate, onRemember, onRollbackTo 
               ))}
             </div>
           )}
-          <p className="text-[13px] whitespace-pre-wrap break-words leading-relaxed">{msg.content}</p>
+          {/* 展示用 displayContent：@文件 注入的全文只发给模型，不能糊在气泡里 */}
+          <p className="text-[13px] whitespace-pre-wrap break-words leading-relaxed">{msg.displayContent ?? msg.content}</p>
+          {msg.timestamp ? (
+            <div className="mt-1 text-right text-[10px] text-muted-foreground/60 tabular-nums">{fmtTime(msg.timestamp)}</div>
+          ) : null}
         </div>
       </div>
     );
   }
 
   return (
-    <div className="mb-3">
-      <div className="flex items-center gap-1.5 mb-1 text-[11px] text-muted-foreground">
+    <div className="chat-msg mb-5">
+      <div className="flex items-center gap-2 mb-2 text-xs text-muted-foreground">
         <span className="w-4 h-4 rounded-md bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center">
           <Sparkles className="w-2.5 h-2.5 text-white" />
         </span>
@@ -464,13 +483,13 @@ const MessageBubble = React.memo(({ msg, onRegenerate, onRemember, onRollbackTo 
       </div>
 
       {msg.modelNotice && (
-        <div className="mb-1.5 text-[11px] text-amber-400/90 bg-amber-400/10 border border-amber-400/30 rounded-md px-2 py-1.5">
+        <div className="mb-2 text-xs text-amber-300 bg-amber-400/8 border border-amber-400/20 rounded-lg px-3 py-2">
           {msg.modelNotice}
         </div>
       )}
 
       {msg.contextNotice && (
-        <div className="mb-1.5 text-[11px] text-sky-400/90 bg-sky-400/10 border border-sky-400/30 rounded-md px-2 py-1.5">
+        <div className="mb-2 text-xs text-sky-300 bg-sky-400/8 border border-sky-400/20 rounded-lg px-3 py-2">
           {msg.contextNotice}
         </div>
       )}
@@ -493,7 +512,7 @@ const MessageBubble = React.memo(({ msg, onRegenerate, onRemember, onRollbackTo 
       )}
 
       {msg.toolCalls && msg.toolCalls.length > 0 && (
-        <div className="mb-3 space-y-2">
+        <div className="mb-4 space-y-2.5">
           {msg.toolCalls.map((tc, i) => (
             <ToolCallView key={`tc-${i}`} call={tc} />
           ))}
@@ -502,7 +521,15 @@ const MessageBubble = React.memo(({ msg, onRegenerate, onRemember, onRollbackTo 
 
       {msg.content ? (
         <div className="pl-0.5">
-          <Markdown content={msg.content} />
+          {isError ? (
+            // 失败信息不走 Markdown：`Error: xxx` 里的 URL/下划线会被解析成链接，
+            // 而且用醒目的错误色才能和正常回答区分开
+            <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-[12px] leading-relaxed text-rose-200 whitespace-pre-wrap break-words">
+              {msg.content}
+            </div>
+          ) : (
+            <Markdown content={msg.content} streaming={streaming} />
+          )}
         </div>
       ) : null}
 
@@ -530,11 +557,15 @@ const MessageBubble = React.memo(({ msg, onRegenerate, onRemember, onRollbackTo 
           {onRegenerate && (
             <button
               onClick={() => onRegenerate(msg.id)}
-              className="flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-accent hover:text-foreground transition-colors"
-              title="重新回答"
+              className={`flex items-center gap-1 px-1.5 py-0.5 rounded transition-colors ${
+                isError
+                  ? 'text-rose-300 hover:bg-rose-500/20 hover:text-rose-200'
+                  : 'hover:bg-accent hover:text-foreground'
+              }`}
+              title={isError ? '重新执行这条提问' : '重新回答'}
             >
               <RefreshCw className="w-3 h-3" />
-              重新回答
+              {isError ? '重试' : '重新回答'}
             </button>
           )}
           {onRollbackTo && (
@@ -554,6 +585,11 @@ const MessageBubble = React.memo(({ msg, onRegenerate, onRemember, onRollbackTo 
               onOpenChange={setTokenOpen}
             />
           )}
+          {msg.timestamp ? (
+            <span className="ml-auto text-[10px] text-muted-foreground/50 tabular-nums select-none">
+              {fmtTime(msg.timestamp)}
+            </span>
+          ) : null}
         </div>
       ) : null}
     </div>
@@ -598,9 +634,17 @@ const ChatPanel: React.FC = () => {
   const [files, setFiles] = useState<UploadedFile[]>([]);
   const [enhancing, setEnhancing] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  /** 用户是否停留在底部：否时不自动滚动，避免流式输出把正在翻看历史的人拽回底部 */
+  const stickToBottomRef = useRef(true);
+  /** 与 ref 同步的可见状态：用于决定是否显示"回到底部"按钮 */
+  const [atBottom, setAtBottom] = useState(true);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [inputHeight, setInputHeight] = useState(80);
+  // 输入区高度：用户可拖拽调整，并记住上次的高度（每次打开 IDE 都要重调很烦）
+  const [inputHeight, setInputHeight] = useState(() => {
+    const saved = Number(window.localStorage.getItem('cnke.chat.inputHeight'));
+    return Number.isFinite(saved) && saved >= 44 && saved <= 256 ? saved : 80;
+  });
   const inputHeightRef = useRef(inputHeight);
   inputHeightRef.current = inputHeight;
   const [approval, setApproval] = useState<any>(null);
@@ -610,8 +654,10 @@ const ChatPanel: React.FC = () => {
   const [approvalRulesOpen, setApprovalRulesOpen] = useState(false);
   const { refreshContext, refreshPlan, pendingPrompt, setPendingPrompt } = useUiStore();
 
-  // 切换会话时：拉取该会话的上下文占用与计划状态
+  // 切换会话时：清掉上一个会话残留的审批条（否则点"允许"会 respond 一个已过期的 requestId），
+  // 并拉取该会话的上下文占用与计划状态
   useEffect(() => {
+    setApproval(null);
     if (!sessionId) return;
     void refreshContext(sessionId);
     void refreshPlan(sessionId);
@@ -681,13 +727,45 @@ const ChatPanel: React.FC = () => {
     }
   }, [settingsOpen]);
 
+  // 流式输出期间 messages 每帧都在变：只在"用户原本就在底部"时才跟随滚动，
+  // 且用瞬时滚动（smooth 在高频调用下会互相打断、表现为卡顿）
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
+    const el = scrollRef.current;
+    if (!el || !stickToBottomRef.current) return;
+    el.scrollTop = el.scrollHeight;
   }, [messages, loading]);
 
+  // 输入框随内容自动增高（上限 256px，超出后内部滚动）；手动拖拽的高度作为下限
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(256, Math.max(inputHeight, el.scrollHeight))}px`;
+  }, [input, inputHeight]);
+
+  const handleScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const near = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    stickToBottomRef.current = near;
+    // 只在跨越阈值时 set，避免滚动过程中每帧触发重渲染
+    setAtBottom((prev) => (prev === near ? prev : near));
+  };
+
+  const scrollToBottom = () => {
+    stickToBottomRef.current = true;
+    setAtBottom(true);
+    const el = scrollRef.current;
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+  };
+
+  // 发送锁：resolveAllRefs 是异步的（要读文件），期间输入框尚未清空，
+  // 用户连按 Enter / 双击发送会重复起一轮 agent。这里用 ref 做同步互斥。
+  const sendingRef = useRef(false);
+
   const handleSend = async () => {
+    if (sendingRef.current || loading) return;
     if (!input.trim() && images.length === 0 && files.length === 0) return;
-    if (loading) return;
 
     // 快捷指令：/ppt [主题] —— 直接打开 PPT 窗口并预填主题
     const raw = input.trim();
@@ -700,39 +778,55 @@ const ChatPanel: React.FC = () => {
 
     const ws = activeWorkspaceId || workspacePath;
     if (!ws) {
-      alert('请先打开一个工作区文件夹');
+      toast.info('请先打开一个工作区文件夹');
       return;
     }
-    // 解析 @文件/@目录 与 #codebase 检索，注入实际内容
-    const resolved = await resolveAllRefs(raw, ws);
-    const prompt = resolved.prompt;
-    setInput('');
-    setImages([]);
-    setFiles([]);
-    await sendMessage(
-      prompt,
-      ws,
-      images.length > 0 ? images : undefined,
-      files.length > 0 ? files : undefined,
-    );
+
+    sendingRef.current = true;
+    try {
+      // 解析 @文件/@目录 与 #codebase 检索，注入实际内容
+      const resolved = await resolveAllRefs(raw, ws);
+      setInput('');
+      setImages([]);
+      setFiles([]);
+      stickToBottomRef.current = true;
+      await sendMessage(
+        resolved.prompt,
+        ws,
+        images.length > 0 ? images : undefined,
+        files.length > 0 ? files : undefined,
+        // 用户原话只用于展示与后续 history：注入的 @文件 全文仅随本轮发给模型
+        raw,
+      );
+    } catch (e: any) {
+      // 引用解析/发送失败：保留输入内容，明确告知，避免"点了没反应"
+      toast.error(`发送失败：${e?.message || '引用解析出错，请重试'}`);
+    } finally {
+      sendingRef.current = false;
+    }
   };
 
   /** 选择本地文件上传：图片走多模态 images，文本/代码读取内容随消息发送供 AI 分析 */
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const list = Array.from(e.target.files || []);
+    const pickedAll = Array.from(e.target.files || []);
     e.target.value = ''; // 允许再次选择同一文件
-    if (list.length === 0) return;
-    const total = images.length + files.length + list.length;
-    if (total > MAX_UPLOAD_FILES) {
-      alert(`一次最多上传 ${MAX_UPLOAD_FILES} 个文件/图片，当前将超出上限`);
+    if (pickedAll.length === 0) return;
+    const room = MAX_UPLOAD_FILES - images.length - files.length;
+    if (room <= 0) {
+      toast.error(`一次最多上传 ${MAX_UPLOAD_FILES} 个文件/图片，请先移除已选附件`);
       return;
+    }
+    // 超限时截断而不是整批拒绝：选 7 个文件时原来一个都不会被加入
+    const list = pickedAll.slice(0, room);
+    if (list.length < pickedAll.length) {
+      toast.info(`一次最多上传 ${MAX_UPLOAD_FILES} 个文件/图片，本次仅加入前 ${list.length} 个`);
     }
     const newImgs: string[] = [];
     const newFiles: UploadedFile[] = [];
     for (const file of list) {
       if (file.type.startsWith('image/')) {
         if (file.size > 15 * 1024 * 1024) {
-          alert(`图片「${file.name}」超过 15MB，已跳过`);
+          toast.info(`图片「${file.name}」超过 15MB，已跳过`);
           continue;
         }
         const dataUrl = await new Promise<string | null>((resolve) => {
@@ -742,11 +836,11 @@ const ChatPanel: React.FC = () => {
           reader.readAsDataURL(file);
         });
         if (dataUrl) newImgs.push(dataUrl);
-        else alert(`图片「${file.name}」读取失败，请重试`);
+        else toast.error(`图片「${file.name}」读取失败，请重试`);
       } else {
         const r = await readTextFile(file);
         if (!r) {
-          alert(`「${file.name}」不是可分析的文本/代码文件，AI 暂无法读取（可先解压或转成 txt/json 后再上传）`);
+          toast.error(`「${file.name}」不是可分析的文本/代码文件，AI 暂无法读取（可先解压或转成 txt/json 后再上传）`);
           continue;
         }
         newFiles.push({
@@ -765,31 +859,58 @@ const ChatPanel: React.FC = () => {
   const handleKeyDown = (e: React.KeyboardEvent) => {
     // IME 合成中（拼音候选确认/翻页）不触发发送，避免打断输入法导致文字卡住不上屏
     if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+    // Esc：生成中直接停止（和终端/其它 IDE 的习惯一致）
+    if (e.key === 'Escape') {
+      if (loading) {
+        e.preventDefault();
+        abort();
+      }
+      return;
+    }
+    // Cmd/Ctrl + Enter：与 Enter 等价，给习惯"多行输入 + 组合键发送"的人一个出口
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      void handleSend();
+      return;
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       void handleSend();
     }
   };
 
-  const handlePaste = (e: React.ClipboardEvent) => {
-    const items = e.clipboardData?.items;
-    if (!items) return;
-    const imgs: string[] = [];
-    for (const item of items) {
-      if (item.type.startsWith('image/')) {
-        const file = item.getAsFile();
-        if (file) {
-          const reader = new FileReader();
-          reader.onload = () => {
-            if (typeof reader.result === 'string') {
-              imgs.push(reader.result);
-              setImages((prev) => [...prev, ...imgs]);
-            }
-          };
-          reader.readAsDataURL(file);
-        }
-      }
+  const handlePaste = async (e: React.ClipboardEvent) => {
+    // 事件对象在 await 后会失效，先把 File 同步取出来
+    const files = Array.from(e.clipboardData?.items ?? [])
+      .filter((it) => it.type.startsWith('image/'))
+      .map((it) => it.getAsFile())
+      .filter((f): f is File => !!f);
+    if (files.length === 0) return;
+
+    const room = MAX_UPLOAD_FILES - images.length;
+    if (room <= 0) {
+      toast.error(`一次最多上传 ${MAX_UPLOAD_FILES} 个文件/图片`);
+      return;
     }
+    const picked = files.slice(0, room);
+    if (picked.length < files.length) {
+      toast.info(`一次最多上传 ${MAX_UPLOAD_FILES} 个文件/图片，多余的已跳过`);
+    }
+
+    // 统一读完再一次性写入：原实现把结果 push 进共享数组后每次都整体展开，
+    // 粘贴多张图时第 N 张会把前面所有图重复追加一次
+    const results = await Promise.all(
+      picked.map((file) => new Promise<string | null>((resolve) => {
+        if (file.size > 15 * 1024 * 1024) return resolve(null);
+        const reader = new FileReader();
+        reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : null);
+        reader.onerror = () => resolve(null);
+        reader.readAsDataURL(file);
+      })),
+    );
+    const ok = results.filter((v): v is string => !!v);
+    if (ok.length > 0) setImages((prev) => [...prev, ...ok].slice(0, MAX_UPLOAD_FILES));
+    if (ok.length < picked.length) toast.info('部分图片读取失败或超过 15MB，已跳过');
   };
 
   const handleEnhance = async () => {
@@ -872,6 +993,10 @@ const ChatPanel: React.FC = () => {
       window.removeEventListener('mouseup', onUp);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
+      // 记住用户拖出来的高度，下次启动沿用
+      try {
+        window.localStorage.setItem('cnke.chat.inputHeight', String(inputHeightRef.current));
+      } catch { /* 隐私模式等场景写入失败，忽略 */ }
     };
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
@@ -918,7 +1043,7 @@ const ChatPanel: React.FC = () => {
         source: 'manual',
       });
       if (!res.success) {
-        alert(res.error || '保存失败');
+        toast.error(res.error || '保存失败');
         return false;
       }
       return true;
@@ -933,7 +1058,7 @@ const ChatPanel: React.FC = () => {
     if (!window.confirm('回滚到此消息会删除之后的所有消息，是否继续？')) return;
     const res = await window.cnke.sessionEx.deleteMessage(sessionId, messageId);
     if (!res.success) {
-      alert(res.error || '回滚失败');
+      toast.error(res.error || '回滚失败');
       return;
     }
     const ws = activeWorkspaceId || workspacePath;
@@ -944,106 +1069,45 @@ const ChatPanel: React.FC = () => {
   /** 重新回答（稳定引用，否则 MessageBubble 的 memo 失效） */
   const handleRegenerate = useCallback((id: string) => {
     const ws = activeWorkspaceId || workspacePath;
-    if (ws) void regenerateMessage(ws, id);
+    if (!ws) return;
+    // 重新回答会丢弃该回复之后的所有消息：对历史消息必须先确认，避免误点丢数据
+    const msgs = useChatStore.getState().messages;
+    const idx = msgs.findIndex((m) => m.id === id);
+    const laterUserMsgs = idx >= 0 ? msgs.slice(idx + 1).filter((m) => m.role === 'user').length : 0;
+    if (laterUserMsgs > 0 && !window.confirm(`重新回答会删除此后 ${laterUserMsgs} 轮对话，是否继续？`)) return;
+    void regenerateMessage(ws, id);
   }, [activeWorkspaceId, workspacePath, regenerateMessage]);
 
   return (
     <div className="flex flex-col h-full bg-background">
-      {/* 顶部：会话切换 + 模式切换 + 新建 */}
-      <div className="px-3 pt-2.5 pb-2 border-b border-border/70 bg-secondary/10">
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
-            <MessageCircle className="w-3.5 h-3.5 text-primary" />
-            对话
-          </span>
-          <div className="flex items-center gap-1">
-            {/* 主操作：新建对话 */}
-            <div className="flex items-center gap-0.5">
-              <button onClick={() => void handleNewChat()} className="icon-btn" title="新建对话（当前工作区）">
-                <Plus className="w-3.5 h-3.5" />
-              </button>
-              <button onClick={() => void handleNewChatNewWorkspace()} className="icon-btn" title="新建对话并选择新工作区目录">
-                <FolderPlus className="w-3.5 h-3.5" />
-              </button>
-            </div>
-            {/* 分隔点 */}
-            <span className="w-px h-4 bg-border/70 mx-0.5" />
-            {/* 会话管理 */}
-            <SessionToolbar sessionId={sessionId} workspaceId={activeWorkspaceId || workspacePath} onImport={() => { void refreshSessions(workspacePath || activeWorkspaceId || ''); }} onSummarized={() => { if (sessionId) void refreshContext(sessionId); }} />
-            <button
-              onClick={() => { const ws = activeWorkspaceId || workspacePath; if (ws) void rollback(ws); }}
-              disabled={loading || messages.length === 0}
-              className="icon-btn"
-              title="回滚：撤销上一轮对话"
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-            </button>
-            <button onClick={handleDeleteCurrent} disabled={loading} className="icon-btn hover:!bg-red-500/20 hover:!text-red-400" title="删除当前对话">
-              <Trash2 className="w-3.5 h-3.5" />
-            </button>
-            {/* 分隔点 */}
-            <span className="w-px h-4 bg-border/70 mx-0.5" />
-            {/* 高级功能 */}
-            <button onClick={() => setMemoryOpen(true)} className="icon-btn" title="本地记忆：查看 / 管理跨对话自动加载的上下文与偏好">
-              <BrainCircuit className="w-3.5 h-3.5" />
-            </button>
-            <button onClick={() => setCheckpointOpen(true)} className="icon-btn" title="文件快照（Checkpoint）查看/恢复">
-              <History className="w-3.5 h-3.5" />
-            </button>
-            <button onClick={() => setApprovalRulesOpen(true)} className="icon-btn" title="工具审批信任规则">
-              <ShieldCheck className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        </div>
-        {/* 多会话标签栏：点击切换，删除在右侧按钮 */}
-        <div className="flex items-center gap-1 overflow-x-auto pb-1 no-scrollbar">
-          {sessions.length === 0 ? (
-            <span className="text-[10px] text-muted-foreground/50 px-1">暂无历史对话，发送消息后自动保存为可切换的会话</span>
-          ) : (
-            sessions.map((s) => {
-              const active = s.id === sessionId;
-              return (
-                <div
-                  key={s.id}
-                  className={`group flex items-center gap-1 px-2 py-[5px] rounded-lg border text-[11px] whitespace-nowrap transition-all shrink-0 ${
-                    active
-                      ? 'bg-primary/15 border-primary/40 text-foreground glow-primary'
-                      : 'border-border/60 text-muted-foreground hover:bg-accent/60 hover:border-border'
-                  } ${loading ? 'opacity-50 pointer-events-none' : 'cursor-pointer'}`}
-                >
-                  <button
-                    onClick={() => void switchSession(s.workspaceId || workspacePath!, s.id)}
-                    disabled={loading}
-                    title={s.title || '新对话'}
-                    className="flex items-center gap-1 shrink-0"
-                  >
-                    <MessageCircle className={`w-3 h-3 shrink-0 ${active ? 'text-primary' : 'opacity-60'}`} />
-                    <span className="max-w-[140px] truncate">{s.title || '新对话'}</span>
-                    {s.workspaceId && s.workspaceId !== (activeWorkspaceId || workspacePath) && (
-                      <span className="text-[9px] text-muted-foreground/50 shrink-0">{window.cnke.path.basename(s.workspaceId)}</span>
-                    )}
-                  </button>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (s.workspaceId && !loading) {
-                        if (window.confirm(`关闭对话「${s.title || '新对话'}」？`)) {
-                          void removeSession(s.workspaceId, s.id);
-                        }
-                      }
-                    }}
-                    disabled={loading}
-                    title="关闭此对话"
-                    className="ml-0.5 p-0.5 rounded hover:bg-red-500/20 hover:text-red-400 text-muted-foreground/60 transition-colors shrink-0"
-                  >
-                    <X className="w-3 h-3" />
-                  </button>
-                </div>
-              );
-            })
-          )}
-        </div>
-      </div>
+      {/* 顶部会话栏：会话标签自适应宽度 + 固定操作区，低频操作收进「更多」菜单 */}
+      <ChatHeader
+        sessions={sessions}
+        sessionId={sessionId}
+        activeWorkspaceId={activeWorkspaceId}
+        workspacePath={workspacePath}
+        loading={loading}
+        canRollback={!loading && messages.length > 0}
+        onSwitch={(s) => {
+          // workspacePath 可能为 null，非空断言会把 undefined 传给 switchSession
+          const ws = s.workspaceId || workspacePath;
+          if (ws) void switchSession(ws, s.id);
+        }}
+        onCloseSession={(s) => {
+          if (s.workspaceId && !loading && window.confirm(`关闭对话「${s.title || '新对话'}」？`)) {
+            void removeSession(s.workspaceId, s.id);
+          }
+        }}
+        onCreate={() => void handleNewChat()}
+        onCreateNewWorkspace={() => void handleNewChatNewWorkspace()}
+        onImport={() => { void refreshSessions(workspacePath || activeWorkspaceId || ''); }}
+        onSummarized={() => { if (sessionId) void refreshContext(sessionId); }}
+        onRollback={() => { const ws = activeWorkspaceId || workspacePath; if (ws) void rollback(ws); }}
+        onDelete={handleDeleteCurrent}
+        onMemory={() => setMemoryOpen(true)}
+        onCheckpoint={() => setCheckpointOpen(true)}
+        onApproval={() => setApprovalRulesOpen(true)}
+      />
 
       {/* 上下文占用进度条 */}
       <ContextBar />
@@ -1052,7 +1116,7 @@ const ChatPanel: React.FC = () => {
       <PlanPanel sessionId={sessionId || undefined} />
 
       {/* 消息列表 */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4">
+      <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto px-4 py-4">
         {messages.length === 0 && (
           <div className="empty-state">
             <div className="empty-state__icon">
@@ -1066,9 +1130,9 @@ const ChatPanel: React.FC = () => {
               <button
                 onClick={() => { void (async () => {
                   const p = await window.cnke.fs.openFolder();
-                  if (p) {
-                    window.location.reload();
-                  }
+                  // 原来用 location.reload() 刷新整页：会丢失未保存的输入和面板状态，
+                  // setWorkspacePath 已负责同步文件树 + 启动监听，是等价且无损的做法
+                  if (p) setWorkspacePath(p);
                 })(); }}
                 className="text-xs border border-border rounded-lg px-3.5 py-1.5 hover:bg-accent transition-colors mt-1"
               >
@@ -1077,8 +1141,17 @@ const ChatPanel: React.FC = () => {
             )}
           </div>
         )}
-        {messages.map((msg) => (
-          <MessageBubble key={msg.id} msg={msg} onRegenerate={handleRegenerate} onRemember={rememberToMemory} onRollbackTo={handleRollbackTo} />
+        {messages.map((msg, i) => (
+          <MessageBubble
+            key={msg.id}
+            msg={msg}
+            // 只有"正在流式输出的最后一条"跳过语法高亮：代码还没写完，
+            // 每帧重新 highlight 整段是长回答卡顿的主要来源
+            streaming={loading && i === messages.length - 1 && msg.role === 'assistant'}
+            onRegenerate={handleRegenerate}
+            onRemember={rememberToMemory}
+            onRollbackTo={handleRollbackTo}
+          />
         ))}
         {loading && (
           <div className="flex items-center gap-1.5 text-muted-foreground text-xs px-1 py-2">
@@ -1088,6 +1161,36 @@ const ChatPanel: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* 回到底部：用户上翻历史时出现（高度 0 的锚点，按钮浮在消息区底部之上） */}
+      <div className="relative z-10 h-0">
+        {!atBottom && (
+          <button
+            onClick={scrollToBottom}
+            className="absolute -top-11 left-1/2 -translate-x-1/2 flex items-center gap-1 rounded-full border border-border bg-popover/95 px-3 py-1.5 text-[11px] text-foreground shadow-lg backdrop-blur hover:bg-accent transition-colors"
+          >
+            <ArrowDown className="h-3 w-3" />
+            回到底部
+          </button>
+        )}
+      </div>
+
+      {/* 工具审批条：紧贴输入区上方（原实现放在输入区之后，实际渲染在窗口最底部，
+          与"固定在输入区上方"的预期不符，且容易被误认为状态栏） */}
+      {approval && (
+        <div className="mx-3 mb-1.5 rounded-xl border border-amber-500/30 bg-card/95 shadow-lg backdrop-blur p-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-xs font-semibold text-amber-300">需要确认工具调用</div>
+              <div className="mt-0.5 truncate font-mono text-[11px] text-cyan-300">{approval.toolCall?.name}</div>
+            </div>
+            <div className="flex shrink-0 gap-2">
+              <button onClick={() => { window.cnke.toolApprove.respond(approval.requestId, false); setApproval(null); }} className="rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-accent">拒绝</button>
+              <button onClick={() => { window.cnke.toolApprove.respond(approval.requestId, true); setApproval(null); }} className="rounded-lg btn-gradient px-3 py-1.5 text-xs">允许</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 输入区 */}
       <div className="p-3 pt-2 border-t border-border/70 bg-secondary/15">
@@ -1191,7 +1294,7 @@ const ChatPanel: React.FC = () => {
               onPaste={handlePaste}
               placeholder={workspacePath ? '输入需求 · Enter 发送 · @文件 / #codebase / 上传 · 输入 /ppt 主题 打开 PPT 生成' : '请先打开工作区'}
               rows={2}
-              style={{ height: inputHeight }}
+              style={{ minHeight: inputHeight, maxHeight: 256 }}
               className="flex-1 bg-transparent outline-none resize-none text-[13px] leading-relaxed placeholder:text-muted-foreground/50 overflow-y-auto"
             />
             <button
@@ -1265,22 +1368,6 @@ const ChatPanel: React.FC = () => {
           <span className="truncate">支持上传文件/图片 · 会话自动保存</span>
         </p>
       </div>
-
-      {/* 工具审批条：固定在输入区上方，避免悬浮按钮遮挡消息 */}
-      {approval && (
-        <div className="mx-3 mb-2 rounded-xl border border-amber-500/30 bg-card/95 shadow-lg backdrop-blur p-3">
-          <div className="flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <div className="text-xs font-semibold text-amber-300">需要确认工具调用</div>
-              <div className="mt-0.5 truncate font-mono text-[11px] text-cyan-300">{approval.toolCall?.name}</div>
-            </div>
-            <div className="flex shrink-0 gap-2">
-              <button onClick={() => { window.cnke.toolApprove.respond(approval.requestId, false); setApproval(null); }} className="rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-accent">拒绝</button>
-              <button onClick={() => { window.cnke.toolApprove.respond(approval.requestId, true); setApproval(null); }} className="rounded-lg btn-gradient px-3 py-1.5 text-xs">允许</button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* @ 引用 / #codebase 选择器 */}
       <RefPicker

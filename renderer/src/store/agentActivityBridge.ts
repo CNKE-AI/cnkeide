@@ -8,11 +8,14 @@ import {
 import { useEditorStore } from './editorStore';
 
 /**
- * AgentEvent 的宽松结构（主进程事件字段随版本演进，这里只取需要的部分）
+ * AgentEvent 的宽松结构。
+ * 主进程统一发出 { type, sessionId, data } 包装结构，具体字段都在 data 里；
+ * 这里保留扁平字段仅为兼容早期版本，取值时以 data 优先。
  */
 interface RawAgentEvent {
   type: string;
   sessionId?: string;
+  data?: any;
   [key: string]: any;
 }
 
@@ -39,60 +42,57 @@ function normalizeArgs(args: any): any {
  * 返回取消订阅函数。
  */
 export function attachAgentActivityBridge(): () => void {
-  const activity = useAgentActivityStore.getState();
+  // toolCallId → 工具名：tool_result 事件只带 id 与结果，需要回查工具名
+  const toolNames = new Map<string, string>();
 
   const off = window.cnke.agent.onEvent((event: RawAgentEvent) => {
     if (!event || typeof event.type !== 'string') return;
     const store = useAgentActivityStore.getState();
+    // 主进程事件的实际负载在 event.data 中；不是对象时退回事件本身
+    const d: any = event.data && typeof event.data === 'object' ? event.data : event;
 
     switch (event.type) {
       // ---------- 运行生命周期 ----------
-      case 'agent_start':
       case 'start': {
-        store.begin(event.sessionId || 'default');
+        toolNames.clear();
+        store.begin(event.sessionId || d.sessionId || 'default');
         store.pushLine('── Agent 开始运行 ──', 'divider');
         break;
       }
 
-      case 'agent_end':
-      case 'done':
-      case 'complete': {
-        const ok = event.error == null;
+      case 'done': {
+        // aborted: 主进程在用户点「停止」清除 runningSessions 后随 done 一起下发
+        if (d.aborted) {
+          store.pushLine('── Agent 已中止 ──', 'divider');
+          store.finish('aborted');
+          break;
+        }
+        const ok = d.error == null && event.error == null;
         store.pushLine(ok ? '── Agent 运行完成 ──' : '── Agent 运行失败 ──', 'divider');
         store.finish(ok ? 'done' : 'error');
         break;
       }
 
-      case 'aborted': {
-        store.pushLine('── Agent 已中止 ──', 'divider');
-        store.finish('aborted');
-        break;
-      }
-
-      // ---------- 思考 / 流式输出 ----------
-      case 'thinking':
-      case 'thinking-delta': {
-        // 思考内容不进终端正文（噪音大），仅在链路断开时提示一次阶段切换
+      // ---------- 思考 / 正文 ----------
+      case 'thinking': {
+        // 思考内容不进终端正文（噪音大），仅切换阶段
         if (store.phase !== 'thinking' && store.phase !== 'tool') {
           useAgentActivityStore.setState({ phase: 'thinking' });
         }
         break;
       }
 
-      case 'assistant-message': {
-        const text = event.content ?? event.text ?? '';
-        if (typeof text === 'string' && text.trim()) {
-          store.pushText(text, 'info');
-        }
+      case 'assistant': {
+        // 正文已在聊天区渲染，终端只标记阶段，避免整段重复刷屏
         useAgentActivityStore.setState({ phase: 'streaming' });
         break;
       }
 
       // ---------- 工具调用 ----------
-      case 'tool_call':
-      case 'tool-call': {
-        const toolName = event.toolName || event.name || 'unknown';
-        const args = normalizeArgs(event.args ?? event.arguments);
+      case 'tool_call': {
+        const toolName = String(d.name ?? d.toolName ?? event.toolName ?? event.name ?? 'unknown');
+        const args = normalizeArgs(d.arguments ?? d.args ?? event.args);
+        if (d.id) toolNames.set(String(d.id), toolName);
         store.toolStart(toolName, args);
         store.pushLine(`▶ ${formatToolCall(toolName, args)}`, 'command');
 
@@ -101,7 +101,7 @@ export function attachAgentActivityBridge(): () => void {
         if (isWriteTool(toolName)) {
           for (const p of paths) {
             store.markModified(p, toolName, resolveWriteAction(toolName));
-            useEditorStore.getState().noteExternalChange(p);
+            void useEditorStore.getState().noteExternalChange(p);
           }
         } else if (isReadTool(toolName)) {
           for (const p of paths) store.markRead(p, toolName);
@@ -109,36 +109,44 @@ export function attachAgentActivityBridge(): () => void {
         break;
       }
 
-      case 'tool_result':
-      case 'tool-result': {
-        const toolName = event.toolName || event.name || 'unknown';
-        const ok = event.success !== false && event.error == null;
-        store.toolEnd(toolName, event.result, ok);
-        if (!ok) {
-          const msg = typeof event.error === 'string' ? event.error : event.error?.message || '执行失败';
-          store.pushLine(`✗ ${toolName}: ${msg}`, 'error');
+      case 'tool_result': {
+        const id = d.toolCallId ? String(d.toolCallId) : '';
+        const toolName = toolNames.get(id) || store.currentTool || 'unknown';
+        const result = d.result;
+        const rejected = result === '已拒绝';
+        const ok = !rejected && !(result && typeof result === 'object' && result.success === false);
+        store.toolEnd(toolName, result, ok);
+        if (rejected) {
+          store.pushLine(`⊘ ${toolName}：用户拒绝执行`, 'error');
+        } else if (!ok) {
+          const msg = result?.error || (typeof result === 'string' ? result : '执行失败');
+          store.pushLine(`✗ ${toolName}：${String(msg).slice(0, 120)}`, 'error');
         } else {
           store.pushLine(`✓ ${toolName}`, 'success');
         }
-        break;
-      }
-
-      // ---------- 终端命令输出（execute_command 的 stdout/stderr）----------
-      case 'shell-output':
-      case 'shell_output': {
-        const out = event.data ?? event.output ?? '';
-        store.pushText(String(out), 'output');
+        // 写操作的 diff 元数据 → 记录前后内容，供编辑器内一键撤销
+        const diff = result && typeof result === 'object' ? result.diff : undefined;
+        if (ok && diff && typeof diff.path === 'string') {
+          store.recordAgentEdit({
+            path: diff.path,
+            before: typeof diff.before === 'string' ? diff.before : undefined,
+            after: typeof diff.after === 'string' ? diff.after : undefined,
+            at: Date.now(),
+            toolName,
+          });
+        }
+        if (id) toolNames.delete(id);
         break;
       }
 
       // ---------- 审批 ----------
-      case 'approval-request':
       case 'approval_request': {
         store.setPendingApprovals(store.pendingApprovals + 1);
-        store.pushLine(`⏸ 等待审批：${event.toolName || ''}`, 'error');
+        useAgentActivityStore.setState({ phase: 'waiting-approval' });
+        store.pushLine(`⏸ 等待审批：${d.toolName || '未知工具'}`, 'error');
         break;
       }
-      case 'approval-resolved':
+
       case 'approval_resolved': {
         store.setPendingApprovals(Math.max(0, store.pendingApprovals - 1));
         break;
@@ -146,7 +154,7 @@ export function attachAgentActivityBridge(): () => void {
 
       // ---------- 错误 ----------
       case 'error': {
-        const msg = typeof event.error === 'string' ? event.error : event.error?.message || event.message || '未知错误';
+        const msg = typeof d.error === 'string' ? d.error : d.error?.message || d.message || '未知错误';
         store.pushLine(`✗ ${msg}`, 'error');
         store.finish('error');
         break;
@@ -156,9 +164,6 @@ export function attachAgentActivityBridge(): () => void {
         break;
     }
   });
-
-  // 同步终端外部命令产生的文件变更标记（terminal:output 不产生事件，靠 watcher 兜底）
-  void activity;
 
   return off;
 }

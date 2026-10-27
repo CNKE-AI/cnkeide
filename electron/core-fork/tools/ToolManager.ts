@@ -13,8 +13,8 @@ import { RagManager } from '../rag/RagManager';
 import { PlaywrightAdapter, MockPlaywrightAdapter, createRealPlaywrightAdapter } from './PlaywrightTools';
 import { ImageGenAdapter, MockImageGenAdapter, OpenAIImageGenAdapter } from './ImageGenTools';
 import fs from 'node:fs/promises';
-import { existsSync } from 'node:fs';
-import path from 'node:path';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import path, { join } from 'node:path';
 
 export interface ToolDefinition {
   name: string;
@@ -56,6 +56,19 @@ export interface ToolResult {
   success: boolean;
   output?: string;
   error?: string;
+  /**
+   * 变更审查元数据（W18）：仅写操作工具填充。
+   * 供前端渲染 diff 与一键回滚；回填 LLM messages 前会被 AgentManager 剥离，
+   * 避免 before/after 全文撑爆上下文。
+   */
+  diff?: {
+    /** 目标文件绝对路径 */
+    path: string;
+    /** 修改前内容；新建文件为 undefined */
+    before?: string;
+    /** 修改后内容；删除文件为 undefined */
+    after?: string;
+  };
 }
 
 export interface ToolManagerConfig {
@@ -528,7 +541,7 @@ export class ToolManager {
       },
       {
         name: 'mark_plan_complete',
-        description: '标记当前计划全部完成（对所有 pending/running 的步骤标记为 skipped）。',
+        description: '确认当前计划已结束。不会自动修改任何步骤状态；仅在所有应执行步骤均已明确完成后调用。尚未完成的步骤应保留 pending/running 或按实际原因标记 failed/skipped。',
         parameters: { type: 'object', properties: {}, required: [] },
       },
       // ===== W4 联网 / Git / Grep / Test / Format =====
@@ -683,7 +696,74 @@ export class ToolManager {
     }
   }
 
-  async execute(toolName: string, args: any): Promise<ToolResult> {
+  /**
+   * 对外统一入口：执行工具并对返回结果做体积治理。
+   * 大文件 read_file / 命中上千行的 grep 等工具会产出海量 output，
+   * 全量塞进 messages 会瞬间逼近上下文上限并稀释模型注意力，
+   * 因此在这里统一截断；被截断时把完整结果落盘，返回路径供后续精确读取。
+   */
+  async execute(toolName: string, args: any, signal?: AbortSignal): Promise<ToolResult> {
+    const planItem = this.planManager && this.sessionId && !toolName.startsWith('plan_')
+      ? this.planManager.findMatchingItem(this.sessionId, toolName, args)
+      : null;
+    if (planItem?.status === 'pending') this.planManager!.startItem(this.sessionId!, planItem.id);
+
+    const result = await this.executeRaw(toolName, args, signal);
+    if (planItem) {
+      const succeeded = result?.success !== false;
+      if (succeeded) this.planManager!.completeItem(this.sessionId!, planItem.id);
+      else this.planManager!.failItem(this.sessionId!, planItem.id, result?.error || '工具执行失败');
+    }
+    return this.clampToolResult(toolName, result);
+  }
+
+  /** 单个工具 output 的最大字符数（约 token 上限的一半） */
+  private static readonly MAX_TOOL_OUTPUT_CHARS = 8000;
+
+  /**
+   * 截断超长工具输出。
+   * - 保留头部（结论/前几条命中通常在开头）+ 尾部（命令的报错常在结尾），中间用省略标记衔接；
+   * - 完整内容写入工作区 .cnke/tool-output 下，返回可读回的相对路径，避免信息真丢失；
+   * - 仅治理 output，不动 error（错误信息通常很短且必须完整）。
+   */
+  private clampToolResult(toolName: string, result: ToolResult): ToolResult {
+    const output = result.output;
+    if (!output || output.length <= ToolManager.MAX_TOOL_OUTPUT_CHARS) return result;
+
+    const limit = ToolManager.MAX_TOOL_OUTPUT_CHARS;
+    const head = output.slice(0, Math.floor(limit * 0.7));
+    const tail = output.slice(output.length - Math.floor(limit * 0.25));
+    const omitted = output.length - head.length - tail.length;
+
+    // 落盘完整结果，便于模型用 read_file 精确取用（失败则退化为纯截断）
+    const spillPath = this.spillToolOutput(toolName, output);
+    const spillNote = spillPath
+      ? `\n\n完整结果（${output.length} 字符）已保存到：${spillPath}\n如需查看全部内容，请用 read_file 读取该文件。`
+      : '';
+
+    return {
+      ...result,
+      output: `${head}\n\n… [已截断 ${omitted} 字符，仅保留头尾] …\n\n${tail}${spillNote}`,
+    };
+  }
+
+  /** 把超长工具输出写入工作区临时目录，返回相对工作区的路径；无工作区或写失败返回 null */
+  private spillToolOutput(toolName: string, output: string): string | null {
+    if (!this.workspaceId) return null;
+    try {
+      const dir = join(this.workspaceId, '.cnke', 'tool-output');
+      mkdirSync(dir, { recursive: true });
+      const safeName = toolName.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const fileName = `${safeName}-${Date.now()}.txt`;
+      const fullPath = join(dir, fileName);
+      writeFileSync(fullPath, output, 'utf-8');
+      return `.cnke/tool-output/${fileName}`;
+    } catch {
+      return null;
+    }
+  }
+
+  private async executeRaw(toolName: string, args: any, signal?: AbortSignal): Promise<ToolResult> {
     try {
       if (toolName.startsWith('mcp__')) {
         const parts = toolName.split('__');
@@ -702,25 +782,30 @@ export class ToolManager {
         }
         case 'write_to_file': {
           const abs = this.resolvePath(args.path);
+          // 先留底再写：变更审查视图需要修改前内容
+          const beforeRes = existsSync(abs) ? await this.fsAdapter.readFile(abs) : null;
+          const before = beforeRes?.success ? beforeRes.content : undefined;
           await this.snapshotBeforeWrite(abs);
           const result = await this.fsAdapter.writeFile(abs, args.content);
           if (!result.success) return { success: false, error: `${result.error}（解析路径: ${abs}）` };
           this.modifiedFiles.add(abs);
-          return { success: true, output: `文件已写入: ${abs}` };
+          return { success: true, output: `文件已写入: ${abs}`, diff: { path: abs, before, after: args.content } };
         }
         case 'create_file': {
           const abs = this.resolvePath(args.path);
           const result = await this.fsAdapter.createFile(abs, args.content ?? '');
           if (!result.success) return { success: false, error: `${result.error}（解析路径: ${abs}）` };
           this.modifiedFiles.add(abs);
-          return { success: true, output: `文件已创建: ${abs}` };
+          return { success: true, output: `文件已创建: ${abs}`, diff: { path: abs, after: args.content ?? '' } };
         }
         case 'delete_file': {
           const abs = this.resolvePath(args.path);
+          const beforeRes = existsSync(abs) ? await this.fsAdapter.readFile(abs) : null;
+          const before = beforeRes?.success ? beforeRes.content : undefined;
           await this.snapshotBeforeWrite(abs);
           const result = await this.fsAdapter.deletePath(abs);
           if (!result.success) return { success: false, error: `${result.error}（解析路径: ${abs}）` };
-          return { success: true, output: `已删除: ${abs}` };
+          return { success: true, output: `已删除: ${abs}`, diff: { path: abs, before } };
         }
         case 'rename_file': {
           const absOld = this.resolvePath(args.oldPath);
@@ -748,7 +833,7 @@ export class ToolManager {
         case 'execute_command': {
           // cwd 也按工作区解析：模型常给 "." 或相对子目录
           const cwd = args.cwd ? this.resolvePath(args.cwd) : this.workspaceId || process.cwd();
-          const result = await this.terminalAdapter.exec(args.command, cwd);
+          const result = await this.terminalAdapter.exec(args.command, cwd, args.timeout, signal);
           if (!result.success) return { success: false, error: result.error, output: result.stdout };
           return { success: true, output: result.stdout || result.stderr || '命令执行完成' };
         }
@@ -955,8 +1040,8 @@ export class ToolManager {
           if (!this.planManager || !this.sessionId) {
             return { success: false, error: 'PlanManager 未启用' };
           }
-          this.planManager.abandon(this.sessionId);
-          return { success: true, output: '已标记计划完成。' };
+          this.planManager.complete(this.sessionId);
+          return { success: true, output: `计划已结束。\n${this.planManager.summaryForLlm(this.sessionId)}` };
         }
         // ===== W4 新工具 =====
         case 'web_search': {
@@ -1090,7 +1175,7 @@ export class ToolManager {
       }
 
       await fs.writeFile(filePath, content, 'utf-8');
-      return { success: true, output: `差异已应用: ${filePath}` };
+      return { success: true, output: `差异已应用: ${filePath}`, diff: { path: filePath, before: original, after: content } };
     } catch (err: any) {
       return { success: false, error: err.message };
     }

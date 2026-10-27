@@ -1,8 +1,8 @@
-import { app } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
+import { resolveUserDataDir } from '../util/paths';
 
 /**
  * StorageAdapter - 存储适配层
@@ -20,9 +20,16 @@ export class StorageAdapter {
   private dataDir: string = '';
   /** 按 collection 串行化写事务的队列尾（读改写排队执行） */
   private writeQueues: Map<string, Promise<unknown>> = new Map();
+  /** 显式数据目录（CLI / 测试注入）；为空时使用环境默认目录 */
+  private userDataDirOverride?: string;
+
+  constructor(userDataDir?: string) {
+    this.userDataDirOverride = userDataDir;
+  }
 
   async init(): Promise<void> {
-    this.dataDir = path.join(app.getPath('userData'), 'data');
+    const base = this.userDataDirOverride || resolveUserDataDir();
+    this.dataDir = path.join(base, 'data');
     if (!existsSync(this.dataDir)) {
       await fs.mkdir(this.dataDir, { recursive: true });
     }

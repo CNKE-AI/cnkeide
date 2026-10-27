@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { AppProvider } from './store/AppProvider';
 import MainLayout from './components/MainLayout';
+import ToastHost from './components/chat/ToastHost';
 import { useThemeStore } from './store/themeStore';
 import { X, Sparkles } from 'lucide-react';
 
@@ -92,6 +93,8 @@ const App: React.FC = () => {
     <AppProvider>
       <MainLayout />
       <UpdateAnnouncement />
+      {/* 挂在根节点：对话面板被折叠/卸载时，设置页等其它入口的提示也不会丢 */}
+      <ToastHost />
     </AppProvider>
   );
 };

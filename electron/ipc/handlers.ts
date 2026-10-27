@@ -6,6 +6,7 @@ import { StorageAdapter } from '../adapter/StorageAdapter';
 import { WindowAdapter } from '../adapter/WindowAdapter';
 import { SessionStore } from '../store/SessionStore';
 import { McpHub } from '../core-fork/mcp/McpHub';
+import { McpCatalogService } from '../core-fork/mcp/McpCatalogService';
 import { AgentManager } from '../core-fork/agent/AgentManager';
 import { MemoryStore, MemoryItem, MemoryItemInput } from '../core-fork/memory/MemoryStore';
 import { CheckpointManager } from '../core-fork/checkpoint/CheckpointManager';
@@ -17,6 +18,7 @@ import type { DirEntry } from '../adapter/FileSystemAdapter';
 import type { ChatSession } from '../store/SessionStore';
 import type { RunParams } from '../core-fork/agent/AgentManager';
 import type { McpServerConfig } from '../core-fork/mcp/McpHub';
+import type { McpCatalogEntry } from '../core-fork/mcp/McpCatalogService';
 import type { ApprovalRule } from '../core-fork/checkpoint/ApprovalPolicy';
 import type { PptxCreateRequest } from '../core-fork/tools/PptxTools';
 import type { AiPptSlideHint } from '../core-fork/ppt/pptDesign';
@@ -497,6 +499,8 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
   });
 
   // ===== MCP IPC =====
+  const catalogService = new McpCatalogService(app.getPath('userData'));
+
   ipcMain.handle('mcp:listServers', () => {
     return mcpHub.listServersWithStatus();
   });
@@ -523,6 +527,15 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
 
   ipcMain.handle('mcp:callTool', (_e, serverId: string, toolName: string, args: Record<string, unknown>) => {
     return mcpHub.callTool(serverId, toolName, args);
+  });
+
+  ipcMain.handle('mcp:getCatalog', async (_e, forceRefresh = false) => {
+    return catalogService.getCatalog(forceRefresh);
+  });
+
+  ipcMain.handle('mcp:installFromCatalog', async (_e, entry: McpCatalogEntry) => {
+    const config = McpCatalogService.toServerConfig(entry);
+    return mcpHub.addServer(config);
   });
 
   // ===== checkpoint rollback IPC =====

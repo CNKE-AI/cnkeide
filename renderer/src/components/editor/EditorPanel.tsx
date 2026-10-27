@@ -27,7 +27,7 @@ import { useAgentActivityStore } from '../../store/agentActivityStore';
 import { useUiStore } from '../../store/uiStore';
 import { useLayoutStore } from '../../store/layoutStore';
 import { inlineCompletion, inlineSuggestionTheme } from './inlineCompletion';
-import { FileCode2, X, Save, SaveAll, MessageSquarePlus, RefreshCw, Bot, AlertTriangle } from 'lucide-react';
+import { FileCode2, X, Save, SaveAll, MessageSquarePlus, RefreshCw, Bot, AlertTriangle, Undo2 } from 'lucide-react';
 
 /** CodeMirror 编辑器主题 - 深色背景，匹配 IDE 整体风格 */
 const editorTheme = EditorView.theme({
@@ -263,11 +263,14 @@ const EditorPanel: React.FC = () => {
 
   // Agent 触碰过的文件（跨视图共享，标记"Agent 改过"）
   const modifiedFiles = useAgentActivityStore((s) => s.modifiedFiles);
+  const agentEdits = useAgentActivityStore((s) => s.agentEdits);
   const agentPhase = useAgentActivityStore((s) => s.phase);
   const phaseBusy = agentPhase === 'thinking' || agentPhase === 'streaming' || agentPhase === 'tool';
+  const [undoing, setUndoing] = useState(false);
 
   const active = tabs.find((t) => samePath(t.path, activePath ?? '')) ?? null;
   const activeModifiedByAgent = active ? modifiedFiles.has(active.path) : false;
+  const activeAgentEdit = active ? agentEdits.get(active.path) : undefined;
 
   // 创建/更新编辑器
   useEffect(() => {
@@ -440,6 +443,31 @@ const EditorPanel: React.FC = () => {
     useEditorStore.getState().clearStale(path);
   };
 
+  /**
+   * 撤销 Agent 对该文件的最新一次修改（W19）。
+   * 新建文件 → 删除；修改/删除 → 写回 Agent 动手前的内容。
+   * 写入磁盘后走 noteExternalChange：无本地未保存编辑会自动重载，有则标记 stale 让用户决定。
+   */
+  const undoAgentEdit = async (path: string) => {
+    const edit = useAgentActivityStore.getState().agentEdits.get(path);
+    if (!edit || undoing) return;
+    setUndoing(true);
+    try {
+      const res =
+        edit.before === undefined
+          ? await window.cnke.fs.deletePath(path)
+          : await window.cnke.fs.writeFile(path, edit.before);
+      if (!res.success) return;
+      const store = useAgentActivityStore.getState();
+      store.clearAgentEdit(path);
+      store.clearModified(path);
+      if (edit.before === undefined) closeTab(path);
+      else await useEditorStore.getState().noteExternalChange(path);
+    } finally {
+      setUndoing(false);
+    }
+  };
+
   return (
     <div className="flex flex-col h-full bg-background">
       {/* 标签栏 */}
@@ -547,6 +575,26 @@ const EditorPanel: React.FC = () => {
         <div className="flex items-center gap-1.5 px-2.5 py-0.5 bg-violet-500/10 border-b border-violet-500/25 shrink-0">
           <Bot className="w-3 h-3 text-violet-400 animate-pulse" />
           <span className="text-[10px] text-violet-300">Agent 正在修改此文件，内容已自动同步</span>
+        </div>
+      )}
+
+      {/* 零弹窗审批的兜底：Agent 改完不打断用户，但保留一键撤销入口 */}
+      {active && activeAgentEdit && !phaseBusy && (
+        <div className="flex items-center justify-between gap-2 px-2.5 py-1 bg-violet-500/10 border-b border-violet-500/25 shrink-0">
+          <span className="flex items-center gap-1.5 text-[10px] text-violet-300 truncate">
+            <Bot className="w-3 h-3 shrink-0" />
+            AI 修改了此文件
+            <span className="text-violet-400/60">({activeAgentEdit.toolName})</span>
+          </span>
+          <button
+            onClick={() => void undoAgentEdit(active.path)}
+            disabled={undoing}
+            className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-violet-500/20 hover:bg-violet-500/35 text-violet-100 disabled:opacity-50 transition-colors shrink-0"
+            title="撤销 AI 对本次修改（恢复到此文件被改动之前的内容）"
+          >
+            <Undo2 className="w-2.5 h-2.5" />
+            撤销 AI 修改
+          </button>
         </div>
       )}
 

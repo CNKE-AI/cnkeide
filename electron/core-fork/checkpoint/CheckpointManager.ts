@@ -1,9 +1,9 @@
-import { app } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { AgentError } from '../util/AgentError';
+import { resolveUserDataDir } from '../../util/paths';
 
 export interface Snapshot {
   id: string;
@@ -53,7 +53,7 @@ export class CheckpointManager {
     if (checkpointDir) {
       this.checkpointDir = checkpointDir;
     } else {
-      this.checkpointDir = path.join(app.getPath('userData'), 'checkpoints');
+      this.checkpointDir = path.join(resolveUserDataDir(), 'checkpoints');
     }
   }
 

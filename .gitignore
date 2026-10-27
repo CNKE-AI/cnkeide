@@ -3,6 +3,7 @@ node_modules/
 
 # 构建产物
 dist/
+dist-cli/
 dist-electron/
 out/
 release/
@@ -71,3 +72,20 @@ _archive/
 
 # Python 运行时（由 scripts 下载，非源码，见 README「运行时依赖」）
 runtime/
+
+# 本地打包版本目录（体积数百 MB，仅保留 dist 上传产物于服务器）
+release-*/
+
+# 基准/压测临时产物
+_bench/
+
+# 临时调试输出
+devserver.err
+
+# 临时截图
+scripts/_*.png
+
+# 本地打包配置与临时校验输出
+electron-builder.*.local.json
+_site/_*.txt
+scripts/_*.mjs

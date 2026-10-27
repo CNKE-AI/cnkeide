@@ -21,7 +21,6 @@ import { detectCapabilities } from '../llm/ProviderCapabilities';
 import { RagManager } from '../rag/RagManager';
 import { MockImageGenAdapter, OpenAIImageGenAdapter } from '../tools/ImageGenTools';
 import { randomUUID } from 'node:crypto';
-import { BrowserWindow } from 'electron';
 // 诊断日志：定位"对话没反应/工具卡住"问题。默认关闭，需 CNKE_DEBUG_LOG 环境变量开启。
 import { dbgLog } from '../util/dbgLog';
 
@@ -72,7 +71,7 @@ export interface RunParams {
 }
 
 export interface AgentEvent {
-  type: 'thinking' | 'assistant' | 'tool_call' | 'tool_result' | 'done' | 'error' | 'stream' | 'context_state' | 'model_fallback' | 'context_compressed';
+  type: 'start' | 'thinking' | 'assistant' | 'tool_call' | 'tool_result' | 'done' | 'error' | 'stream' | 'context_state' | 'model_fallback' | 'context_compressed' | 'approval_request' | 'approval_resolved';
   sessionId: string;
   data: any;
 }
@@ -269,6 +268,12 @@ export class AgentManager {
   private runningSessions: Map<string, boolean> = new Map();
   /** W1 新增：每会话独立的 AbortController，abort 时中断 LLM 流与读流 */
   private abortControllers: Map<string, AbortController> = new Map();
+  /**
+   * 每会话的事件发送器。run() 主流程里 emit 由参数传入，
+   * 但审批发生在 run 的闭包之外（requestToolApproval / abort），
+   * 这里保存一份引用，让这些路径也能把事件推给渲染层。
+   */
+  private sessionEmitters: Map<string, (event: AgentEvent) => void> = new Map();
   /** 待审批工具请求：requestId → { sessionId, resolver }（按会话隔离，abort 时只拒绝本会话） */
   private toolApprovals: Map<string, { sessionId: string; resolver: (approved: boolean) => void }> = new Map();
   /** W3 新增：PlanManager（可选） */
@@ -277,10 +282,18 @@ export class AgentManager {
   private skillRegistry: SkillRegistry;
   /** W7 新增：审批策略（信任规则） */
   private approvalPolicy: ApprovalPolicy = new ApprovalPolicy();
+  /**
+   * headless（CLI）注入的审批裁决函数。
+   * 返回 true/false 表示直接放行/拒绝且不等待界面响应；返回 undefined 则回落默认流程。
+   * GUI 场景不注入，行为与之前完全一致。
+   */
+  private approvalHandler?: (toolCall: any) => boolean | undefined | Promise<boolean | undefined>;
   /** W11 新增：上下文窗口实时追踪 */
   private contextTracker: ContextTracker = new ContextTracker();
   /** 浏览器初始化只执行一次，图片适配器则会在每次运行前读取最新配置。 */
   private browserInit?: Promise<void>;
+  /** 技能目录扫描缓存时间戳：目录内容短时间内不会变，避免每条消息都重扫磁盘 */
+  private lastSkillScanAt = 0;
   /** W8：上下文自动压缩器（超阈值时把早期历史摘要为单条 system 消息） */
   private contextCompressor = new ContextCompressor();
   /** W8：子 Agent 委派管理器（delegate_subagent 工具的实现方） */
@@ -307,6 +320,12 @@ export class AgentManager {
       config: config.config,
       ragManager: config.ragManager,
     });
+
+    // 预热浏览器适配器：enablePlaywright 内部是动态 import('playwright')，
+    // 首次调用要几十到几百毫秒。放在构造期后台跑，用户第一条消息不必等这一下。
+    if (this.config.get<boolean>('agentConfig.browserAutomation.enabled', true)) {
+      this.browserInit = this.toolManager.enablePlaywright().then(() => undefined).catch(() => undefined);
+    }
   }
 
   /** 在工具列表发送给模型前准备可选运行时能力，失败时保留清晰的降级提示。 */
@@ -332,7 +351,7 @@ export class AgentManager {
     }
   }
 
-  async run(params: RunParams, emit: (event: AgentEvent) => void): Promise<{ success: boolean; error?: string }> {
+  async run(params: RunParams, emit: (event: AgentEvent) => void): Promise<{ success: boolean; error?: string; aborted?: boolean }> {
     const { sessionId, workspaceId, prompt, history, mode, images, files, autoApprove } = params;
 
     if (this.runningSessions.get(sessionId)) {
@@ -343,6 +362,9 @@ export class AgentManager {
     // W1 新增：为本次会话创建 AbortController，abort() 调用会中断 LLM 流与读流
     const abortController = new AbortController();
     this.abortControllers.set(sessionId, abortController);
+    // 保存 emit 引用，供审批等非主流程路径回推事件；同时通知渲染层本轮开始（用于计时/阶段态）
+    this.sessionEmitters.set(sessionId, emit);
+    emit({ type: 'start', sessionId, data: { mode } });
 
     // 设置工具会话上下文，启用快照回滚
     this.toolManager.setSessionContext(sessionId, workspaceId);
@@ -352,7 +374,11 @@ export class AgentManager {
       const basePrompt = SYSTEM_PROMPTS[mode] || SYSTEM_PROMPTS.ask;
       let customPrompt = this.config.get<string>('agentConfig.systemPrompt', '');
       // 只读刷新本地技能目录。扫描失败不会影响普通对话，也绝不执行技能脚本。
-      await this.skillRegistry.scan();
+      // 30s 内复用上次扫描结果：技能目录不会在两条消息之间变化，没必要每轮重扫磁盘。
+      if (Date.now() - this.lastSkillScanAt > 30000) {
+        await this.skillRegistry.scan();
+        this.lastSkillScanAt = Date.now();
+      }
       const enabledSkills = this.config.get<unknown>('enabledSkills', []);
       // 兼容旧版本：过去点选单个技能会将其完整提示词覆盖进用户自定义字段。
       // 若当前字段与某个已启用内置技能完全相同，运行时去重而不改写用户配置。
@@ -419,6 +445,42 @@ export class AgentManager {
       const sessionToolNames = new Set<string>();
       let hallucinationWarned = false;
 
+      // 流式增量合并：模型每个 token 都会回调一次，原样转发意味着每秒几十次
+      // IPC + 渲染层 setState + Markdown 重解析，长回答时界面明显发卡、主进程也被
+      // 序列化拖慢。这里按 40ms / 320 字符合并，视觉上仍是逐字输出，事件量降一个数量级。
+      let streamBuf = '';
+      let streamTimer: NodeJS.Timeout | null = null;
+      let firstTokenAt = 0;
+      const flushStream = () => {
+        if (streamTimer) {
+          clearTimeout(streamTimer);
+          streamTimer = null;
+        }
+        if (!streamBuf) return;
+        const delta = streamBuf;
+        streamBuf = '';
+        emit({ type: 'stream', sessionId, data: { delta } });
+      };
+      const pushStream = (delta: string) => {
+        if (!delta) return;
+        if (!firstTokenAt) firstTokenAt = Date.now();
+        streamBuf += delta;
+        if (streamBuf.length >= 320) {
+          flushStream();
+          return;
+        }
+        if (!streamTimer) {
+          streamTimer = setTimeout(() => {
+            streamTimer = null;
+            flushStream();
+          }, 40);
+        }
+      };
+
+      // 工具并行策略在本次 run 内不会变（只依赖内置策略表 + MCP 工具元数据），
+      // 提到循环外计算，避免每轮重复读取配置与 MCP 工具列表。
+      const toolPolicyMap = await this.buildToolPolicyMap();
+
       while (turn < maxTurns && this.runningSessions.get(sessionId)) {
         turn++;
         dbgLog(`[run] turn=${turn} session=${sessionId} msgCount=${currentMessages.length}`);
@@ -433,6 +495,7 @@ export class AgentManager {
         // 会让 prompt 持续膨胀，撞上窗口上限后请求直接失败且用户无从下手。
         currentMessages = await this.autoCompressContext(sessionId, currentMessages, apiConfig, emit);
 
+        const llmStart = Date.now();
         const response = await this.llmProvider.chat({
           apiConfig,
           messages: currentMessages,
@@ -440,9 +503,7 @@ export class AgentManager {
           temperature: this.config.get<number>('agentConfig.temperature', 0.7),
           topP: this.config.get<number>('agentConfig.topP', 1.0),
           stream: true,
-          onStream: (delta: string) => {
-            emit({ type: 'stream', sessionId, data: { delta } });
-          },
+          onStream: pushStream,
           // W1：传递 signal + fallback + 重试/超时
           signal: abortController.signal,
           fallbackConfigs: this.getFallbackConfigs(apiConfig),
@@ -456,6 +517,9 @@ export class AgentManager {
             totalTimeoutMs: this.config.get<number>('agentConfig.llmTotalTimeoutMs', 180000),
           },
         });
+        // 必须先把残留增量落地，再发 assistant/thinking，保证文本顺序正确
+        flushStream();
+        const llmMs = Date.now() - llmStart;
 
         const assistantContent = response.content || '';
         const thinking = response.thinking || '';
@@ -532,12 +596,15 @@ export class AgentManager {
           if (assistantContent) {
             emit({ type: 'assistant', sessionId, data: { content: assistantContent } });
           }
-          emit({ type: 'done', sessionId, data: { turns: turn, usage: totalUsage } });
+          // 无 tool_calls 有两种可能：模型正常收尾，或用户 abort 后 LLM 返回截断内容。
+          // 后者不能报"完成"，也不应触发记忆提取（残缺回答会被当成结论记住）。
+          const abortedHere = !this.runningSessions.get(sessionId);
+          emit({ type: 'done', sessionId, data: { turns: turn, usage: totalUsage, aborted: abortedHere } });
           // 对话完成后的自动记忆提取（后台执行，不阻塞返回；失败静默）
-          if (this.memoryStore) {
+          if (this.memoryStore && !abortedHere) {
             void this.autoExtractMemories({ sessionId, workspaceId, prompt, assistantContent });
           }
-          return { success: true };
+          return { success: true, aborted: abortedHere };
         }
 
         if (assistantContent) {
@@ -552,13 +619,13 @@ export class AgentManager {
 
         const autoApproveRun = autoApprove ?? this.config.get<boolean>('agentConfig.autoApproveTools', false);
         const toolConcurrency = this.config.get<number>('agentConfig.toolConcurrency', 4);
-        const policyMap = await this.buildToolPolicyMap();
+        const toolStart = Date.now();
 
         const scheduledResults = await scheduleToolCalls(
           toolCalls.map((c: any) => ({ id: c.id, name: c.name, arguments: c.arguments })),
           {
             concurrencyLimit: toolConcurrency,
-            policyMap,
+            policyMap: toolPolicyMap,
             execute: async (call) => {
               dbgLog(`[run] executing tool=${call.name} id=${call.id} autoApprove=${autoApproveRun}`);
 
@@ -591,7 +658,8 @@ export class AgentManager {
                 }
               }
 
-              const result = await this.toolManager.execute(call.name, call.arguments);
+              // 中断信号下钻到工具层：abort 后正在跑的长命令/构建会被真正杀掉
+              const result = await this.toolManager.execute(call.name, call.arguments, abortController.signal);
               // 反幻觉：记录实际执行过的工具名
               sessionToolNames.add(call.name);
               const resultPreview = (typeof result === 'string'
@@ -604,6 +672,18 @@ export class AgentManager {
             },
           }
         );
+        const toolMs = Date.now() - toolStart;
+
+        // 每轮耗时拆解：定位"慢"到底花在模型、工具还是审批等待上。
+        // ttft（首字延迟）远小于 llm 说明是模型在思考/长输出；tools 占比高说明工具或审批在拖。
+        const promptChars = currentMessages.reduce(
+          (n, m: any) => n + (typeof m?.content === 'string' ? m.content.length : JSON.stringify(m?.content ?? '').length),
+          0
+        );
+        dbgLog(
+          `[perf] turn=${turn} ttft=${firstTokenAt ? firstTokenAt - llmStart : -1}ms llm=${llmMs}ms ` +
+          `tools=${toolMs}ms toolCount=${toolCalls.length} promptChars=${promptChars} msgs=${currentMessages.length}`
+        );
 
         // 按 toolCalls 原始顺序生成 tool 消息（scheduleToolCalls 已保证顺序）
         const toolResults: any[] = [];
@@ -613,13 +693,21 @@ export class AgentManager {
           if (res && (res).__rejected) {
             toolResults.push({ tool_call_id: call.id, role: 'tool', content: (res).content });
           } else {
+            // 剥离变更审查元数据：before/after 全文只给 UI 渲染 diff 用，
+            // 进 LLM 上下文会翻倍占用 tokens
+            const { diff: _reviewOnly, ...slim } = typeof res === 'string' ? { text: res } : (res ?? {});
             toolResults.push({
               tool_call_id: call.id,
               role: 'tool',
-              content: typeof res === 'string' ? res : JSON.stringify(res),
+              content: typeof res === 'string' ? res : JSON.stringify(slim),
             });
           }
         }
+
+        // 单轮预算护栏：即便每个工具已各自截断，一轮里并行多个工具叠加仍可能过大。
+        // 按 maxContextTokens 的比例设上限，超出则对所有 tool 结果等比再压一次，
+        // 避免"下一轮才触发压缩"之前的这一次请求就已逼近甚至超过上下文窗口。
+        this.enforceTurnBudget(toolResults, apiConfig?.model || '');
 
         // 必须转成 OpenAI 标准格式：assistant.tool_calls 需 type/function 包装、arguments 为 JSON 字符串
         // tool 消息需 tool_call_id 字段，否则第二轮 API 请求会 400 或静默失败
@@ -642,8 +730,10 @@ export class AgentManager {
       }
 
       dbgLog(`[run] finished after ${turn} turns`);
-      emit({ type: 'done', sessionId, data: { turns: turn, usage: totalUsage } });
-      return { success: true };
+      // 走到循环外有两种情况：模型不再发起工具调用（正常结束），或 runningSessions 被 abort() 清除（用户中止）
+      const aborted = !this.runningSessions.get(sessionId);
+      emit({ type: 'done', sessionId, data: { turns: turn, usage: totalUsage, aborted } });
+      return { success: true, aborted };
     } catch (err: any) {
       dbgLog(`[run] ERROR: ${err.message}`);
       emit({ type: 'error', sessionId, data: { error: err.message } });
@@ -654,6 +744,7 @@ export class AgentManager {
       if (this.abortControllers.get(sessionId) === abortController) {
         this.runningSessions.delete(sessionId);
         this.abortControllers.delete(sessionId);
+        this.sessionEmitters.delete(sessionId);
       }
     }
   }
@@ -680,6 +771,8 @@ export class AgentManager {
       this.toolApprovals.delete(requestId);
     }
     this.runningSessions.delete(sessionId);
+    // 审批已全部拒绝并上报 resolved，此时再释放事件发送器
+    this.sessionEmitters.delete(sessionId);
   }
 
   /** 本次会话中 AI 修改过的文件列表（用于回滚/展示） */
@@ -1016,6 +1109,43 @@ export class AgentManager {
   }
 
   /**
+   * 单轮工具结果预算护栏。
+   * - 每个工具已在 ToolManager 里被截断到 MAX_TOOL_OUTPUT_CHARS；
+   * - 但一轮里并行 N 个工具时，总字符数仍可能逼近上下文窗口；
+   * - 这里按 maxContextTokens × ratio 设上限，超出则对所有 tool 消息等比再压一次（保留头尾）。
+   * 任何异常都静默跳过——这是防御性兜底，不能因它让整轮对话失败。
+   */
+  private enforceTurnBudget(toolResults: any[], modelId: string): void {
+    try {
+      if (!toolResults.length) return;
+      const maxContextTokens = detectCapabilities(modelId).maxContextTokens;
+      if (!maxContextTokens) return;
+      const ratio = this.config.get<number>('agentConfig.toolTurnBudgetRatio', 0.3);
+      // chars ≈ tokens × 2（与 ContextCompressor 的估算口径一致）
+      const budgetChars = Math.floor(maxContextTokens * ratio * 2);
+      let totalChars = 0;
+      for (const r of toolResults) {
+        if (typeof r.content === 'string') totalChars += r.content.length;
+      }
+      if (totalChars <= budgetChars) return;
+
+      // 等比缩放：每条 content 按比例裁切，至少保留 1000 字符避免信息完全丢失
+      const scale = budgetChars / totalChars;
+      for (const r of toolResults) {
+        if (typeof r.content !== 'string') continue;
+        const keep = Math.max(1000, Math.floor(r.content.length * scale));
+        if (r.content.length > keep) {
+          const head = r.content.slice(0, Math.floor(keep * 0.7));
+          const tail = r.content.slice(r.content.length - Math.floor(keep * 0.25));
+          r.content = `${head}\n\n… [本轮预算裁剪] …\n\n${tail}`;
+        }
+      }
+    } catch {
+      /* 防御性兜底，静默 */
+    }
+  }
+
+  /**
    * W8：上下文自动压缩。
    * 触发条件：估算 token ≥ 模型上下文窗口 × triggerRatio，且早期对话轮数多于保留轮数。
    * 任何失败都原样返回消息列表——压缩是优化手段，不能因此让整轮对话失败。
@@ -1116,7 +1246,7 @@ export class AgentManager {
           const approved = await this.requestToolApproval(parentSessionId, { name, arguments: toolArgs });
           if (!approved) return { success: false, error: '用户拒绝了此工具调用' };
         }
-        const r = await this.toolManager.execute(name, toolArgs);
+        const r = await this.toolManager.execute(name, toolArgs, signal);
         if (typeof r === 'string') return { success: true, output: r };
         return {
           success: r?.success !== false,
@@ -1136,6 +1266,50 @@ export class AgentManager {
     );
   }
 
+  /**
+   * 零弹窗白名单：只含"改文件内容且可被快照回滚"的工具。
+   * 意图是把审批从"每次编辑都打断"降为"只在破坏性操作时打断"。
+   */
+  private static readonly ZERO_APPROVAL_TOOLS = new Set(['write_to_file', 'create_file', 'apply_diff']);
+
+  /**
+   * 只读工具白名单：读文件/列目录/搜索/检索/git 只读/文档查询都不会产生任何副作用，
+   * 却占 Agent 单轮工具调用的绝大多数。逐个弹窗会让每步都停一次人工确认，
+   * 端到端耗时被人工点击主导（这是"Agent 很慢"的主要体感来源之一）。
+   * 破坏性（删除/重命名）、执行类（execute_command/run_tests/format_code）、
+   * 外部副作用（git 提交/图片生成/MCP）仍然逐次审批。
+   */
+  private static readonly ZERO_APPROVAL_READONLY = new Set([
+    'read_file',
+    'list_directory',
+    'project_structure',
+    'get_file_outline',
+    'search_files',
+    'search_symbol',
+    'find_references',
+    'semantic_search',
+    'grep',
+    'git_status',
+    'git_diff',
+    'git_log',
+    'doc_list',
+    'doc_query',
+    'get_plan',
+  ]);
+
+  private isZeroApprovalAllowed(toolName: string): boolean {
+    if (this.config.get<boolean>('agentConfig.zeroApprovalMode', true) === false) return false;
+    return (
+      AgentManager.ZERO_APPROVAL_TOOLS.has(toolName) ||
+      AgentManager.ZERO_APPROVAL_READONLY.has(toolName)
+    );
+  }
+
+  /** 注入 headless 审批裁决（CLI 用）。传 undefined 恢复默认弹窗流程。 */
+  setApprovalHandler(handler?: (toolCall: any) => boolean | undefined | Promise<boolean | undefined>): void {
+    this.approvalHandler = handler;
+  }
+
   private async requestToolApproval(sessionId: string, toolCall: any): Promise<boolean> {
     // W7：先评估审批策略（信任规则）
     const decision = this.approvalPolicy.evaluate({ name: toolCall.name, arguments: toolCall.arguments || {} });
@@ -1147,31 +1321,68 @@ export class AgentManager {
       dbgLog(`[approval] auto-deny ${toolCall.name}: ${decision.reason}`);
       return false;
     }
+    // headless：由 CLI 注入的裁决器决定，避免无窗口时等待 60s 超时
+    if (this.approvalHandler) {
+      try {
+        const decided = await this.approvalHandler(toolCall);
+        if (typeof decided === 'boolean') {
+          dbgLog(`[approval] headless ${decided ? 'allow' : 'deny'} ${toolCall.name}`);
+          return decided;
+        }
+      } catch {
+        /* 裁决器异常时回落默认流程 */
+      }
+    }
+    // 零弹窗模式（W19）：文件内容编辑类工具直接放行，不打断用户。
+    // 仅在"没有任何用户规则命中"时生效，用户显式配置的规则始终优先。
+    // 删除/重命名/执行命令/git 提交/MCP 外部副作用工具不在白名单内，仍需审批。
+    if (!decision.matchedRule && this.isZeroApprovalAllowed(toolCall.name)) {
+      dbgLog(`[approval] zero-popup allow ${toolCall.name}`);
+      return true;
+    }
     // ask：弹窗等用户决策
     const requestId = randomUUID();
-    // 用稳定主窗口引用，回退到焦点窗口/所有窗口，避免窗口失焦时审批请求发不出去导致工具卡死。
-    // getAllWindows()[0] 可能是 PPT 独立窗口（其页面无审批处理逻辑），优先选择非 PPT 主窗口。
-    const isMainWindow = (w: BrowserWindow) => {
-      try { return !w.webContents.getURL().includes('ppt.html'); } catch { return true; }
-    };
-    const allWins = BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed());
-    const win = this.windowAdapter.getMainWindow()
-      || BrowserWindow.getFocusedWindow()
-      || allWins.find(isMainWindow)
-      || allWins[0];
+    // 主窗口解析交给 WindowAdapter（内部已回退到非 PPT 的活跃窗口），
+    // headless 环境返回 null，直接跳过界面推送。
+    const win = this.windowAdapter.getMainWindow();
     if (win && !win.isDestroyed()) {
       win.webContents.send('tool:approve-request', { requestId, sessionId, toolCall });
     }
+    // 同步通知渲染层的 Agent 活动面板（独立于审批弹窗，用于阶段态与待审批计数）
+    this.emitSession(sessionId, {
+      type: 'approval_request',
+      sessionId,
+      data: { requestId, toolName: toolCall.name, arguments: toolCall.arguments || {} },
+    });
     return new Promise<boolean>((resolve) => {
-      this.toolApprovals.set(requestId, { sessionId, resolver: resolve });
+      // 任何一条裁决路径（用户响应 / 超时 / abort）都只上报一次 resolved
+      let settled = false;
+      const settle = (approved: boolean) => {
+        if (settled) return;
+        settled = true;
+        this.emitSession(sessionId, { type: 'approval_resolved', sessionId, data: { requestId, approved } });
+        resolve(approved);
+      };
+      this.toolApprovals.set(requestId, { sessionId, resolver: settle });
       // 60秒超时自动拒绝
       setTimeout(() => {
         if (this.toolApprovals.has(requestId)) {
           this.toolApprovals.delete(requestId);
-          resolve(false);
+          settle(false);
         }
       }, 60000);
     });
+  }
+
+  /** 向指定会话的渲染层推送事件（无对应 run 时静默丢弃） */
+  private emitSession(sessionId: string, event: AgentEvent): void {
+    const emitter = this.sessionEmitters.get(sessionId);
+    if (!emitter) return;
+    try {
+      emitter(event);
+    } catch {
+      /* 渲染层不可用时不影响主流程 */
+    }
   }
 
   /** W7：添加信任规则（运行时 API，UI 调用） */

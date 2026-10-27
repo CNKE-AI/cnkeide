@@ -1,7 +1,7 @@
 /**
  * W3 Plan 状态机测试
  * 验证：1) 创建/查询/追加  2) 状态机合法转换  3) 终态不能回退  4) abandon 全跳过
- *        5) 进度统计  6) 摘要输出  7) 事件订阅
+ *        5) 进度统计  6) 摘要输出  7) 事件订阅  8) 工具关联匹配  9) 正常完成保留未完成状态
  */
 import { PlanManager } from '../electron/core-fork/plan/PlanManager.js';
 
@@ -144,6 +144,25 @@ async function test9_summary() {
   log(/进度/.test(summary), '含进度', summary);
 }
 
+async function test11_toolMatchingAndComplete() {
+  console.log('\\n[11] 工具关联与正常完成');
+  const m = new PlanManager();
+  const plan = m.create('s11', [
+    { content: '检查并清理文件', toolName: 'read_file', filePath: 'config.json' },
+    { content: '运行验证命令', toolName: 'run_tests' },
+  ]);
+  const events = [];
+  m.on((e) => events.push({ type: e.type, itemId: e.item?.id, status: e.item?.status }));
+  const item = m.findMatchingItem('s11', 'read_file', { path: 'C:/repo/config.json' });
+  log(item?.id === plan.items[0].id, '按工具名和路径匹配步骤', `item=${item?.id}`);
+  m.startItem('s11', item.id);
+  m.completeItem('s11', item.id);
+  log(events.some((e) => e.itemId === item.id && e.status === 'running'), 'running 状态实时发事件', '');
+  log(events.some((e) => e.itemId === item.id && e.status === 'completed'), 'completed 状态实时发事件', '');
+  m.complete('s11');
+  log(plan.items[1].status === 'pending', '正常结束保留未执行步骤为 pending', `status=${plan.items[1].status}`);
+}
+
 async function test10_invalidStatus() {
   console.log('\n[10] 非法状态被拒');
   const m = new PlanManager();
@@ -166,6 +185,7 @@ async function test10_invalidStatus() {
   await test8_events();
   await test9_summary();
   await test10_invalidStatus();
+  await test11_toolMatchingAndComplete();
   console.log(`\n结果：${pass} passed, ${fail} failed`);
   process.exit(fail > 0 ? 1 : 0);
 })();

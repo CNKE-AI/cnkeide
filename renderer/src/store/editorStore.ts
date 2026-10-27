@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { useAgentActivityStore } from './agentActivityStore';
 
+import { toast } from '../utils/toast';
 /** 编辑器打开的单个文件标签 */
 export interface EditorTab {
   /** 文件绝对路径（作为唯一 key） */
@@ -78,7 +79,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     }
     const res = await window.cnke.fs.readFile(path);
     if (!res.success) {
-      alert(res.error || '读取文件失败');
+      toast.error(res.error || '读取文件失败');
       return;
     }
     const fileName = name ?? window.cnke.path.basename(path);
@@ -126,9 +127,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       }));
       // 保存后同步清除 Agent 活动面板里的"已修改"标记
       useAgentActivityStore.getState().clearModified(tab.path);
+      // 用户手动保存 = 接受当前内容，撤销记录随之失效
+      useAgentActivityStore.getState().clearAgentEdit(tab.path);
       return true;
     }
-    alert(res.error || '保存失败');
+    toast.error(res.error || '保存失败');
     return false;
   },
 

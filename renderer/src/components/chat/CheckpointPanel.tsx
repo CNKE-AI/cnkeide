@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { History, RotateCcw, X, Loader2, GitCompare } from 'lucide-react';
 
+import { toast } from '../../utils/toast';
 interface Snapshot {
   snapshotId?: string;
   id?: string;
@@ -48,10 +49,10 @@ const CheckpointPanel: React.FC<Props> = ({ sessionId, onClose }) => {
     if (!window.confirm('恢复到此快照会覆盖当前文件状态，是否继续？')) return;
     const res = await window.cnke.checkpoint.restore(id);
     if (res?.success) {
-      alert('已恢复');
+      toast.success('已恢复');
       onClose();
     } else {
-      alert('恢复失败');
+      toast.error('恢复失败');
     }
   };
 

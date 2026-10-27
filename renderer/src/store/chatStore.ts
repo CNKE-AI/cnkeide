@@ -37,7 +37,15 @@ export const MAX_UPLOAD_FILES = 6;
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
+  /** 发送给模型的完整内容（可能已注入 @文件 全文 / 代码库检索结果） */
   content: string;
+  /**
+   * 气泡里展示给用户的文本。
+   * 只有用户消息会用到：@文件 注入后 content 可能几千行，直接渲染会把对话顶爆，
+   * 而且每轮 history 都重发一遍会让上下文与费用成倍膨胀。
+   * 展示用本字段（用户原话），发给模型的 history 也用它，仅当轮 prompt 带全文。
+   */
+  displayContent?: string;
   thinking?: string;
   toolCalls?: any[];
   images?: string[];
@@ -94,7 +102,7 @@ interface ChatState {
   switchSession: (workspaceId: string, sessionId: string) => Promise<void>;
   /** 删除会话；若删除的是当前会话，自动切到最近的其他会话或新建 */
   removeSession: (workspaceId: string, sessionId: string) => Promise<void>;
-  sendMessage: (prompt: string, workspaceId: string, images?: string[], files?: UploadedFile[]) => Promise<void>;
+  sendMessage: (prompt: string, workspaceId: string, images?: string[], files?: UploadedFile[], displayPrompt?: string) => Promise<void>;
   /** 撤销上一轮：删除最后一轮（用户提问 + AI 回复），回到上一轮状态 */
   rollback: (workspaceId: string) => Promise<void>;
   /** 重新回答：删除指定 AI 回复，用其对应的用户提问重新生成 */
@@ -106,7 +114,9 @@ interface ChatState {
 const titleOf = (messages: ChatMessage[]): string => {
   const first = messages.find((m) => m.role === 'user');
   if (!first) return '新对话';
-  const t = typeof first.content === 'string' ? first.content : JSON.stringify(first.content);
+  // 优先用户原话：content 可能已被 @文件 注入内容占满，拿它做标题会变成一整段代码
+  const src = first.displayContent ?? first.content;
+  const t = typeof src === 'string' ? src : JSON.stringify(src);
   return (t || '新对话').slice(0, 30);
 };
 
@@ -218,6 +228,15 @@ function subscribeRunEvents(opts: {
       patchLast((last) => ({ ...last, thinking: event.data?.thinking }));
     } else if (event.type === 'tool_call') {
       patchLast((last) => ({ ...last, toolCalls: [...(last.toolCalls || []), event.data] }));
+    } else if (event.type === 'tool_result') {
+      // 工具结果回填到对应 toolCall（按 id 匹配），供审查视图展示状态/diff/回滚
+      const d = event.data || {};
+      patchLast((last) => ({
+        ...last,
+        toolCalls: (last.toolCalls || []).map((tc: any) =>
+          tc && tc.id === d.toolCallId ? { ...tc, result: d.result } : tc
+        ),
+      }));
     } else if (event.type === 'model_fallback') {
       // 模型请求失败自动降级：显式告知用户实际使用的模型，避免"切换成功"的错觉
       const d = event.data || {};
@@ -244,7 +263,12 @@ function subscribeRunEvents(opts: {
         if (event.data?.usage) {
           patchLast((last) => ({ ...last, usage: event.data.usage }));
         }
-        window.cnke.notify.show({ type: 'done', title: '任务完成', message: prompt.slice(0, 50) });
+        if (event.data?.aborted) {
+          // 用户主动中止：不算异常，也不该报"完成"，如实提示
+          window.cnke.notify.show({ type: 'done', title: '已停止', message: 'AI 任务已被用户中止' });
+        } else {
+          window.cnke.notify.show({ type: 'done', title: '任务完成', message: prompt.slice(0, 50) });
+        }
       }
       // 先落消息补丁、再清 loading：两者都是终态，各一次 set 无性能影响，
       // 但顺序保证"内容已完整"的那一帧不会仍带着 loading 光标。
@@ -284,7 +308,9 @@ async function startAgentRun(
       // 终态已到：先退订，避免残留监听把后续事件重复写进新会话
       removeEvent();
       const finalMsgs = get().messages;
-      window.cnke.session.save({ id: finishedSessionId, workspaceId: finishedWorkspaceId, title: prompt.slice(0, 30), messages: finalMsgs, createdAt: Date.now(), updatedAt: Date.now(), mode });
+      // 标题与 saveCurrentSession 保持一致：原实现用 prompt.slice(0,30)，
+      // @文件引用展开后标题会变成注入代码块的开头，与左侧列表里显示的标题对不上
+      window.cnke.session.save({ id: finishedSessionId, workspaceId: finishedWorkspaceId, title: titleOf(finalMsgs), messages: finalMsgs, createdAt: Date.now(), updatedAt: Date.now(), mode });
       get().refreshSessions(finishedWorkspaceId);
     },
   });
@@ -343,18 +369,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   startNewSession: async (workspaceId: string) => {
-    const { loading, sessionId, messages } = get();
+    const { loading, sessionId, messages, activeWorkspaceId } = get();
     if (loading) return;
-    if (sessionId && messages.length) await saveCurrentSession(workspaceId);
+    // 保存的是"当前会话"，必须用它自己的 workspaceId；
+    // 用新会话的 workspaceId 会把旧会话整体搬到新工作区，导致会话归属错乱
+    if (sessionId && messages.length) await saveCurrentSession(activeWorkspaceId || workspaceId);
     const session = await window.cnke.session.create(workspaceId, '新对话');
     set({ sessionId: session.id, messages: [], activeWorkspaceId: workspaceId });
     await get().refreshSessions(workspaceId);
   },
 
   switchSession: async (workspaceId: string, sessionId: string) => {
-    const { sessionId: cur, messages, loading } = get();
+    const { sessionId: cur, messages, loading, activeWorkspaceId } = get();
     if (loading || cur === sessionId) return;
-    if (cur && messages.length) await saveCurrentSession(workspaceId);
+    // 同 startNewSession：保存当前会话时不能用目标会话的 workspaceId
+    if (cur && messages.length) await saveCurrentSession(activeWorkspaceId || workspaceId);
     const session = await window.cnke.session.load(sessionId);
     if (!session) {
       await get().refreshSessions(workspaceId);
@@ -389,11 +418,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
     await get().refreshSessions(workspaceId);
   },
 
-  sendMessage: async (prompt: string, workspaceId: string, images?: string[], files?: UploadedFile[]) => {
+  sendMessage: async (prompt: string, workspaceId: string, images?: string[], files?: UploadedFile[], displayPrompt?: string) => {
     const { mode, sessionId, messages, autoMode } = get();
     let sid = sessionId;
     if (!sid) {
-      const session = await window.cnke.session.create(workspaceId, prompt.slice(0, 30));
+      const session = await window.cnke.session.create(workspaceId, (displayPrompt || prompt).slice(0, 30));
       sid = session.id;
       set({ sessionId: sid });
     }
@@ -401,6 +430,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       id: nanoid(),
       role: 'user',
       content: prompt,
+      // 有注入内容时另存展示文本，气泡只显示用户原话
+      displayContent: displayPrompt && displayPrompt !== prompt ? displayPrompt : undefined,
       images,
       files: files && files.length > 0 ? files : undefined,
       timestamp: Date.now(),
@@ -408,8 +439,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const assistantMsg: ChatMessage = { id: nanoid(), role: 'assistant', content: '', timestamp: Date.now() };
     set((s) => ({ messages: [...s.messages, userMsg, assistantMsg], loading: true }));
 
-    // 历史消息取本轮追加之前的内容，当前提问单独通过 prompt 传入
-    const history = messages.map((m) => ({ role: m.role, content: m.content }));
+    // 历史消息取本轮追加之前的内容，当前提问单独通过 prompt 传入。
+    // 用户消息优先用 displayContent：注入的 @文件 全文只在当轮发送，
+    // 否则每一轮 history 都会把同一份文件内容重复带上，几十轮后上下文直接爆掉。
+    const history = messages.map((m) => ({
+      role: m.role,
+      content: m.role === 'user' ? (m.displayContent ?? m.content) : m.content,
+    }));
 
     await startAgentRun({ sid, prompt, workspaceId, mode, history, images, files, autoMode }, set, get);
   },
@@ -444,32 +480,48 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const images = userMsg.images;
     const files = userMsg.files;
     // 删除该 AI 回复及其之后的所有消息（回到该问题待回答状态）
-    const history = messages.slice(0, idx);
-    set({ messages: history, loading: true });
+    set({ messages: messages.slice(0, idx), loading: true });
 
     const assistantMsg: ChatMessage = { id: nanoid(), role: 'assistant', content: '', timestamp: Date.now() };
     set((s) => ({ messages: [...s.messages, assistantMsg] }));
 
     let sid = sessionId;
     if (!sid) {
-      const session = await window.cnke.session.create(workspaceId, prompt.slice(0, 30));
+      // 标题用用户原话，不要用注入后的 prompt（会变成一整段文件内容）
+      const session = await window.cnke.session.create(workspaceId, (userMsg.displayContent ?? prompt).slice(0, 30));
       sid = session.id;
       set({ sessionId: sid });
     }
 
-    const historyForRun = history.map((m) => ({ role: m.role, content: m.content }));
+    // 当前提问已通过 prompt 单独传入：history 必须止于该提问之前，
+    // 否则模型会收到两遍相同的问题（原实现 slice(0, idx) 把 userMsg 也带了进去）
+    const historyForRun = messages.slice(0, userIdx).map((m) => ({
+      role: m.role,
+      content: m.role === 'user' ? (m.displayContent ?? m.content) : m.content,
+    }));
     await startAgentRun({ sid, prompt, workspaceId, mode, history: historyForRun, images, files, autoMode }, set, get);
   },
 
   abort: () => {
     const { sessionId } = get();
-    if (sessionId) {
-      window.cnke.agent.abort(sessionId);
-      // 中断前把已收到的文字落盘，否则最后一段会消失
-      flushPendingDelta();
-      set({ loading: false });
-      // 用户主动中断：立即解除窗口保护
-      window.cnke.window.setAgentBusy(false);
+    if (!sessionId) return;
+    window.cnke.agent.abort(sessionId);
+    // 中断前把已收到的文字落盘，否则最后一段会消失
+    flushPendingDelta();
+    set({ loading: false });
+    // 用户主动中断：立即解除窗口保护
+    window.cnke.window.setAgentBusy(false);
+    // 兜底退订：若主进程因 worker 崩溃 / 端口断开而没有回 done，
+    // 订阅会永久残留，下一轮运行的事件会被重复处理（重复 set、内容互相覆盖）。
+    // 4s 后若仍是这次订阅（说明没开始新一轮）就主动释放。
+    const mine = activeAgentEventUnsub;
+    if (mine) {
+      setTimeout(() => {
+        if (activeAgentEventUnsub === mine) {
+          mine();
+          activeAgentEventUnsub = null;
+        }
+      }, 4000);
     }
   },
 }));

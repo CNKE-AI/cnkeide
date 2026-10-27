@@ -1,0 +1,11 @@
+{
+  "extends": "../electron/tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "..",
+    "outDir": "../dist-cli",
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": ["./**/*.ts", "../electron/**/*.ts"],
+  "exclude": ["../node_modules", "../dist", "../dist-electron", "../renderer", "../release"]
+}
