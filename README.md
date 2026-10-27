@@ -1,6 +1,6 @@
 # CnkeIDE
 
-[![Version](https://img.shields.io/badge/version-1.2.13-22d3ee?style=flat-square)](https://ai.cnkes.cn/cnkeide/updates/latest.yml)
+[![Version](https://img.shields.io/badge/version-1.3.3-22d3ee?style=flat-square)](https://ai.cnkes.cn/cnkeide/updates/latest.yml)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-8b5cf6?style=flat-square)](#安装)
 [![Electron](https://img.shields.io/badge/Electron-31-47848f?style=flat-square&logo=electron&logoColor=white)](https://www.electronjs.org/)
 [![React](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&logoColor=white)](https://react.dev/)
@@ -146,7 +146,7 @@ CnkeIDE 是一款从零构建的桌面 AI 编程工具。它的 AI 内核（Agen
 前往 [官网下载页](https://ai.cnkes.cn#download) 获取最新版本，或直接下载：
 
 ```
-https://ai.cnkes.cn/cnkeide/updates/CnkeIDE%20Setup%201.2.13.exe
+https://ai.cnkes.cn/cnkeide/updates/CnkeIDE%20Setup%201.3.3.exe
 ```
 
 安装包为 NSIS 格式，双击按引导完成安装。已安装的客户端会在启动时自动检测更新，支持差分增量下载。
@@ -246,6 +246,29 @@ npm run pack:linux   # Linux — AppImage + deb
 | 压缩上下文 | 输入 `/summarize` |
 | 切换交互模式 | 输入区上方 `Ask` / `Craft` / `Plan` |
 | 刷新演示文稿预览 | `F5` 或 `Ctrl + R` |
+
+### 7. 命令行运行（headless）
+
+同一套 Agent 内核可在无界面环境运行，适合 CI 与脚本流水线：
+
+```bash
+# 从源码构建 CLI（产物 dist-cli/cnkeide.cjs）
+npm run build:cli
+
+# 单次任务，输出 NDJSON 事件流
+node dist-cli/cnkeide.cjs -p "把 src/utils 里的重复函数合并" --cwd ./my-project --mode craft --json
+
+# 无人值守流水线：放行全部工具
+node dist-cli/cnkeide.cjs -p "跑一遍测试并修复失败用例" --approve-policy never --max-turns 30
+```
+
+要点：
+
+- **事件流** — `run_start` / `assistant_delta` / `tool_call` / `tool_result` / `usage` / `run_end`
+- **退出码** — `0` 成功、`1` 任务失败、`2` 参数错误、`3` 审批被拒、`4` 配置错误、`124` 超时
+- **审批策略** — `never` 全部放行；默认 `untrusted` 只读工具自动放行，写操作与 `execute_command` 需 `--allow-tool` / `--allow-command-pattern` 显式放行
+
+详见 [docs/headless-cli.md](docs/headless-cli.md)。
 
 ---
 
