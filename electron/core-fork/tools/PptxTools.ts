@@ -380,12 +380,14 @@ export class PptxGenAdapter implements PptxAdapter {
   }
 }
 
-/** 工厂：动态探测 pptxgenjs 是否可用，返回真实或 Mock 适配器 */
-export async function createPptxAdapter(): Promise<PptxAdapter> {
-  try {
-    await import('pptxgenjs');
-    return new PptxGenAdapter();
-  } catch {
-    return new MockPptxAdapter();
-  }
+/**
+ * 工厂：返回真实适配器。
+ *
+ * 不再用 `await import('pptxgenjs')` 探测依赖：本文件顶部已经静态 import 了 pptxgenjs
+ * （走 package.json exports 的 CJS 入口），而动态 import 会解析到包内 ESM 入口
+ * dist/pptxgen.es.js，该入口在 Node 20 + tsx 下加载会抛错，导致在 CI 上被误判成
+ * "缺少 pptxgenjs 依赖"而回退到 Mock。能执行到这里就说明依赖确实可用。
+ */
+export function createPptxAdapter(): Promise<PptxAdapter> {
+  return Promise.resolve(new PptxGenAdapter());
 }
