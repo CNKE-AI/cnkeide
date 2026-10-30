@@ -1,4 +1,6 @@
 import { ipcMain, BrowserWindow, shell, dialog, app } from 'electron';
+import * as voiceEngine from '../voice/VoiceEngine';
+import type { VoiceStatus } from '../voice/VoiceEngine';
 import { ConfigAdapter } from '../adapter/ConfigAdapter';
 import { FileSystemAdapter } from '../adapter/FileSystemAdapter';
 import { TerminalAdapter } from '../adapter/TerminalAdapter';
@@ -8,6 +10,7 @@ import { SessionStore } from '../store/SessionStore';
 import { McpHub } from '../core-fork/mcp/McpHub';
 import { McpCatalogService } from '../core-fork/mcp/McpCatalogService';
 import { AgentManager } from '../core-fork/agent/AgentManager';
+import { loadProjectInstructions, createInstructionTemplate, DEFAULT_INSTRUCTION_FILES } from '../core-fork/agent/ProjectInstructions';
 import { MemoryStore, MemoryItem, MemoryItemInput } from '../core-fork/memory/MemoryStore';
 import { CheckpointManager } from '../core-fork/checkpoint/CheckpointManager';
 import { CodebaseIndexer } from '../core-fork/codebase/CodebaseIndexer';
@@ -38,6 +41,13 @@ import { generatePreviewHtml } from '../core-fork/ppt/pptPreview';
 import { PPT_SCENARIOS, getScenario, detectScenarioByKeyword, detectScenarioByLlm, buildScenarioOutlinePrompt, buildGenericOutlinePrompt } from '../core-fork/ppt/pptScenarios';
 import { DEFAULT_BRAND, normalizeBrand, PptBrand } from '../core-fork/ppt/pptBrand';
 import { buildAiPptDesignPrompt, normalizeAiPptDesign } from '../core-fork/ppt/pptDesign';
+import { buildDashboard } from '../core-fork/analytics/StatsModel';
+import { filterRows, filterSessions, paginate, sessionRows, sortRows, workspaceOptions, NO_WORKSPACE_ID } from '../core-fork/analytics/HistoryStats';
+import { buildCsvReport, buildMarkdownReport, suggestFileName } from '../core-fork/analytics/ReportExport';
+import type { StatsQuery } from '../core-fork/analytics/HistoryStats';
+import { createTaskWorkspace, renameTaskWorkspace, retryWhileBusy, taskWorkspaceExists } from '../core-fork/tasks/TaskWorkspace';
+import { searchContent } from '../core-fork/search/ContentSearch';
+import { resolveTaskRootDir } from '../util/paths';
 import { auditOutline, summarizeIssues, AuditIssue } from '../core-fork/ppt/pptAudit';
 import type { AuditOutlineInput } from '../core-fork/ppt/pptAudit';
 import { promises as fsp } from 'node:fs';
@@ -224,6 +234,16 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
     return fsAdapter.searchFiles(rootPath, pattern);
   });
 
+  // 工作区全文搜索（Ctrl+Shift+F）：字面量匹配 + 目录/大文件/耗时三重保护
+  ipcMain.handle('search:content', async (_e, rootPath: string, query: string, opts: any = {}) => {
+    try {
+      const res = await searchContent(rootPath, query, opts || {});
+      return res.error ? { success: false, error: res.error } : { success: true, data: res };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
   // 切换监听的工作区根目录（打开/切换文件夹时调用）
   ipcMain.handle('fs:watchWorkspace', (_e, rootPath: string) => {
     return workspaceWatcher.watch(rootPath);
@@ -256,6 +276,14 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
   });
 
   // ===== Agent IPC =====
+  // 测试专用通道（仅 CNKE_FLOOD_TEST=1 注册）：向渲染层重放 agent 事件，
+  // 供白屏回归实测（scripts/test_flood_ui.mjs）驱动真实渲染链路。产品环境不注册。
+  if (process.env.CNKE_FLOOD_TEST === '1') {
+    ipcMain.handle('agent:testPushEvent', (_e, event: unknown) => {
+      sendToWindow('agent:event', event);
+      return true;
+    });
+  }
   ipcMain.handle('agent:run', async (_e, params: RunParams) => {
     return agentManager.run(params, (event) => {
       sendToWindow('agent:event', event);
@@ -274,6 +302,28 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
   ipcMain.on('tool:approve-response', (_e, requestId: string, approved: boolean) => {
     agentManager.resolveToolApproval(requestId, approved);
   });
+
+  // ===== 语音输入（内置离线识别，详见 voice/VoiceEngine.ts）=====
+  ipcMain.handle('voice:status', async () => {
+    const win = BrowserWindow.getAllWindows()[0];
+    const onProgress = (s: VoiceStatus) => {
+      if (win && !win.isDestroyed()) win.webContents.send('voice:status', s);
+    };
+    return voiceEngine.getStatus(onProgress);
+  });
+  ipcMain.on('voice:feed', (_e, samples: number[]) => {
+    try {
+      const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
+      const r = voiceEngine.feedAudio(Float32Array.from(samples));
+      if (!win) return;
+      if (r.final) win.webContents.send('voice:text', { text: r.final, final: true });
+      else if (r.partial) win.webContents.send('voice:text', { text: r.partial, final: false });
+    } catch {
+      /* 单帧解码异常不中断听写会话 */
+    }
+  });
+  ipcMain.handle('voice:finalize', () => voiceEngine.finalizeAudio());
+  ipcMain.on('voice:reset', () => voiceEngine.resetSession());
 
   // ===== Plan 事件转发（W3）：PlanManager 状态变化实时推送到前端 =====
   planManager.on((planEvent) => {
@@ -301,6 +351,25 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
 
   ipcMain.handle('memory:clear', async (): Promise<{ success: boolean; error?: string }> => {
     return memoryStore.clear();
+  });
+
+  // ===== 仓库级指令文件 IPC（W24：AGENTS.md / CNKE.md）=====
+  // 面板打开时列出「这次对话到底会注入哪些约定」，避免用户不知道 AI 读了什么。
+  ipcMain.handle('project:instructions', async (_e, rootPath?: string) => {
+    const root = typeof rootPath === 'string' ? rootPath.trim() : '';
+    if (!root) {
+      return { success: false, error: '未打开工作区', files: [], skipped: [], totalBytes: 0, block: '' };
+    }
+    const budget = config.get<number>('agentConfig.projectInstructionsBudget', 24000);
+    // 这是显式的用户动作（打开面板/点刷新），绕过扫描缓存，保证看到的是磁盘最新内容
+    const result = await loadProjectInstructions({ root, maxTotalBytes: budget, useCache: false });
+    return { success: true, ...result };
+  });
+
+  ipcMain.handle('project:createInstruction', async (_e, rootPath?: string, fileName?: string) => {
+    const root = typeof rootPath === 'string' ? rootPath.trim() : '';
+    if (!root) return { success: false, error: '未打开工作区' };
+    return createInstructionTemplate(root, fileName || DEFAULT_INSTRUCTION_FILES[0]);
   });
 
   // ===== 会话 IPC =====
@@ -366,6 +435,295 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
       if (!session) return { success: false, error: '会话不存在' };
       const summary = await agentManager.summarizeContext(sessionId, session.messages);
       return { success: true, summary };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // ===== 历史统计看板 IPC（W18）=====
+  // 统计模型放在主进程算：历史会话可能上千条、消息上万条，
+  // 全部搬到渲染层聚合会阻塞 UI（与之前 sessionDb 同步写盘卡界面同类问题）。
+  ipcMain.handle('stats:dashboard', async (_e, filter: StatsQuery = {}) => {
+    try {
+      const sessions = await sessionStore.listAll();
+      return { success: true, data: buildDashboard(sessions, filter) };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // 历史记录列表：关键词/工作区/时间范围过滤 + 排序 + 分页，全部在主进程完成
+  ipcMain.handle('stats:sessions', async (_e, query: StatsQuery = {}) => {
+    try {
+      const all = await sessionStore.listAll();
+      const scoped = filterSessions(all, query);
+      const rows = sortRows(filterRows(sessionRows(scoped), query), query.sortBy);
+      const paged = paginate(rows, query.page, query.pageSize);
+      // 工作区下拉的数字要跟"选中后能看到多少条"一致：按时间范围+关键词筛选后再计数，
+      // 但**不能**再套一层工作区过滤，否则选中一个工作区后其它选项就消失了。
+      const withinRange = filterSessions(all, { range: query.range, keyword: query.keyword });
+      return { success: true, data: { ...paged, workspaces: workspaceOptions(withinRange) } };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // 导出：把当前筛选条件对应的看板 + 明细落盘
+  // 前端只传筛选条件和格式，聚合、拼装、选路径、写文件全在主进程完成，
+  // 避免把可能上千行的明细先搬到渲染层再传回来。
+  ipcMain.handle('stats:export', async (_e, query: StatsQuery = {}, format: 'csv' | 'markdown' = 'csv') => {
+    try {
+      const all = await sessionStore.listAll();
+      const scoped = filterSessions(all, query);
+      // 导出用**全量**明细（不分页）：用户导出就是为了拿到完整数据
+      const rows = sortRows(filterRows(sessionRows(scoped), query), query.sortBy);
+      const dashboard = buildDashboard(all, query);
+
+      const ws = query.workspaceId;
+      const workspaceLabel =
+        !ws || ws === 'all'
+          ? '全部工作区'
+          : ws === NO_WORKSPACE_ID
+            ? '未归属工作区'
+            : path.basename(ws);
+
+      const meta = {
+        range: query.range,
+        workspaceLabel,
+        keyword: query.keyword || '',
+        generatedAt: dashboard.generatedAt,
+      };
+
+      const content =
+        format === 'csv' ? buildCsvReport(rows, meta) : buildMarkdownReport(dashboard, rows, meta);
+
+      const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : BrowserWindow.getAllWindows()[0];
+      const opts = {
+        title: format === 'csv' ? '导出统计明细（CSV）' : '导出统计报告（Markdown）',
+        defaultPath: path.join(app.getPath('documents'), suggestFileName(format)),
+        filters:
+          format === 'csv'
+            ? [{ name: 'CSV 表格', extensions: ['csv'] }]
+            : [{ name: 'Markdown 文档', extensions: ['md'] }],
+      };
+      const res = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts);
+      if (res.canceled || !res.filePath) return { success: true, data: { canceled: true } };
+
+      await fsp.writeFile(res.filePath, content, 'utf8');
+      return {
+        success: true,
+        data: {
+          canceled: false,
+          filePath: res.filePath,
+          bytes: Buffer.byteLength(content, 'utf8'),
+          rows: rows.length,
+        },
+      };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // ===== 任务工作区 IPC（W19）=====
+  // 「新建任务 = 建一个同名空文件夹 + 建一条绑定该工作区的会话」，
+  // 与 TRAE 的交互一致：任务在侧边栏可见，点开即切到对应文件夹。
+  // 关联主键就是绝对路径本身（与 session.workspaceId 同一语义），
+  // 所以任务 / 会话 / 统计看板的工作区下拉三处天然对齐，不需要额外映射表。
+  const TASK_COLLECTION = 'tasks';
+
+  ipcMain.handle('task:list', async () => {
+    try {
+      const [records, sessions] = await Promise.all([
+        storageAdapter.getAll<any>(TASK_COLLECTION),
+        sessionStore.listAll(),
+      ]);
+      const counts = new Map<string, number>();
+      for (const s of sessions) {
+        const ws = (s as any).workspaceId as string | undefined;
+        if (ws) counts.set(ws, (counts.get(ws) || 0) + 1);
+      }
+      const data = records
+        .filter((r) => r && typeof r.id === 'string' && r.id)
+        .map((r) => ({
+          id: r.id as string,
+          name: (r.name as string) || path.basename(r.id),
+          dirName: (r.dirName as string) || path.basename(r.id),
+          parentDir: (r.parentDir as string) || path.dirname(r.id),
+          workspacePath: r.id as string,
+          createdAt: (r.createdAt as number) || 0,
+          sessionCount: counts.get(r.id) || 0,
+          archived: !!r.archived,
+          archivedAt: (r.archivedAt as number) || 0,
+          // 用户可能手动删了/移走了文件夹：标出来但不悄悄清理索引，
+          // 否则移动硬盘没挂载时会把任务列表清空。
+          missing: !taskWorkspaceExists(r.id),
+        }))
+        .sort((a, b) => b.createdAt - a.createdAt);
+      return { success: true, data };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('task:create', async (_e, name: string, parentDir?: string) => {
+    try {
+      const displayName = typeof name === 'string' ? name.trim().slice(0, 120) : '';
+      if (!displayName) return { success: false, error: '任务名不能为空' };
+
+      const parent = (parentDir && String(parentDir).trim()) || resolveTaskRootDir();
+      const result = createTaskWorkspace({ name: displayName, parentDir: parent });
+      if (!result.ok) return { success: false, error: result.error };
+
+      const rec = result.record;
+      // 索引写入失败不影响文件夹已建好的事实，但必须告诉调用方，
+      // 否则任务在列表里"消失"，用户会以为创建失败又建一个（产生 -2 空壳）。
+      await storageAdapter.upsert(TASK_COLLECTION, {
+        id: rec.id,
+        name: rec.name,
+        dirName: rec.dirName,
+        parentDir: rec.parentDir,
+        workspacePath: rec.workspacePath,
+        createdAt: rec.createdAt,
+      });
+
+      return { success: true, data: { ...rec, sessionCount: 0, missing: false } };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // 在系统文件管理器里定位任务文件夹（比"打开 IDE 文件夹"更常用于确认产物落在哪）
+  ipcMain.handle('task:reveal', async (_e, workspacePath: string) => {
+    try {
+      if (!workspacePath || !taskWorkspaceExists(workspacePath)) {
+        return { success: false, error: '任务文件夹不存在，可能已被删除或移动' };
+      }
+      const errMsg = await shell.openPath(workspacePath);
+      return errMsg ? { success: false, error: errMsg } : { success: true };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // 重命名任务：改展示名 + 改磁盘目录名，并把绑定该工作区的会话迁到新路径
+  ipcMain.handle('task:rename', async (_e, id: string, newName: string) => {
+    try {
+      const rec = await storageAdapter.getById<any>(TASK_COLLECTION, id);
+      if (!rec) return { success: false, error: '任务不存在' };
+
+      const oldPath: string = rec.workspacePath || rec.id;
+
+      // Windows 上「被监听 / 被占用」的目录 rename 会抛 EBUSY：
+      // 工作区监听器给每个目录都挂了 fs.watch 句柄，改的就是当前工作区时必然失败。
+      // 所以先释放监听，改完再挂到新路径上。
+      const watchedRoot = workspaceWatcher.root;
+      const hitsWatch =
+        !!watchedRoot &&
+        (oldPath === watchedRoot ||
+          oldPath.startsWith(watchedRoot + path.sep) ||
+          watchedRoot.startsWith(oldPath + path.sep));
+      if (hitsWatch) workspaceWatcher.unwatch();
+
+      // 终端 shell 的 cwd 就是这个目录：Windows 下会让 rename 一直 EBUSY。
+      // 关掉它们（父层收到改名结果后会把工作区指到新路径，终端会自动重启）。
+      const terminalsClosed = terminalAdapter.killByCwd(oldPath);
+      if (terminalsClosed > 0) await new Promise((r) => setTimeout(r, 150));
+
+      const attemptRename = () =>
+        renameTaskWorkspace({
+          workspacePath: oldPath,
+          newName: String(newName || ''),
+          createdAt: rec.createdAt,
+        });
+
+      // 句柄释放有延迟（终端 cwd、编辑器、杀毒扫描都会短暂占用），
+      // 退避重试 5 次，累计约 1.8s，足以覆盖绝大多数"文件正在使用"。
+      const res = await retryWhileBusy(attemptRename);
+
+      if (!res.ok) {
+        // 目录没动，监听要还回去，否则文件树停止刷新
+        if (hitsWatch) workspaceWatcher.watch(oldPath);
+        return { success: false, error: res.error };
+      }
+      if (hitsWatch) workspaceWatcher.watch(res.record.id);
+
+      if (res.dirChanged) {
+        try {
+          // 会话的 workspaceId 就是工作区绝对路径，路径变了必须跟着迁，
+          // 否则任务名改完，会话全变成指向一个不存在的文件夹。
+          // 这里直接走 storageAdapter.upsert 而不是 sessionStore.save：
+          // 后者会把 updatedAt 刷成 now，一次重命名就能让所有会话跳到"最近"。
+          const sessions = await sessionStore.listAll();
+          const affected = sessions.filter((s: any) => s.workspaceId === oldPath);
+          for (const s of affected) {
+            await storageAdapter.upsert('sessions', { ...(s as any), workspaceId: res.record.id });
+          }
+          // 当前打开的若是这个任务，配置也要指到新路径
+          if (config.get('workspace.lastWorkspace') === oldPath) {
+            config.set('workspace.lastWorkspace', res.record.id);
+          }
+        } catch (err) {
+          // 目录已经改了名但会话没迁成功：把目录改回去，保证两边一致
+          try {
+            await fsp.rename(res.record.id, res.previousPath);
+          } catch {
+            /* 改不回去就只能保留新目录，下面的错误信息会说明 */
+          }
+          const msg = err instanceof Error ? err.message : String(err);
+          return { success: false, error: `迁移会话失败，已尝试还原目录名：${msg}` };
+        }
+      }
+
+      // 主键变了 = 新记录 + 删旧记录（保留归档状态与创建时间）
+      if (res.dirChanged) await storageAdapter.delete(TASK_COLLECTION, id);
+      const saved = {
+        ...rec,
+        id: res.record.id,
+        name: res.record.name,
+        dirName: res.record.dirName,
+        parentDir: res.record.parentDir,
+        workspacePath: res.record.workspacePath,
+        createdAt: res.record.createdAt,
+        archived: !!rec.archived,
+        archivedAt: rec.archivedAt || 0,
+      };
+      await storageAdapter.upsert(TASK_COLLECTION, saved);
+
+      return {
+        success: true,
+        data: {
+          id: saved.id,
+          name: saved.name,
+          dirName: saved.dirName,
+          parentDir: saved.parentDir,
+          workspacePath: saved.workspacePath,
+          createdAt: saved.createdAt,
+          archived: saved.archived,
+          archivedAt: saved.archivedAt,
+          sessionCount: 0,
+          missing: false,
+          dirChanged: res.dirChanged,
+          previousPath: res.previousPath,
+          // 改名时被关掉的终端数量：前端据此提示"终端已在新目录重启"
+          terminalsClosed,
+        },
+      };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // 归档 / 取消归档：只动索引，**绝不删文件夹** —— 用户的项目文件比列表整洁重要得多
+  ipcMain.handle('task:archive', async (_e, id: string, archived: boolean = true) => {
+    try {
+      const rec = await storageAdapter.getById<any>(TASK_COLLECTION, id);
+      if (!rec) return { success: false, error: '任务不存在' };
+      await storageAdapter.upsert(TASK_COLLECTION, {
+        ...rec,
+        archived: !!archived,
+        archivedAt: archived ? Date.now() : 0,
+      });
+      return { success: true };
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : String(err) };
     }

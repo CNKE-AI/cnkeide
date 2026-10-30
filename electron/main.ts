@@ -48,9 +48,120 @@ let appCleanup: { dispose: () => void } | null = null;
 let tray: Tray | null = null;
 const configAdapter = new ConfigAdapter();
 
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => {
+    switch (c) {
+      case '&':
+        return '&amp;';
+      case '<':
+        return '&lt;';
+      case '>':
+        return '&gt;';
+      case '"':
+        return '&quot;';
+      default:
+        return '&#39;';
+    }
+  });
+}
+
+/**
+ * 页面加载失败时的兜底页。
+ *
+ * 不兜底的话 Electron 会显示内置错误页：纯深色背景、没有任何文字，
+ * 用户看到的就是「整个窗口全黑但程序没崩」，根本无从判断是代码坏了还是
+ * 开发服务器没起来（W19 验证时就踩过一次）。这里给一句人话 + 可点的重试链接。
+ */
+async function showLoadFailurePage(win: BrowserWindow, err: unknown, retryUrl: string): Promise<void> {
+  const msg = escapeHtml(err instanceof Error ? err.message : String(err));
+  const isDevUrl = /^https?:\/\//.test(retryUrl);
+  const hint = isDevUrl
+    ? `开发服务器没有响应。请在项目根目录运行 <code>npm run dev</code> 后点下方重试。`
+    : `这是安装包内的资源加载失败，建议重新安装或把下面的错误信息反馈给开发者。`;
+
+  const html = `<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>启动失败</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin:0; height:100vh; display:flex; align-items:center; justify-content:center;
+         background:#0a0a0a; color:#e5e5e5;
+         font:14px/1.7 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; }
+  .card { max-width:560px; padding:28px 32px; border:1px solid #2a2a2a; border-radius:12px; background:#111; }
+  h1 { margin:0 0 12px; font-size:17px; color:#f87171; }
+  p { margin:0 0 10px; color:#a3a3a3; }
+  code { padding:1px 5px; border-radius:4px; background:#1f1f1f; color:#d4d4d4; }
+  pre { margin:12px 0 0; padding:10px 12px; border-radius:8px; background:#0d0d0d;
+        border:1px solid #242424; color:#fca5a5; font-size:12px; white-space:pre-wrap; word-break:break-all; }
+  a { display:inline-block; margin-top:16px; color:#c4b5fd; }
+</style></head>
+<body><div class="card">
+  <h1>页面加载失败</h1>
+  <p>${hint}</p>
+  <p>目标地址：<code>${escapeHtml(retryUrl)}</code></p>
+  <pre>${msg}</pre>
+  <a href="${escapeHtml(retryUrl)}">重试</a>
+</div></body></html>`;
+
+  try {
+    await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+    win.show();
+  } catch {
+    /* 连兜底页都加载不了就只能放弃，保留原始控制台错误 */
+  }
+}
+
+/** 渲染层错误 / 崩溃日志的最大字节数，超过后轮转一份 .1 */
+const RENDERER_LOG_MAX_BYTES = 1024 * 1024;
+
+/**
+ * 把渲染层错误与崩溃原因落盘到 <userData>/logs/renderer-error.log。
+ *
+ * 为什么需要：界面白屏之后用户根本没法打开 DevTools，事后没有任何线索可查，
+ * 只能"重启试试"。把崩溃原因和渲染层的 console.error 记下来，才有得定位。
+ */
+function appendRendererLog(text: string): void {
+  try {
+    const dir = path.join(app.getPath('userData'), 'logs');
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'renderer-error.log');
+    try {
+      if (fs.statSync(file).size > RENDERER_LOG_MAX_BYTES) fs.renameSync(file, `${file}.1`);
+    } catch {
+      /* 首次写入：文件还不存在 */
+    }
+    fs.appendFileSync(file, `${new Date().toISOString()} ${text}\n`);
+  } catch {
+    /* 写日志失败绝不能影响主流程 */
+  }
+}
+
+// ===== 调试端口 =====
+// 开发期可选开启 CDP（只在显式设置 CNKE_DEBUG_PORT 时生效），便于自动化验收界面。
+// 平时不设置环境变量就完全不会监听，不影响正常使用与安全面。
+if (process.env.CNKE_DEBUG_PORT) {
+  app.commandLine.appendSwitch('remote-debugging-port', String(process.env.CNKE_DEBUG_PORT));
+}
+
+// ===== 调试用 userData 隔离 =====
+// 打包版与开发版共用同一个 userData 目录，而单实例锁按 userData 加锁：
+// 用户在用的安装版一旦在跑，`npm run dev` 会被锁直接 app.quit()，开发版根本起不来。
+// 显式设置 CNKE_USER_DATA_DIR 时改用独立目录（配置为空，只用于界面/渲染层调试）。
+if (process.env.CNKE_USER_DATA_DIR) {
+  try {
+    app.setPath('userData', process.env.CNKE_USER_DATA_DIR);
+    console.log('[debug] userData 已切换到', process.env.CNKE_USER_DATA_DIR);
+  } catch (e) {
+    console.warn('[debug] 切换 userData 失败:', e);
+  }
+}
+
 // ===== 单实例锁 =====
 // 必须放在任何窗口创建之前。第二个实例启动时直接退出，并把已有窗口唤到前台，
 // 避免同一 userData 目录被两个进程同时读写（配置/会话/索引）导致数据错乱。
+// CNKE_USER_DATA_DIR：测试/多开场景指定独立数据目录，从而绕开单实例锁（产品运行不设置，零影响）。
+if (process.env.CNKE_USER_DATA_DIR) {
+  app.setPath('userData', process.env.CNKE_USER_DATA_DIR);
+}
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 
 if (!gotSingleInstanceLock) {
@@ -92,6 +203,88 @@ async function createWindow() {
     },
   });
 
+  // ===== 麦克风权限：语音输入（内置离线识别）需要 getUserMedia =====
+  // Electron 默认拒绝媒体权限请求，必须显式放行；仅允许 'media'，
+  // webview/iframe 内第三方页面（预览站点等）不自动放行。
+  mainWindow.webContents.session.setPermissionRequestHandler((_wc, permission, callback) => {
+    callback(permission === 'media');
+  });
+
+  // ===== 崩溃自愈：白屏兜底 =====
+  // 跑重负载任务（典型：让 Agent 全盘扫描 / 清理 C 盘）时，渲染进程可能被 OOM 杀掉，
+  // 或 GPU 合成进程崩溃。这两种情况下 Electron 只是把窗口内容丢掉：不报错、不自动恢复，
+  // 用户看到的就是"整窗一片白，只能强杀重启"。这里统一兜底：
+  //   崩溃落盘 → 自动 reload（限频，避免"必崩状态"造成无限重载死循环）
+  //   短时间反复崩溃 → 显示可读的错误页，绝不静默白屏。
+  const crashTimestamps: number[] = [];
+  const CRASH_WINDOW_MS = 10 * 60 * 1000;
+  const CRASH_MAX_RELOADS = 3;
+
+  const recoverFromCrash = (kind: string, reason: string): void => {
+    const line = `[crash] ${kind} gone: ${reason}`;
+    console.error(line);
+    appendRendererLog(line);
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+
+    const now = Date.now();
+    while (crashTimestamps.length > 0 && now - crashTimestamps[0] > CRASH_WINDOW_MS) crashTimestamps.shift();
+    crashTimestamps.push(now);
+
+    const target = mainWindow.webContents.getURL();
+    if (crashTimestamps.length > CRASH_MAX_RELOADS) {
+      void showLoadFailurePage(
+        mainWindow,
+        new Error(
+          `界面在 10 分钟内连续 ${crashTimestamps.length} 次崩溃，已停止自动重载以免陷入死循环。\n` +
+            `最近一次崩溃：${kind} / ${reason}\n` +
+            '常见诱因：单条命令输出体量过大（如全盘递归扫描）、或内存被占满。\n' +
+            '重启后建议把命令范围缩小（限定目录、加 -Depth/-First/过滤条件）再重试。',
+        ),
+        target,
+      );
+      return;
+    }
+    // 崩溃后立刻 reload 有时会撞上还没销毁干净的 webContents，稍等片刻再恢复
+    setTimeout(() => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        console.log('[crash] 正在自动恢复界面…');
+        mainWindow.reload();
+      }
+    }, 500);
+  };
+
+  mainWindow.webContents.on('render-process-gone', (_e, details) => {
+    recoverFromCrash('renderer', `${details.reason} (exitCode=${details.exitCode})`);
+  });
+  mainWindow.webContents.on('unresponsive', () => {
+    console.warn('[crash] 渲染进程无响应（长任务 / 大输出时常见），等待其恢复…');
+    appendRendererLog('[crash] renderer unresponsive');
+  });
+  mainWindow.webContents.on('responsive', () => {
+    console.log('[crash] 渲染进程已恢复响应');
+    appendRendererLog('[crash] renderer responsive again');
+  });
+
+  // GPU 进程崩溃不会触发 render-process-gone，但同样表现成白屏
+  app.on('child-process-gone', (_e, details) => {
+    if (details.type === 'GPU') recoverFromCrash('gpu', details.reason);
+    else console.error(`[crash] ${details.type} gone: ${details.reason}`);
+  });
+
+  // 渲染层未捕获异常落盘（白屏后用户无法打开 DevTools，只能靠日志回溯）
+  mainWindow.webContents.on('console-message', ((...args: any[]) => {
+    const second = args[1];
+    const info =
+      second && typeof second === 'object'
+        ? second
+        : { level: args[1], message: args[2], lineNumber: args[3], sourceId: args[4] };
+    const level = typeof info.level === 'string' ? info.level : info.level >= 3 ? 'error' : 'info';
+    if (level !== 'error') return;
+    appendRendererLog(
+      `[renderer:error] ${String(info.message).slice(0, 4000)} (${String(info.sourceId)}:${String(info.lineNumber)})`,
+    );
+  }) as never);
+
   // 预览 webview 的安全护栏：无论页面怎么声明，都强制关闭 Node 集成与外部 preload，
   // 避免用户在内嵌预览里打开的任意站点拿到主进程能力
   mainWindow.webContents.on('will-attach-webview', (_e, webPreferences) => {
@@ -108,14 +301,26 @@ async function createWindow() {
 
   if (isDev) {
     const devUrl = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5173';
-    await mainWindow.loadURL(devUrl);
+    // 加载失败不能直接抛：那样窗口保持隐藏/空白，用户只会看到一个黑窗
+    try {
+      await mainWindow.loadURL(devUrl);
+    } catch (err) {
+      console.error('[startup] 开发服务器加载失败:', err);
+      await showLoadFailurePage(mainWindow, err, devUrl);
+    }
     // DevTools 仅在显式要求时弹出（设置环境变量 CNKE_DEVTOOLS=1），避免运行时弹额外窗口
     if (process.env.CNKE_DEVTOOLS === '1') {
       mainWindow.webContents.openDevTools({ mode: 'detach' });
     }
   } else {
     // __dirname = <root>/renderer/dist-electron，产物 dist/ 在项目根：<root>/dist/index.html
-    await mainWindow.loadFile(path.join(__dirname, '../../dist/index.html'));
+    const indexFile = path.join(__dirname, '../../dist/index.html');
+    try {
+      await mainWindow.loadFile(indexFile);
+    } catch (err) {
+      console.error('[startup] 应用资源加载失败:', err);
+      await showLoadFailurePage(mainWindow, err, indexFile);
+    }
   }
 
   // 立即显示窗口，避免 ready-to-show 不触发导致窗口永久隐藏

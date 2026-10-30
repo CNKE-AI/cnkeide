@@ -10,6 +10,7 @@
  */
 
 import { dbgLog } from '../util/dbgLog';
+import { recordModelLatency } from './ModelLatency';
 
 /** 可重试的 HTTP 状态码（429 限流 + 5xx 服务端错误） */
 const RETRYABLE_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504, 522, 524]);
@@ -259,6 +260,12 @@ export class LLMProvider {
           const remaining = Math.max(1000, totalDeadline - Date.now());
           const attemptTimeout = Math.min(perAttemptTimeout, remaining);
 
+          const startedAt = performance.now();
+          let firstTextMs: number | undefined;
+          const measuredStream = (delta: string) => {
+            if (delta && firstTextMs === undefined) firstTextMs = performance.now() - startedAt;
+            onStream?.(delta);
+          };
           const response = await this.attemptChat(
             cfg,
             messages,
@@ -266,17 +273,21 @@ export class LLMProvider {
             temperature,
             topP,
             stream,
-            onStream,
+            measuredStream,
             signal,
             attemptTimeout
           );
+          if (!signal?.aborted) {
+            recordModelLatency(cfg, firstTextMs ?? performance.now() - startedAt, this.config);
+          }
           response.resolvedConfig = cfg;
           response.attempts = totalAttempts;
           return response;
         } catch (err: unknown) {
           lastError = err;
           const aborted = err instanceof Error && err.name === 'AbortError';
-          if (aborted) throw err; // 用户主动取消，直接抛
+          if (aborted || signal?.aborted) throw err; // 用户取消不计入失败测速
+          recordModelLatency(cfg, null, this.config);
 
           const retryable = isRetryable(err);
           const hasMoreRetries = attempt < maxRetries - 1;

@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { ShieldCheck, X, Plus, Trash2, Loader2 } from 'lucide-react';
 
 import { toast } from '../../utils/toast';
+import { toolLabel } from '../../store/agentActivityStore';
 interface Rule {
   toolName: string;
   pathPattern?: string;
@@ -83,7 +84,7 @@ const ApprovalRulesPanel: React.FC<Props> = ({ onClose }) => {
 
   return createPortal(
     <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-      <div className="bg-card border border-border rounded-xl w-[520px] max-h-[80vh] flex flex-col shadow-2xl">
+      <div className="overlay-panel w-[520px] max-h-[80vh] flex flex-col">
         <div className="flex items-center justify-between px-4 py-3 border-b border-border">
           <div className="flex items-center gap-2 text-sm font-semibold">
             <ShieldCheck className="w-4 h-4 text-emerald-400" />
@@ -168,7 +169,10 @@ const ApprovalRulesPanel: React.FC<Props> = ({ onClose }) => {
                 <div key={i} className="flex items-center gap-2 border border-border rounded-lg px-3 py-2 bg-secondary/20">
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
-                      <span className="text-[12px] font-mono text-foreground">{r.toolName}</span>
+                      <span className="text-[12px] font-mono text-foreground">{toolLabel(r.toolName)}</span>
+                      {toolLabel(r.toolName) !== r.toolName && (
+                        <span className="text-[10px] font-mono text-muted-foreground/50">{r.toolName}</span>
+                      )}
                       <span className={`text-[10px] font-medium ${meta.cls}`}>{meta.label}</span>
                     </div>
                     {(r.pathPattern || r.commandPattern) && (

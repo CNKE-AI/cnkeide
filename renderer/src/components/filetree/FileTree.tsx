@@ -238,9 +238,9 @@ const FileTree: React.FC = () => {
     );
 
   return (
-    <div className="flex flex-col h-full bg-background">
+    <div className="flex flex-col h-full bg-transparent">
       {/* 头部 */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-border shrink-0">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-white/[0.07] shrink-0">
         <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider truncate">
           {workspacePath ? workspacePath.split(window.cnke.path.sep).filter(Boolean).pop() : '资源管理器'}
         </span>
@@ -283,7 +283,7 @@ const FileTree: React.FC = () => {
         {/* 右键菜单 */}
         {menu && (
           <div
-            className="fixed z-50 bg-popover border border-border rounded-lg shadow-2xl py-1 min-w-[180px] text-xs"
+            className="overlay-panel fixed z-50 py-1 min-w-[180px] text-xs"
             style={{ top: menu.y, left: menu.x }}
           >
             <div

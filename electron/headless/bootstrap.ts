@@ -61,6 +61,8 @@ export interface HeadlessBootstrapOptions {
   allowTools?: string[];
   /** execute_command 允许的命令正则（字符串形式） */
   allowCommandPatterns?: string[];
+  /** 执行权限档位（read-only 时写文件/执行命令会被内核直接拦掉） */
+  permissionMode?: 'read-only' | 'standard' | 'full-access';
   /** 启用 MCP 服务器（默认关闭，避免 CLI 拉起用户配置的常驻进程） */
   enableMcp?: boolean;
   /** 启用本地记忆（默认开启；noPersist 时关闭） */
@@ -97,7 +99,8 @@ function buildApprovalHandler(options: HeadlessBootstrapOptions) {
 
   return (toolCall: any): boolean => {
     const name = String(toolCall?.name ?? '');
-    if (policy === 'never') return true;
+    // full-access 档位等价于"不再问"，否则 CLI 里 full-access 还得再叠一个 --approve-policy never
+    if (policy === 'never' || options.permissionMode === 'full-access') return true;
     if (allowTools.has(name) || allowTools.has('*')) return true;
     if (READ_ONLY_TOOLS.has(name)) return true;
 
@@ -151,10 +154,14 @@ export async function createHeadlessAgent(options: HeadlessBootstrapOptions): Pr
   const enableMemory = options.enableMemory ?? !options.noPersist;
   const memoryStore = enableMemory ? new MemoryStore(storage) : undefined;
 
-  // 运行期覆盖：模式与轮次上限直接写内存配置，不落盘污染 GUI 设置
-  const agentConfig = config.get('agentConfig') ?? {};
+  // 运行期覆盖：模式/轮次/档位只影响本次运行。
+  // 必须深拷贝再走 setRuntimeOverride：直接改 config.get() 返回的对象会污染内存里的
+  // config.data，退出时 flush 就会把一次性参数写进 GUI 配置（例如跑一次只读模式后永久只读）。
+  const agentConfig: any = JSON.parse(JSON.stringify(config.get('agentConfig') ?? {}));
   if (options.mode) agentConfig.mode = options.mode;
   if (options.maxTurns && options.maxTurns > 0) agentConfig.maxTurns = options.maxTurns;
+  // --permission：档位只影响本次运行，不写回配置文件
+  if (options.permissionMode) agentConfig.permissionMode = options.permissionMode;
 
   // --model：按配置 ID 或模型名锁定模型，并关闭自动路由（否则首轮会被路由决策覆盖）
   if (options.model) {
@@ -167,11 +174,12 @@ export async function createHeadlessAgent(options: HeadlessBootstrapOptions): Pr
     if (!matched) {
       throw new Error(`找不到模型配置 "${wanted}"，可用 --data-dir 指定已有配置目录`);
     }
-    config.set('activeApiConfigId', matched.id);
+    // 同样只覆盖本次运行：命令行指定模型不应该改掉桌面端的当前选中模型
+    config.setRuntimeOverride('activeApiConfigId', matched.id);
     agentConfig.enableRouting = false;
   }
 
-  config.set('agentConfig', agentConfig);
+  config.setRuntimeOverride('agentConfig', agentConfig);
 
   const windowAdapter = new HeadlessWindowAdapter({ log: options.log });
 

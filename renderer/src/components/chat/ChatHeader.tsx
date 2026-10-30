@@ -1,7 +1,9 @@
 import React, { useEffect, useRef } from 'react';
 import { MessageCircle, Plus, X } from 'lucide-react';
 import type { SessionMeta } from '../../store/chatStore';
+import type { TaskItem } from '../../global';
 import ChatHeaderMenu from './ChatHeaderMenu';
+import TaskSwitcher from './TaskSwitcher';
 
 export interface ChatHeaderProps {
   sessions: SessionMeta[];
@@ -15,6 +17,12 @@ export interface ChatHeaderProps {
   onCloseSession: (s: SessionMeta) => void;
   onCreate: () => void;
   onCreateNewWorkspace: () => void;
+  /** 切换到某个任务（任务下拉里点选） */
+  onOpenTask: (task: TaskItem) => void;
+  /** 新任务建好后：切过去并开一个对话 */
+  onTaskCreated: (task: TaskItem) => void;
+  /** 当前任务被改名（目录也变了）：把工作区指向新路径 */
+  onTaskRenamed: (task: TaskItem, previousPath: string) => void;
   onImport: () => void;
   onSummarized: () => void;
   onRollback: () => void;
@@ -41,8 +49,25 @@ const ChatHeader: React.FC<ChatHeaderProps> = (p) => {
   }, [p.sessionId, p.sessions.length]);
 
   return (
-    <div className="shrink-0 border-b border-border/70 bg-secondary/10">
-      <div className="flex items-center gap-2 px-3 py-2">
+    <div className="shrink-0 border-b border-white/[0.07] bg-white/[0.015]">
+      {/*
+        任务行：TRAE 式两层结构 —— 先选任务（= 一个工作区文件夹），再在任务内切对话。
+        会话标签天生是扁平的，十几个对话混在一起时分不清各自属于哪个文件夹。
+      */}
+      <div className="flex items-center gap-2 px-3 pb-1.5 pt-2">
+        <TaskSwitcher
+          currentWorkspace={p.activeWorkspaceId || p.workspacePath}
+          onOpenTask={p.onOpenTask}
+          onCreated={p.onTaskCreated}
+          onRenamed={p.onTaskRenamed}
+          disabled={p.loading}
+        />
+        <span className="min-w-0 flex-1 truncate text-[10px] text-muted-foreground/50" title={currentWs || undefined}>
+          {currentWs || '未打开文件夹'}
+        </span>
+      </div>
+
+      <div className="flex items-center gap-2 px-3 pb-2">
         {/* 会话标签：自适应宽度，超出横向滚动 */}
         <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto no-scrollbar [mask-image:linear-gradient(to_right,black_88%,transparent)] [-webkit-mask-image:linear-gradient(to_right,black_88%,transparent)]">
           {p.sessions.length === 0 ? (
@@ -57,10 +82,10 @@ const ChatHeader: React.FC<ChatHeaderProps> = (p) => {
                 <div
                   key={s.id}
                   ref={active ? activeTabRef : undefined}
-                  className={`group flex shrink-0 items-center gap-0.5 rounded-lg border py-1 pl-2 pr-1 text-[11px] transition-colors ${
+                  className={`group flex shrink-0 items-center gap-0.5 rounded-pill border py-[3px] pl-2.5 pr-1 text-[11.5px] transition-all duration-200 ease-ios ${
                     active
-                      ? 'border-primary/40 bg-primary/15 text-foreground'
-                      : 'border-border/50 text-muted-foreground hover:border-border hover:bg-accent/60'
+                      ? 'border-primary/35 bg-primary/18 text-foreground shadow-[inset_0_1px_0_rgba(255,255,255,0.12),0_4px_14px_-8px_hsl(var(--primary)/0.9)]'
+                      : 'border-white/[0.08] bg-white/[0.03] text-muted-foreground hover:border-white/15 hover:bg-white/[0.07] hover:text-foreground'
                   }`}
                 >
                   <button

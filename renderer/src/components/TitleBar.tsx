@@ -1,13 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { useApp } from '../store/AppProvider';
-import { useThemeStore } from '../store/themeStore';
-import { Minus, Square, X, FolderOpen, Settings, Sun, Moon, Copy, ShieldAlert } from 'lucide-react';
+import { nextTheme, THEMES, useThemeStore } from '../store/themeStore';
+import { Minus, Square, X, FolderOpen, Settings, Sun, Moon, Palette, Copy, ShieldAlert, BarChart3 } from 'lucide-react';
 
 /** 窗口保护提示条的停留时长（ms） */
 const GUARD_NOTICE_DURATION = 2600;
 
 const TitleBar: React.FC = () => {
-  const { workspacePath, setWorkspacePath, setSettingsOpen } = useApp();
+  const { workspacePath, setWorkspacePath, setSettingsOpen, activePage, setActivePage } = useApp();
   const { theme, toggleTheme } = useThemeStore();
   const [maximized, setMaximized] = useState(false);
   /** 窗口保护提示（AI 任务执行中尝试最小化/关闭被拦截时显示） */
@@ -44,26 +44,29 @@ const TitleBar: React.FC = () => {
 
   return (
     <div className="flex flex-col select-none shrink-0">
-      {/* 顶部渐变炫彩细条 */}
-      <div className="h-[2.5px] w-full brand-bar" />
+      {/* 顶部渐变炫彩细条：压到 2px 并降饱和，避免抢标题栏的视觉重心 */}
+      <div className="h-[2px] w-full brand-bar opacity-80" />
+      {/*
+        标题栏：整条毛玻璃。它压在环境光之上，因此拖窗时能看到背后的柔光流动，
+        与下方内容面板形成"同一张玻璃桌面上摞纸片"的层次关系。
+      */}
       <div
-        className="relative flex items-center justify-between h-9 bg-secondary/40 backdrop-blur-sm border-b border-border"
+        className="titlebar relative flex items-center justify-between h-10 backdrop-blur-glass"
         style={dragStyle}
       >
         <div className={`flex items-center gap-2 px-3 ${isMac ? 'pl-20' : ''}`} style={noDragStyle}>
-          <div className="w-5 h-5 rounded-md flex items-center justify-center overflow-hidden ring-1 ring-border/60">
-            <img src="./logo.png" alt="CnkeIDE" className="w-5 h-5 object-contain" />
+          <div className="w-[22px] h-[22px] rounded-[7px] flex items-center justify-center overflow-hidden ring-1 ring-white/15 shadow-soft">
+            <img src="./logo.png" alt="CnkeIDE" className="w-[22px] h-[22px] object-contain" />
           </div>
-          <span className="text-sm font-bold brand-gradient">CnkeIDE</span>
-          <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-gradient-to-r from-cyan-500/15 to-violet-500/15 border border-violet-400/30 text-violet-300 font-medium">
+          <span className="text-[13.5px] font-semibold tracking-[0.01em] brand-gradient">CnkeIDE</span>
+          <span className="app-brand-sub text-[10.5px] px-2 py-[2px] rounded-pill bg-white/[0.07] border border-white/10 text-violet-200/90 font-medium shadow-inner-hair">
             AI IDE
           </span>
           {workspacePath && (
             <span
-              className="hidden md:flex items-center gap-1.5 text-xs text-muted-foreground ml-1 max-w-[320px] truncate"
+              className="hidden md:flex items-center gap-1.5 text-[11.5px] text-muted-foreground/85 ml-1 max-w-[320px] truncate px-2 py-[3px] rounded-lg bg-white/[0.04] border border-white/[0.07]"
               title={workspacePath}
             >
-              <span className="w-px h-3 bg-border" />
               {workspacePath}
             </span>
           )}
@@ -71,8 +74,8 @@ const TitleBar: React.FC = () => {
 
         {/* 窗口保护提示：绝对定位居中，避免撑动标题栏布局 */}
         {guardNotice && (
-          <div className="pointer-events-none absolute left-1/2 -translate-x-1/2 flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/15 border border-amber-500/40 text-amber-300 text-[11px] whitespace-nowrap">
-            <ShieldAlert className="w-3 h-3 shrink-0" />
+          <div className="pointer-events-none absolute left-1/2 -translate-x-1/2 flex items-center gap-1.5 px-3 py-1 rounded-pill bg-amber-400/15 border border-amber-300/30 text-amber-200 text-[11.5px] whitespace-nowrap shadow-float backdrop-blur-glass animate-pop-in">
+            <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
             {guardNotice}
           </div>
         )}
@@ -82,11 +85,20 @@ const TitleBar: React.FC = () => {
             <FolderOpen className="w-4 h-4" />
           </button>
           <button
+            onClick={() => setActivePage(activePage === 'stats' ? 'ide' : 'stats')}
+            className={`icon-btn ${activePage === 'stats' ? '!text-violet-300 !bg-violet-500/15' : ''}`}
+            title="历史统计看板（用量趋势 / 指标 / 明细）"
+            aria-label="历史统计看板"
+          >
+            <BarChart3 className="w-4 h-4" />
+          </button>
+          <button
             onClick={toggleTheme}
             className="icon-btn"
-            title={theme === 'dark' ? '切换为白色主题' : '切换为深色主题'}
+            title={`当前：${THEMES.find((item) => item.id === theme)?.label}；切换为${THEMES.find((item) => item.id === nextTheme(theme))?.label}`}
+            aria-label={`切换主题：${THEMES.find((item) => item.id === nextTheme(theme))?.label}`}
           >
-            {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+            {THEMES.find((item) => item.id === nextTheme(theme))?.scheme === 'light' ? <Sun className="w-4 h-4" /> : nextTheme(theme) === 'dark' ? <Moon className="w-4 h-4" /> : <Palette className="w-4 h-4" />}
           </button>
           <button onClick={() => setSettingsOpen(true)} className="icon-btn" title="设置">
             <Settings className="w-4 h-4" />

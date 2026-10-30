@@ -1,6 +1,7 @@
 import {
   useAgentActivityStore,
-  formatToolCall,
+  describeToolCall,
+  toolLabel,
   extractTargetPaths,
   isWriteTool,
   isReadTool,
@@ -56,19 +57,19 @@ export function attachAgentActivityBridge(): () => void {
       case 'start': {
         toolNames.clear();
         store.begin(event.sessionId || d.sessionId || 'default');
-        store.pushLine('── Agent 开始运行 ──', 'divider');
+        store.pushLine('会话开始', 'divider');
         break;
       }
 
       case 'done': {
         // aborted: 主进程在用户点「停止」清除 runningSessions 后随 done 一起下发
         if (d.aborted) {
-          store.pushLine('── Agent 已中止 ──', 'divider');
+          store.pushLine('已中止', 'divider');
           store.finish('aborted');
           break;
         }
         const ok = d.error == null && event.error == null;
-        store.pushLine(ok ? '── Agent 运行完成 ──' : '── Agent 运行失败 ──', 'divider');
+        store.pushLine(ok ? '运行完成' : '运行失败', 'divider');
         store.finish(ok ? 'done' : 'error');
         break;
       }
@@ -94,7 +95,12 @@ export function attachAgentActivityBridge(): () => void {
         const args = normalizeArgs(d.arguments ?? d.args ?? event.args);
         if (d.id) toolNames.set(String(d.id), toolName);
         store.toolStart(toolName, args);
-        store.pushLine(`▶ ${formatToolCall(toolName, args)}`, 'command');
+        const summary = describeToolCall(toolName, args);
+        store.pushLine(
+          summary.detail ? `${summary.label}  ${summary.detail}` : summary.label,
+          'command',
+          { label: summary.label, detail: summary.detail, tool: toolName }
+        );
 
         // 文件双向联动：读 → 标记访问；写 → 标记修改 + 提示编辑器刷新
         const paths = extractTargetPaths(toolName, args);
@@ -116,13 +122,15 @@ export function attachAgentActivityBridge(): () => void {
         const rejected = result === '已拒绝';
         const ok = !rejected && !(result && typeof result === 'object' && result.success === false);
         store.toolEnd(toolName, result, ok);
+        const label = toolLabel(toolName);
         if (rejected) {
-          store.pushLine(`⊘ ${toolName}：用户拒绝执行`, 'error');
+          store.pushLine(`${label} · 用户已拒绝`, 'error', { label, detail: '用户已拒绝', tool: toolName });
         } else if (!ok) {
           const msg = result?.error || (typeof result === 'string' ? result : '执行失败');
-          store.pushLine(`✗ ${toolName}：${String(msg).slice(0, 120)}`, 'error');
+          const detail = String(msg).slice(0, 160);
+          store.pushLine(`${label} · ${detail}`, 'error', { label, detail, tool: toolName });
         } else {
-          store.pushLine(`✓ ${toolName}`, 'success');
+          store.pushLine(`${label} · 完成`, 'success', { label, detail: '完成', tool: toolName });
         }
         // 写操作的 diff 元数据 → 记录前后内容，供编辑器内一键撤销
         const diff = result && typeof result === 'object' ? result.diff : undefined;
@@ -143,7 +151,11 @@ export function attachAgentActivityBridge(): () => void {
       case 'approval_request': {
         store.setPendingApprovals(store.pendingApprovals + 1);
         useAgentActivityStore.setState({ phase: 'waiting-approval' });
-        store.pushLine(`⏸ 等待审批：${d.toolName || '未知工具'}`, 'error');
+        store.pushLine(`等待审批 · ${toolLabel(String(d.toolName || ''))}`, 'error', {
+          label: '等待审批',
+          detail: toolLabel(String(d.toolName || '')),
+          tool: d.toolName ? String(d.toolName) : undefined,
+        });
         break;
       }
 

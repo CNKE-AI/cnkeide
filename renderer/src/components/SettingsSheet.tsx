@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
-import type { SkillView, McpCatalogEntry } from '../global';
+import type { SkillView, McpCatalogEntry, ProjectInstructionsReport } from '../global';
 import { useApp } from '../store/AppProvider';
 import { X, Plus, Trash2, Save, KeyRound, Cpu, Info, RefreshCw, LayoutTemplate, Cloud, MessageSquarePlus, Send, Inbox, Pencil, ChevronDown, ChevronRight, Wrench, Sparkles, ShieldCheck, Zap, GitBranch, Layers, Boxes, Network, ScrollText, BrainCircuit, Presentation, Gauge, Loader2 } from 'lucide-react';
 
 import { toast } from '../utils/toast';
-type TabKey = 'models' | 'agent' | 'skills' | 'about';
+import { THEMES, useThemeStore } from '../store/themeStore';
+type TabKey = 'models' | 'agent' | 'skills' | 'appearance' | 'about';
 
 const PROVIDERS = [
   { id: 'AI Platform', label: 'AI Platform', baseUrl: 'https://ai.cnkes.cn' },
@@ -85,7 +86,20 @@ interface ApiConfig {
   baseUrl: string;
   apiKey: string;
   model: string;
+  /** 官方内置模型：只有内置模型参与 AUTO 路由 */
+  builtin?: boolean;
+  disabled?: boolean;
 }
+
+/** AUTO 路由的任务类型与展示名（与 ModelRouter 的 TaskType 对齐） */
+const ROUTING_TASKS = [
+  { key: 'chat', label: '日常问答' },
+  { key: 'code', label: '编码任务' },
+  { key: 'reasoning', label: '推理分析' },
+  { key: 'vision', label: '图片理解' },
+  { key: 'plan', label: '规划任务' },
+  { key: 'summarize', label: '总结摘要' },
+] as const;
 
 interface McpServerForm {
   id?: string;
@@ -97,8 +111,23 @@ interface McpServerForm {
   enabled: boolean;
 }
 
+/** 权限档位说明（渲染层自带一份，避免把主进程模块打进 renderer 包） */
+const PERMISSION_MODE_INFO = {
+  'read-only': {
+    detail:
+      '读文件、搜索、网页抓取正常使用；写文件、删除、执行命令、git 提交、MCP 外部调用直接拦截（命中命令白名单的除外）。',
+  },
+  standard: {
+    detail: '读文件与修改文件内容自动放行；删除、重命名、执行命令、git 提交、MCP 外部调用仍然逐次确认。',
+  },
+  'full-access': {
+    detail: '所有工具调用一律放行，只保留你显式配置的「拒绝」信任规则。适合一次性容器或临时目录。',
+  },
+} as const;
+
 const SettingsSheet: React.FC = () => {
-  const { setSettingsOpen } = useApp();
+  const { setSettingsOpen, workspacePath } = useApp();
+  const { theme, setTheme } = useThemeStore();
   const [tab, setTab] = useState<TabKey>('models');
 
   // 模型配置
@@ -118,13 +147,70 @@ const SettingsSheet: React.FC = () => {
     autoApproveTools: false,
     replyFormat: 'structured',
     enableRouting: true,
+    routing: {},
     toolConcurrency: 4,
     maxRetries: 3,
+    // 单条命令输出上限（KB）：超限自动截断，避免全盘扫描类命令把界面撑白
+    maxCommandOutputKB: 400,
+    // Python 解释器路径（留空则自动探测：项目 venv > 内置 > 系统）
+    pythonPath: '',
     llmTimeoutMs: 60000,
     fallbackModelIds: [],
     browserAutomation: { enabled: true },
     imageGeneration: { enabled: false, apiConfigId: '' },
+    // 仓库级指令文件（AGENTS.md / CNKE.md）自动注入
+    useProjectInstructions: true,
+    projectInstructionsBudget: 24000,
+    // 执行权限档位 + 白名单
+    permissionMode: 'standard',
+    commandAllowlist: [],
+    domainAllowlist: [],
   });
+
+  // 白名单用多行文本框编辑：文本单独存，避免回车被 filter 吃掉
+  const [cmdAllowText, setCmdAllowText] = useState('');
+  const [domainAllowText, setDomainAllowText] = useState('');
+
+  // 项目指令面板：直观看清「这次对话会注入哪些项目约定」，避免 AI 读了什么全靠猜
+  const [instructions, setInstructions] = useState<ProjectInstructionsReport | null>(null);
+  const [instructionsLoading, setInstructionsLoading] = useState(false);
+
+  const reloadInstructions = async () => {
+    if (!workspacePath) {
+      setInstructions(null);
+      return;
+    }
+    setInstructionsLoading(true);
+    try {
+      setInstructions(await window.cnke.project.instructions(workspacePath));
+    } catch (err: any) {
+      setInstructions({
+        success: false,
+        files: [],
+        skipped: [],
+        totalBytes: 0,
+        block: '',
+        error: err?.message || String(err),
+      });
+    } finally {
+      setInstructionsLoading(false);
+    }
+  };
+
+  const createInstructionFile = async () => {
+    if (!workspacePath) {
+      toast.error('请先打开工作区');
+      return;
+    }
+    const res = await window.cnke.project.createInstruction(workspacePath, 'AGENTS.md');
+    if (!res.success) {
+      toast.error(res.error || '生成失败');
+      return;
+    }
+    toast.success(res.created ? '已生成 AGENTS.md 模板' : 'AGENTS.md 已存在，未覆盖');
+    await reloadInstructions();
+    if (res.path) void window.cnke.shell.openPath(res.path);
+  };
 
   // MCP + 技能
   const [mcpServers, setMcpServers] = useState<any[]>([]);
@@ -157,6 +243,9 @@ const SettingsSheet: React.FC = () => {
     setSkillsLoading(true);
     try {
       setSkills(await (refresh ? window.cnke.skills.scan() : window.cnke.skills.list()));
+    } catch (e: any) {
+      // 扫描失败（目录不可读/IPC 异常）不能让加载态卡死，也不能抛未处理拒绝
+      toast.error(e?.message || String(e));
     } finally {
       setSkillsLoading(false);
     }
@@ -318,6 +407,17 @@ const SettingsSheet: React.FC = () => {
      
   }, []);
 
+  // 切到 Agent 页时刷新「项目指令」清单（工作区切换后内容会变）
+  useEffect(() => {
+    if (tab === 'agent') {
+      void reloadInstructions();
+      // 白名单用多行文本编辑，进页面时从配置回填
+      setCmdAllowText(((agentCfg.commandAllowlist as string[]) || []).join('\n'));
+      setDomainAllowText(((agentCfg.domainAllowlist as string[]) || []).join('\n'));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, workspacePath]);
+
   // 订阅 MCP 连接状态推送（后端主动推送，如启动恢复/连接结果/断线）
   useEffect(() => {
     const off = window.cnke.mcp.onStatusChanged((s: any) => {
@@ -395,9 +495,17 @@ const SettingsSheet: React.FC = () => {
       topP: Math.min(1, Math.max(0, Number(agentCfg.topP) || 0)),
       autoApproveTools: !!agentCfg.autoApproveTools,
       enableRouting: agentCfg.enableRouting !== false,
+      // 只保留合法任务键与有效配置 id，避免脏键写入 agentConfig
+      routing: Object.fromEntries(
+        ROUTING_TASKS
+          .map((t) => [t.key, (agentCfg.routing || {})[t.key] as unknown])
+          .filter(([, v]) => typeof v === 'string' && v)
+      ),
       toolConcurrency: clamp(agentCfg.toolConcurrency, 1, 8, 4),
       maxRetries: clamp(agentCfg.maxRetries, 0, 5, 3),
       llmTimeoutMs: clamp(agentCfg.llmTimeoutMs, 10000, 300000, 60000),
+      maxCommandOutputKB: clamp(agentCfg.maxCommandOutputKB, 50, 4096, 400),
+      pythonPath: String(agentCfg.pythonPath || '').trim(),
       fallbackModelIds: Array.isArray(agentCfg.fallbackModelIds) ? agentCfg.fallbackModelIds : [],
       enableInlineCompletion: agentCfg.enableInlineCompletion !== false,
       browserAutomation: { enabled: agentCfg.browserAutomation?.enabled !== false },
@@ -405,6 +513,17 @@ const SettingsSheet: React.FC = () => {
         enabled: !!agentCfg.imageGeneration?.enabled,
         apiConfigId: typeof agentCfg.imageGeneration?.apiConfigId === 'string' ? agentCfg.imageGeneration.apiConfigId : '',
       },
+      useProjectInstructions: agentCfg.useProjectInstructions !== false,
+      projectInstructionsBudget: clamp(agentCfg.projectInstructionsBudget, 2000, 60000, 24000),
+      permissionMode: ['read-only', 'standard', 'full-access'].includes(agentCfg.permissionMode)
+        ? agentCfg.permissionMode
+        : 'standard',
+      commandAllowlist: (Array.isArray(agentCfg.commandAllowlist) ? agentCfg.commandAllowlist : [])
+        .map((s: string) => String(s).trim())
+        .filter(Boolean),
+      domainAllowlist: (Array.isArray(agentCfg.domainAllowlist) ? agentCfg.domainAllowlist : [])
+        .map((s: string) => String(s).trim())
+        .filter(Boolean),
     };
     await window.cnke.config.set('agentConfig', next);
     setAgentCfg(next);
@@ -483,17 +602,26 @@ const SettingsSheet: React.FC = () => {
     { id: 'models', label: '模型配置', icon: <Cpu className="w-4 h-4" /> },
     { id: 'agent', label: 'Agent 设置', icon: <KeyRound className="w-4 h-4" /> },
     { id: 'skills', label: '技能/MCP 市场', icon: <LayoutTemplate className="w-4 h-4" /> },
+    { id: 'appearance', label: '外观主题', icon: <Sparkles className="w-4 h-4" /> },
     { id: 'about', label: '关于', icon: <Info className="w-4 h-4" /> },
   ];
 
   return (
-    <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setSettingsOpen(false)}>
-      <div className="settings-sheet bg-card border border-border rounded-xl shadow-2xl w-[760px] max-w-[94vw] max-h-[86vh] flex overflow-hidden" onClick={(e) => e.stopPropagation()}>
-        {/* 侧边栏 */}
-        <div className="w-40 border-r border-border bg-secondary/20 p-2 flex flex-col shrink-0">
-          <div className="flex items-center justify-between px-2 py-2">
-            <span className="text-sm font-semibold">设置</span>
-            <button onClick={() => setSettingsOpen(false)} className="p-1 hover:bg-accent rounded transition-colors">
+    <div className="overlay-mask z-40" onClick={() => setSettingsOpen(false)}>
+      <div
+        className="settings-sheet glass-strong w-[780px] max-w-[94vw] max-h-[86vh] flex overflow-hidden rounded-[22px] animate-pop-in"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* 侧边栏：半透明侧板，与内容区之间用极淡高光线分隔 */}
+        <div className="w-[172px] shrink-0 p-2.5 flex flex-col gap-0.5 border-r border-white/[0.07] bg-white/[0.02]">
+          <div className="flex items-center justify-between px-2.5 pb-2 pt-1.5">
+            <span className="text-[13px] font-semibold tracking-[0.01em]">设置</span>
+            <button
+              onClick={() => setSettingsOpen(false)}
+              className="icon-btn"
+              title="关闭设置"
+              aria-label="关闭设置"
+            >
               <X className="w-4 h-4" />
             </button>
           </div>
@@ -501,16 +629,56 @@ const SettingsSheet: React.FC = () => {
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
-              className={`flex items-center gap-2 px-2.5 py-2 rounded-md text-xs transition-colors ${tab === t.id ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:bg-accent/60'}`}
+              className={`settings-tab ${tab === t.id ? 'settings-tab--active' : ''}`}
             >
-              {t.icon}
-              {t.label}
+              <span className="shrink-0 opacity-90">{t.icon}</span>
+              <span className="truncate">{t.label}</span>
             </button>
           ))}
         </div>
 
         {/* 内容区 */}
         <div className="flex-1 overflow-y-auto p-4">
+          {tab === 'appearance' && (
+            <section className="space-y-5" aria-labelledby="appearance-heading">
+              <div>
+                <h3 id="appearance-heading" className="text-base font-semibold">让工作空间，成为你的风格</h3>
+                <p className="mt-2 text-xs text-muted-foreground">选择即刻生效，自动保存。标题栏也可快速轮换主题。</p>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3" role="group" aria-label="界面主题">
+                {THEMES.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    aria-pressed={theme === item.id}
+                    onClick={() => setTheme(item.id)}
+                    className={`rounded-xl border p-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${theme === item.id ? 'border-primary bg-primary/10' : 'border-border hover:border-primary/50'}`}
+                  >
+                    <div className="h-28 rounded-lg overflow-hidden border" style={{ backgroundColor: item.background, borderColor: `${item.foreground}26` }} aria-hidden="true">
+                      <div className="h-5 border-b flex items-center gap-1 px-2" style={{ borderColor: `${item.foreground}26` }}>
+                        {[item.accent, item.secondary, item.foreground].map((color) => <span key={color} className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: color }} />)}
+                      </div>
+                      <div className="flex h-24">
+                        <div className="w-7 shrink-0 border-r" style={{ backgroundColor: `${item.accent}12`, borderColor: `${item.foreground}26` }} />
+                        <div className="flex-1 space-y-2 p-3">
+                          <div className="h-1.5 w-3/4 rounded" style={{ backgroundColor: item.accent }} />
+                          <div className="h-1 w-full rounded opacity-70" style={{ backgroundColor: item.foreground }} />
+                          <div className="h-1 w-1/2 rounded" style={{ backgroundColor: item.secondary }} />
+                          <div className="h-3 w-8 rounded" style={{ backgroundColor: item.accent }} />
+                        </div>
+                      </div>
+                    </div>
+                    <div className="mt-3 flex items-center justify-between gap-1 text-xs font-semibold">
+                      {item.label}
+                      {theme === item.id && <span className="text-primary text-[10px]">已启用</span>}
+                    </div>
+                    <p className="mt-1 text-[11px] text-muted-foreground">{item.description}</p>
+                  </button>
+                ))}
+              </div>
+              <p className="text-xs leading-relaxed text-muted-foreground">新增星云紫、森境、琥珀夜、冰川与樱雾，覆盖深空、自然、暖金与清透浅色风格。共 {THEMES.length} 套主题均可即时切换，编辑器、对话代码块、终端与玻璃面板同步配色，不影响当前文件和任务。</p>
+            </section>
+          )}
           {/* ===== 模型配置 ===== */}
           {tab === 'models' && (
             <div>
@@ -706,6 +874,16 @@ const SettingsSheet: React.FC = () => {
                 <label className="text-[11px] text-muted-foreground">单次模型请求超时（秒）</label>
                 <input type="number" min="10" max="300" value={Math.round((agentCfg.llmTimeoutMs ?? 60000) / 1000)} onChange={(e) => setAgentCfg({ ...agentCfg, llmTimeoutMs: Number(e.target.value) * 1000 })} className="mt-0.5 w-full bg-background border border-border rounded-md px-2 py-1.5 text-xs outline-none focus:border-primary" />
               </div>
+              <div>
+                <label className="text-[11px] text-muted-foreground">单条命令输出上限（KB）</label>
+                <input type="number" min="50" max="4096" value={agentCfg.maxCommandOutputKB ?? 400} onChange={(e) => setAgentCfg({ ...agentCfg, maxCommandOutputKB: Number(e.target.value) })} className="mt-0.5 w-full bg-background border border-border rounded-md px-2 py-1.5 text-xs outline-none focus:border-primary" />
+                <p className="mt-1 text-[10px] text-muted-foreground/70">超出部分自动丢弃并提示模型，避免全盘扫描类命令把界面撑白。默认 400 KB，越小越省内存。</p>
+              </div>
+              <div>
+                <label className="text-[11px] text-muted-foreground">Python 解释器路径（可选）</label>
+                <input type="text" value={agentCfg.pythonPath ?? ''} onChange={(e) => setAgentCfg({ ...agentCfg, pythonPath: e.target.value })} placeholder="留空自动探测：项目 .venv > 内置 > 系统 python" className="mt-0.5 w-full bg-background border border-border rounded-md px-2 py-1.5 text-xs outline-none focus:border-primary" />
+                <p className="mt-1 text-[10px] text-muted-foreground/70">供 run_python 使用；脚本输出自动 UTF-8 + 无缓冲，失败返回结构化 traceback。</p>
+              </div>
               <div className="grid grid-cols-3 gap-2.5">
                 <div>
                   <label className="text-[11px] text-muted-foreground">最大迭代轮数</label>
@@ -726,9 +904,48 @@ const SettingsSheet: React.FC = () => {
                   <span className="text-xs">Max 模式：保留完整对话历史（关闭时按上方条数裁剪）</span>
                 </label>
                 <label className="flex items-center gap-2 cursor-pointer">
-                  <input type="checkbox" checked={agentCfg.enableRouting !== false} onChange={(e) => setAgentCfg({ ...agentCfg, enableRouting: e.target.checked })} className="accent-primary" />
-                  <span className="text-xs">智能模型路由：按任务自动选择合适模型</span>
+                  <input type="checkbox" checked={agentCfg.enableRouting !== false} onChange={(e) => {
+                    const checked = e.target.checked;
+                    setAgentCfg({ ...agentCfg, enableRouting: checked });
+                    // 与模型下拉的 AUTO 保持一致：勾选=自动路由，取消=固定当前模型
+                    // （只改 enableRouting 会让开关看起来"无效"，因为路由还要求 modelSelectionMode=auto）
+                    void window.cnke.config.set('modelSelectionMode', checked ? 'auto' : 'manual');
+                  }} className="accent-primary" />
+                  <span className="text-xs">智能模型路由：按任务在内置模型中选择合适模型</span>
                 </label>
+                {agentCfg.enableRouting !== false && (
+                  <div className="rounded-lg border border-border bg-background/40 p-2.5">
+                    <p className="text-[11px] text-muted-foreground">任务 → 模型映射（仅内置模型；留空表示跟随 AUTO 自动选档）</p>
+                    <div className="mt-1.5 grid grid-cols-2 gap-1.5">
+                      {ROUTING_TASKS.map((t) => {
+                        const routing = (agentCfg.routing && typeof agentCfg.routing === 'object' ? agentCfg.routing : {}) as Record<string, string>;
+                        return (
+                          <label key={t.key} className="flex items-center gap-1.5 text-[11px]">
+                            <span className="w-14 shrink-0 text-muted-foreground">{t.label}</span>
+                            <select
+                              value={routing[t.key] || ''}
+                              onChange={(e) => {
+                                const nextRouting: Record<string, string> = { ...routing };
+                                if (e.target.value) nextRouting[t.key] = e.target.value;
+                                else delete nextRouting[t.key];
+                                setAgentCfg({ ...agentCfg, routing: nextRouting });
+                              }}
+                              className="min-w-0 flex-1 rounded-md border border-border bg-background px-1.5 py-1 text-[11px] outline-none focus:border-primary"
+                            >
+                              <option value="">AUTO 自动选档</option>
+                              {apiConfigs
+                                .filter((c) => !c.disabled && (c.id.startsWith('official_') || c.builtin === true))
+                                .map((c) => <option key={c.id} value={c.id}>{c.name || c.model}</option>)}
+                            </select>
+                          </label>
+                        );
+                      })}
+                    </div>
+                    {apiConfigs.filter((c) => !c.disabled && (c.id.startsWith('official_') || c.builtin === true)).length === 0 && (
+                      <p className="mt-1.5 text-[10px] text-amber-500/90">暂无内置模型可选，请先在「模型」页导入官方模型；自定义中转不参与 AUTO 路由。</p>
+                    )}
+                  </div>
+                )}
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input type="checkbox" checked={!!agentCfg.autoApproveTools} onChange={(e) => setAgentCfg({ ...agentCfg, autoApproveTools: e.target.checked })} className="accent-primary" />
                   <span className="text-xs">自动批准工具调用（不弹确认框）</span>
@@ -754,6 +971,156 @@ const SettingsSheet: React.FC = () => {
                     </select>
                   </label>
                 )}
+              </div>
+              {/* 权限档位：决定 Agent 能动到什么程度 */}
+              <div className="space-y-2 rounded-lg border border-border bg-secondary/20 p-2.5">
+                <div className="min-w-0">
+                  <h4 className="flex items-center gap-1 text-xs font-semibold">
+                    <ShieldCheck className="w-3 h-3" /> 权限档位
+                  </h4>
+                  <p className="mt-0.5 text-[10px] text-muted-foreground">
+                    决定 Agent 动手的边界。只读档连确认弹窗都不弹，直接把写文件与执行命令拦回去。
+                  </p>
+                </div>
+                <div className="grid grid-cols-3 gap-1">
+                  {[
+                    { key: 'read-only', label: '只读', hint: '只能看', detail: PERMISSION_MODE_INFO['read-only'].detail },
+                    { key: 'standard', label: '标准', hint: '改文件放行', detail: PERMISSION_MODE_INFO.standard.detail },
+                    { key: 'full-access', label: '完全访问', hint: '全部放行', detail: PERMISSION_MODE_INFO['full-access'].detail },
+                  ].map((item) => {
+                    const active = (agentCfg.permissionMode || 'standard') === item.key;
+                    return (
+                      <button
+                        key={item.key}
+                        type="button"
+                        onClick={() => setAgentCfg({ ...agentCfg, permissionMode: item.key })}
+                        className={`rounded-md border px-2 py-1.5 text-center transition-colors ${
+                          active ? 'border-primary bg-primary/10 text-primary' : 'border-border hover:bg-accent/50'
+                        }`}
+                      >
+                        <div className="text-[11px] font-medium">{item.label}</div>
+                        <div className="text-[9px] text-muted-foreground">{item.hint}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-[9px] leading-relaxed text-muted-foreground">
+                  {PERMISSION_MODE_INFO[(agentCfg.permissionMode || 'standard') as keyof typeof PERMISSION_MODE_INFO]?.detail}
+                </p>
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <label className="block space-y-1">
+                    <span className="text-[10px] text-muted-foreground">命令白名单（每行一条，命中即放行）</span>
+                    <textarea
+                      value={cmdAllowText}
+                      onChange={(e) => {
+                        const text = e.target.value;
+                        setCmdAllowText(text);
+                        setAgentCfg({
+                          ...agentCfg,
+                          commandAllowlist: text.split('\n').map((s) => s.trim()).filter(Boolean),
+                        });
+                      }}
+                      rows={3}
+                      spellCheck={false}
+                      placeholder={'git status\nnpm test\ngit *'}
+                      className="w-full resize-y rounded-md border border-border bg-background px-2 py-1.5 font-mono text-[11px] outline-none focus:border-primary"
+                    />
+                  </label>
+                  <label className="block space-y-1">
+                    <span className="text-[10px] text-muted-foreground">域名白名单（留空不限制联网）</span>
+                    <textarea
+                      value={domainAllowText}
+                      onChange={(e) => {
+                        const text = e.target.value;
+                        setDomainAllowText(text);
+                        setAgentCfg({
+                          ...agentCfg,
+                          domainAllowlist: text.split('\n').map((s) => s.trim()).filter(Boolean),
+                        });
+                      }}
+                      rows={3}
+                      spellCheck={false}
+                      placeholder={'github.com\n*.npmjs.org\napi.github.com/v1'}
+                      className="w-full resize-y rounded-md border border-border bg-background px-2 py-1.5 font-mono text-[11px] outline-none focus:border-primary"
+                    />
+                  </label>
+                </div>
+                <p className="text-[9px] text-muted-foreground">
+                  命令填前缀（npm test 也放行 npm test --coverage）或通配（git *）；域名填 example.com 含子域，*.example.com 含裸域，带 / 时按路径前缀匹配。改完点下方保存生效。
+                </p>
+              </div>
+              {/* 项目指令：按目录层级读取 AGENTS.md / CNKE.md 并注入 systemPrompt */}
+              <div className="space-y-2 rounded-lg border border-border bg-secondary/20 p-2.5">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <h4 className="flex items-center gap-1 text-xs font-semibold">
+                      <ScrollText className="w-3 h-3" /> 项目指令（AGENTS.md）
+                    </h4>
+                    <p className="mt-0.5 text-[10px] text-muted-foreground">
+                      仓库自己的约定按目录层级自动读取并注入，换仓库自动切换，不用每轮重复交代。
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <button
+                      onClick={() => void reloadInstructions()}
+                      disabled={instructionsLoading || !workspacePath}
+                      className="flex items-center gap-1 rounded border border-border px-2 py-1 text-[10px] hover:bg-accent disabled:opacity-50"
+                    >
+                      <RefreshCw className={`w-3 h-3 ${instructionsLoading ? 'animate-spin' : ''}`} /> 刷新
+                    </button>
+                    <button
+                      onClick={() => void createInstructionFile()}
+                      className="flex items-center gap-1 rounded border border-border px-2 py-1 text-[10px] hover:bg-accent"
+                    >
+                      <Plus className="w-3 h-3" /> 生成模板
+                    </button>
+                  </div>
+                </div>
+                <label className="flex cursor-pointer items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={agentCfg.useProjectInstructions !== false}
+                    onChange={(e) => setAgentCfg({ ...agentCfg, useProjectInstructions: e.target.checked })}
+                    className="accent-primary"
+                  />
+                  <span className="text-xs">自动加载项目指令文件（AGENTS.md / CNKE.md，含子目录，保存后生效）</span>
+                </label>
+                {!workspacePath ? (
+                  <p className="text-[10px] text-muted-foreground">未打开工作区，无法加载项目指令。</p>
+                ) : instructionsLoading && !instructions ? (
+                  <p className="text-[10px] text-muted-foreground">正在扫描工作区…</p>
+                ) : !instructions || instructions.files.length === 0 ? (
+                  <p className="text-[10px] text-muted-foreground">
+                    当前工作区没有 AGENTS.md。点「生成模板」创建一份，写明构建/测试命令与代码约定即可。
+                  </p>
+                ) : (
+                  <div className="space-y-1">
+                    {instructions.files.map((file) => (
+                      <button
+                        key={file.path}
+                        type="button"
+                        title={file.path}
+                        onClick={() => void window.cnke.shell.openPath(file.path)}
+                        className="flex w-full items-center gap-2 rounded border border-border/60 bg-background/60 px-2 py-1 text-left hover:bg-accent/40"
+                      >
+                        <span className="truncate text-[11px]">{file.relPath}</span>
+                        {file.depth > 0 && (
+                          <span className="shrink-0 rounded bg-secondary px-1 text-[9px] text-muted-foreground">子目录</span>
+                        )}
+                        {file.truncated && (
+                          <span className="shrink-0 rounded bg-amber-500/20 px-1 text-[9px] text-amber-500">已截断</span>
+                        )}
+                        <span className="ml-auto shrink-0 text-[9px] text-muted-foreground">{formatBytes(file.bytes)}</span>
+                      </button>
+                    ))}
+                    <p className="text-[9px] text-muted-foreground">
+                      共 {instructions.files.length} 个文件 · 注入 {formatBytes(instructions.totalBytes)} · 预算{' '}
+                      {formatBytes(agentCfg.projectInstructionsBudget ?? 24000)}
+                      {instructions.skipped.length > 0 ? ` · 跳过 ${instructions.skipped.length} 个` : ''}
+                    </p>
+                  </div>
+                )}
+                {instructions?.error && <p className="text-[9px] text-red-400">{instructions.error}</p>}
               </div>
               <button onClick={() => void saveAgentConfig()} className="flex items-center gap-1 px-3 py-1.5 text-xs bg-primary text-primary-foreground rounded-md hover:bg-primary/80 transition-colors">
                 <Save className="w-3 h-3" /> 保存 Agent 设置

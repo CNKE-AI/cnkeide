@@ -47,6 +47,27 @@ export function resolveUserDataDir(): string {
 }
 
 /**
+ * 文档目录（新建任务时工作区文件夹的默认父目录）。
+ *
+ * 默认放在「文档」下而不是 userData：任务是用户看得见、要往里放代码的目录，
+ * 塞进 AppData 里用户根本找不到。CNKEIDE_TASK_ROOT 可整体覆盖，便于测试隔离。
+ */
+export function resolveTaskRootDir(): string {
+  const override = process.env.CNKEIDE_TASK_ROOT;
+  if (override && override.trim()) return path.resolve(override.trim());
+
+  const app = tryElectronApp();
+  if (app?.getPath) {
+    try {
+      return path.join(app.getPath('documents'), 'CnkeIDE');
+    } catch {
+      /* 非标准环境回落 */
+    }
+  }
+  return path.join(os.homedir(), 'Documents', 'CnkeIDE');
+}
+
+/**
  * 应用根目录（用于查找随包分发的 skills 等资源）。
  * Electron 下为 app.getAppPath()，CLI 下为进程工作目录。
  */

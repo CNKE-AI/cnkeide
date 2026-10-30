@@ -108,7 +108,7 @@ const ChatHeaderMenu: React.FC<ChatHeaderMenuProps> = (p) => {
         <div
           role="menu"
           ref={menuRef}
-          className="absolute right-0 top-full z-50 mt-1 w-[min(15rem,calc(100vw-1rem))] max-h-[min(28rem,calc(100vh-4rem))] overflow-y-auto rounded-xl border border-border bg-popover p-1.5 text-popover-foreground shadow-2xl"
+          className="overlay-panel absolute right-0 top-full z-50 mt-1.5 w-[min(15rem,calc(100vw-1rem))] max-h-[min(28rem,calc(100vh-4rem))] overflow-y-auto p-1.5 text-popover-foreground"
         >
           <SectionTitle>会话</SectionTitle>
           <button type="button" role="menuitem" className={MENU_ROW_CLS} onClick={run(p.onNewWorkspace)}>

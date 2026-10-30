@@ -183,10 +183,10 @@ export function MemoryPanel({ workspaceId, onClose }: { workspaceId?: string; on
   const visible = items || [];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="w-[720px] max-w-[94vw] h-[82vh] flex flex-col bg-card border border-border rounded-2xl shadow-2xl overflow-hidden">
+    <div className="overlay-mask z-50" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="glass-strong w-[720px] max-w-[94vw] h-[82vh] flex flex-col rounded-[22px] overflow-hidden animate-pop-in">
         {/* 头部 */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-secondary/10">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-white/[0.07] bg-white/[0.02]">
           <div className="flex items-center gap-2">
             <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-cyan-500/25 to-violet-500/25 border border-primary/30 flex items-center justify-center">
               <BrainCircuit className="w-4 h-4 text-primary" />

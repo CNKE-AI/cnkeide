@@ -127,7 +127,7 @@
         <a href="https://github.com/CNKE-AI/cnkeide" target="_blank" rel="noopener" class="nav-link">Github 仓库</a>
         <a href="index.html#download" class="nav-link">下载</a>
       </div>
-      <a href="/cnkeide/updates/CnkeIDE%20Setup%201.3.3.exe" download class="btn-primary hidden md:flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-bold">
+      <a href="/cnkeide/updates/CnkeIDE%20Setup%201.3.10.exe" download class="btn-primary hidden md:flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-bold">
         <svg viewBox="0 0 24 24" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"></path><path d="M7 10l5 5 5-5"></path><path d="M12 15V3"></path></svg>
         立即下载
       </a>
@@ -144,7 +144,7 @@
       <a href="/announcements/" class="nav-link">公告</a>
       <a href="https://github.com/CNKE-AI/cnkeide" target="_blank" rel="noopener" class="nav-link">Github 仓库</a>
       <a href="index.html#download" class="nav-link">下载</a>
-      <a href="/cnkeide/updates/CnkeIDE%20Setup%201.3.3.exe" download class="btn-primary flex items-center justify-center px-5 py-2.5 rounded-lg text-sm font-bold mt-2">立即下载</a>
+      <a href="/cnkeide/updates/CnkeIDE%20Setup%201.3.10.exe" download class="btn-primary flex items-center justify-center px-5 py-2.5 rounded-lg text-sm font-bold mt-2">立即下载</a>
     </div>
   </header>
 
@@ -172,6 +172,7 @@
               <a href="#apiconfig" class="toc-link">API 模型配置</a>
               <a href="#mcpconfig" class="toc-link">MCP 服务配置</a>
               <a href="#skill" class="toc-link">Skill 技能管理</a>
+              <a href="#voice" class="toc-link">语音输入（离线听写）</a>
               <a href="#layerconfig" class="toc-link">全局 / 工作区分层配置</a>
             </div>
             <div>
@@ -292,6 +293,34 @@
         <section id="mcpconfig" class="doc-section glass-card rounded-2xl p-6 md:p-8 mb-8">
           <div class="doc-head"><div class="doc-icon">🔌</div><h2 class="text-2xl font-bold text-white">MCP 服务配置</h2></div>
           <p class="text-slate-300 leading-relaxed">支持 Stdio、SSE 两种 MCP 服务，可单独启用 / 禁用，可配置目录读写、Shell 执行、网络访问权限。</p>
+        </section>
+
+        <!-- 语音输入（v1.3.10 新增） -->
+        <section id="voice" class="doc-section glass-card rounded-2xl p-6 md:p-8 mb-8 border-2 border-rose-400/30">
+          <div class="doc-head">
+            <div class="doc-icon">🎙️</div>
+            <div>
+              <h2 class="text-2xl font-bold text-white">语音输入（离线听写）</h2>
+              <span class="inline-block mt-1 px-2 py-0.5 rounded-full border border-rose-400/30 bg-rose-400/10 text-rose-300 text-[10px] font-mono">v1.3.10 新增</span>
+            </div>
+          </div>
+          <p class="text-slate-300 leading-relaxed mb-4">
+            聊天输入框工具条新增 <strong class="text-white">麦克风按钮</strong>：点击开始说话，中文语音实时转为文字填入输入框；再次点击结束听写。
+          </p>
+          <h3 class="font-semibold text-white mt-5 mb-2">使用步骤</h3>
+          <ol class="list-decimal list-inside space-y-1.5 text-sm text-slate-300">
+            <li>首次点击麦克风按钮，应用会自动下载语音模型（约 70MB，仅一次，支持断点续传与多源回落）。</li>
+            <li>下载完成后即可离线使用：点击麦克风 → 对着麦克风正常语速说话 → 停顿时自动断句填入 → 再次点击结束。</li>
+            <li>识别文字会以增量方式追加到输入框，你可以随时手动修改后再发送。</li>
+          </ol>
+          <h3 class="font-semibold text-white mt-5 mb-2">常见问题</h3>
+          <ul class="space-y-1.5 text-sm text-slate-300">
+            <li>· <strong class="text-white">完全离线</strong>：识别在本地 CPU 推理（sherpa-onnx 流式模型），语音不出设备；</li>
+            <li>· <strong class="text-white">完全免费</strong>：无 API Key、无账号、无调用计费；</li>
+            <li>· 提示「麦克风权限被拒绝」：请到 Windows 设置 → 隐私和安全性 → 麦克风，允许桌面应用访问；</li>
+            <li>· 提示「未检测到麦克风设备」：请检查耳机 / 麦克风连接；</li>
+            <li>· 识别打断：点击其他按钮或关闭面板会自动结束听写并释放麦克风。</li>
+          </ul>
         </section>
 
         <!-- Skill -->
@@ -835,7 +864,7 @@ TEXT=$(cnkeide -p "总结这次改动" --final-only)</pre>
         <a href="/feedback/" class="hover:text-white transition">意见反馈</a>
         <a href="https://github.com/CNKE-AI/cnkeide" target="_blank" rel="noopener" class="hover:text-white transition">Github</a>
         <a href="index.html#download" class="hover:text-white transition">下载</a>
-        <span class="text-slate-600">© 2026 CnkeIDE · <span id="footer-ver" class="font-mono">v1.3.3</span></span>
+        <span class="text-slate-600">© 2026 CnkeIDE · <span id="footer-ver" class="font-mono">v1.3.10</span></span>
       </div>
     </div>
     <div class="max-w-7xl mx-auto px-5 md:px-8 mt-6 pt-4 border-t border-white/5 text-xs text-slate-500 text-center">

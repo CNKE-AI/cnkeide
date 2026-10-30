@@ -10,6 +10,7 @@ import type { PptxCreateRequest } from './core-fork/tools/PptxTools';
 import type { ChatSession } from './store/SessionStore';
 import type { UpdateStatus } from './updater/UpdateManager';
 import type { InlineCompletionRequest } from './core-fork/completion/InlineCompletionService';
+import type { StatsQuery } from './core-fork/analytics/HistoryStats';
 
 // ===== 窗口控制 API =====
 const windowApi = {
@@ -88,6 +89,10 @@ const terminalApi = {
 // ===== Agent API =====
 const agentApi = {
   run: (params: RunParams) => ipcRenderer.invoke('agent:run', params),
+  // 测试专用（仅 CNKE_FLOOD_TEST=1 时主进程注册该通道）：重放 agent 事件供白屏实测
+  ...(process.env.CNKE_FLOOD_TEST === '1'
+    ? { testPushEvent: (event: unknown) => ipcRenderer.invoke('agent:testPushEvent', event) }
+    : {}),
   abort: (sessionId: string) => ipcRenderer.send('agent:abort', sessionId),
   enhancePrompt: (text: string) => ipcRenderer.invoke('agent:enhancePrompt', text),
   onEvent: (cb: (event: unknown) => void) => {
@@ -104,6 +109,30 @@ const agentApi = {
     const handler = (_e: Electron.IpcRendererEvent, data: unknown) => cb(data);
     ipcRenderer.on('agent:tool-result', handler);
     return () => ipcRenderer.removeListener('agent:tool-result', handler);
+  },
+};
+
+// ===== 语音输入 API（内置离线识别）=====
+const voiceApi = {
+  /** 查询/初始化引擎；首次会触发模型下载，进度经 onStatus 推送 */
+  status: () => ipcRenderer.invoke('voice:status'),
+  /** 喂入 16kHz float32 PCM 帧（数组化传输，避免结构化克隆开销） */
+  feed: (samples: number[]) => ipcRenderer.send('voice:feed', samples),
+  /** 结束听写，返回全部确认文本 */
+  finalize: () => ipcRenderer.invoke('voice:finalize'),
+  /** 取消本次听写 */
+  reset: () => ipcRenderer.send('voice:reset'),
+  /** 识别结果推送：{ text, final } */
+  onText: (cb: (data: { text: string; final: boolean }) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, data: { text: string; final: boolean }) => cb(data);
+    ipcRenderer.on('voice:text', handler);
+    return () => ipcRenderer.removeListener('voice:text', handler);
+  },
+  /** 引擎状态/下载进度推送 */
+  onStatus: (cb: (s: { ready: boolean; message: string; progress: number }) => void) => {
+    const handler = (_e: Electron.IpcRendererEvent, s: { ready: boolean; message: string; progress: number }) => cb(s);
+    ipcRenderer.on('voice:status', handler);
+    return () => ipcRenderer.removeListener('voice:status', handler);
   },
 };
 
@@ -149,6 +178,15 @@ const memoryApi = {
   update: (id: string, patch: Partial<MemoryItemInput>) => ipcRenderer.invoke('memory:update', id, patch),
   delete: (id: string) => ipcRenderer.invoke('memory:delete', id),
   clear: () => ipcRenderer.invoke('memory:clear'),
+};
+
+// ===== 仓库级指令文件 API（AGENTS.md / CNKE.md）=====
+const projectApi = {
+  /** 列出当前工作区会被注入的项目指令文件（含字节数、截断标记） */
+  instructions: (rootPath?: string) => ipcRenderer.invoke('project:instructions', rootPath),
+  /** 在工作区根目录生成 AGENTS.md 模板（已存在则返回 created=false，不覆盖） */
+  createInstruction: (rootPath?: string, fileName?: string) =>
+    ipcRenderer.invoke('project:createInstruction', rootPath, fileName),
 };
 
 // ===== MCP API =====
@@ -431,6 +469,38 @@ const updateApi = {
   },
 };
 
+// ===== 历史统计看板 API（W18）=====
+const statsApi = {
+  /** 统计模型算出的整块看板（指标 / 趋势 / 分布 / 洞察） */
+  dashboard: (filter: StatsQuery = {}) => ipcRenderer.invoke('stats:dashboard', filter),
+  /** 历史记录明细（过滤 + 排序 + 分页） */
+  sessions: (query: StatsQuery = {}) => ipcRenderer.invoke('stats:sessions', query),
+  /** 导出当前筛选结果：csv = 明细表格，markdown = 完整报告（主进程弹保存框并写盘） */
+  export: (query: StatsQuery = {}, format: 'csv' | 'markdown' = 'csv') =>
+    ipcRenderer.invoke('stats:export', query, format),
+};
+
+// ===== 任务工作区 API（W19）=====
+const taskApi = {
+  /** 任务列表（含每个任务下的会话数、文件夹是否还在磁盘上） */
+  list: () => ipcRenderer.invoke('task:list'),
+  /** 新建任务：在指定父目录（默认「文档/CnkeIDE」）下建同名空文件夹，并登记索引 */
+  create: (name: string, parentDir?: string) => ipcRenderer.invoke('task:create', name, parentDir),
+  /** 在系统文件管理器里定位任务文件夹 */
+  reveal: (workspacePath: string) => ipcRenderer.invoke('task:reveal', workspacePath),
+  /** 重命名任务（同时改磁盘目录名，并迁移会话绑定） */
+  rename: (id: string, newName: string) => ipcRenderer.invoke('task:rename', id, newName),
+  /** 归档 / 取消归档（只动索引，不删文件夹） */
+  archive: (id: string, archived: boolean = true) => ipcRenderer.invoke('task:archive', id, archived),
+};
+
+// ===== 工作区全文搜索（Ctrl+Shift+F）=====
+const searchApi = {
+  /** 在工作区里搜内容；query 默认按字面量匹配（不是正则） */
+  content: (rootPath: string, query: string, opts?: any) =>
+    ipcRenderer.invoke('search:content', rootPath, query, opts),
+};
+
 // 暴露到渲染进程
 contextBridge.exposeInMainWorld('cnke', {
   window: windowApi,
@@ -440,8 +510,10 @@ contextBridge.exposeInMainWorld('cnke', {
   session: sessionApi,
   skills: skillApi,
   config: configApi,
+  voice: voiceApi,
   completion: completionApi,
   memory: memoryApi,
+  project: projectApi,
   mcp: mcpApi,
   dialog: dialogApi,
   shell: shellApi,
@@ -459,6 +531,9 @@ contextBridge.exposeInMainWorld('cnke', {
   plan: planApi,
   ppt: pptApi,
   pptMaster: pptMasterApi,
+  stats: statsApi,
+  task: taskApi,
+  search: searchApi,
 });
 
 // 类型导出（给渲染进程的 d.ts 用）

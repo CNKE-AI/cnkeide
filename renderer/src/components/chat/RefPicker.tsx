@@ -100,7 +100,7 @@ const RefPicker: React.FC<RefPickerProps> = ({ open, onClose, onPickFile, onPick
     <div
       ref={panelRef}
       style={{ position: 'fixed', left: pos.left, bottom: window.innerHeight - pos.top + 4, width: pos.width, zIndex: 9998 }}
-      className="bg-card border border-border rounded-xl shadow-2xl overflow-hidden flex flex-col max-h-[320px]"
+      className="overlay-panel overflow-hidden flex flex-col max-h-[320px]"
     >
       {/* 头部 */}
       <div className="flex items-center gap-1.5 px-3 py-2 border-b border-border bg-secondary/30 shrink-0">

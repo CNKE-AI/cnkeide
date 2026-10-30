@@ -180,3 +180,357 @@ export async function gitLog(
     return { success: false, error: err?.message || String(err) };
   }
 }
+
+/* ============================================================================
+ * W26：Git 写操作闭环（branch / checkout / fetch / pull / push）
+ *
+ * 三条设计原则：
+ *  1. 参数绝不拼字符串进命令行：全部走 execFile 的 argv 数组，且 ref 名先过 isValidRefName
+ *     （拒绝以 - 开头、含空白或 git 保留字符），避免 `git push --force` 这类注入。
+ *  2. 默认安全：pull 只允许快进（--ff-only）、push 永不强推、不允许直推 main/master
+ *     （要直推必须显式 allowProtected=true）。
+ *  3. 失败必须回传 git 原生 stderr，模型才能自己看懂「被拒绝」的原因并换策略。
+ * ========================================================================== */
+
+export interface GitOpResult {
+  success: boolean;
+  output?: string;
+  error?: string;
+}
+
+/** 受保护分支：默认禁止直接推送 */
+export const PROTECTED_BRANCHES = ['main', 'master'];
+
+/** 分支/引用名合法性校验（防注入 + 防非法 ref） */
+export function isValidRefName(name: string): boolean {
+  const n = String(name ?? '').trim();
+  if (!n) return false;
+  if (n.startsWith('-')) return false; // 防止被当成命令行选项
+  if (/[\s~^:?*[\\\u0000-\u001f]/.test(n)) return false;
+  if (n.includes('..') || n.includes('@{')) return false;
+  if (n.endsWith('/') || n.endsWith('.') || n.endsWith('.lock')) return false;
+  if (n.length > 200) return false;
+  return true;
+}
+
+function gitErrorText(err: any): string {
+  const stderr = err?.stderr ? String(err.stderr) : '';
+  if (stderr.trim()) return stderr.trim();
+  return err?.message ? String(err.message) : String(err);
+}
+
+/** 当前分支名（游离 HEAD 时返回 HEAD） */
+export async function gitCurrentBranch(cwd: string): Promise<string> {
+  const { stdout } = await git(['rev-parse', '--abbrev-ref', 'HEAD'], cwd);
+  return stdout.trim() || 'HEAD';
+}
+
+/** 远程列表 */
+export async function gitRemotes(cwd: string): Promise<string[]> {
+  try {
+    const { stdout } = await git(['remote'], cwd);
+    return stdout
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/** 与上游的领先/落后提交数；没有上游返回 null */
+export async function gitAheadBehind(cwd: string): Promise<{ ahead: number; behind: number } | null> {
+  try {
+    const { stdout } = await git(['rev-list', '--left-right', '--count', '@{upstream}...HEAD'], cwd);
+    const [behind, ahead] = stdout
+      .trim()
+      .split(/\s+/)
+      .map((n) => Number.parseInt(n, 10) || 0);
+    return { ahead: ahead || 0, behind: behind || 0 };
+  } catch {
+    return null;
+  }
+}
+
+export interface GitBranchInfo {
+  name: string;
+  current: boolean;
+  remote: boolean;
+  upstream?: string;
+}
+
+export interface GitBranchListResult {
+  success: boolean;
+  local?: GitBranchInfo[];
+  remote?: GitBranchInfo[];
+  current?: string;
+  error?: string;
+}
+
+/**
+ * 分支操作
+ *  - list（默认）：本地 + 远程分支，标注当前分支与上游
+ *  - create：新建分支，可用 from 指定起点、checkout 建完直接切过去
+ *  - delete：删除分支，force=true 用 -D（丢弃未合并提交）
+ *  - rename：重命名为 to
+ */
+export async function gitBranch(
+  cwd: string,
+  options: {
+    action?: 'list' | 'create' | 'delete' | 'rename';
+    name?: string;
+    from?: string;
+    to?: string;
+    force?: boolean;
+    checkout?: boolean;
+  } = {}
+): Promise<GitBranchListResult & GitOpResult> {
+  const action = options.action || 'list';
+  try {
+    if (!(await isGitRepo(cwd))) return { success: false, error: '当前目录不是 git 仓库' };
+
+    if (action === 'list') {
+      const { stdout } = await git(['for-each-ref', '--format=%(refname:short)\t%(upstream:short)\t%(HEAD)', 'refs/heads'], cwd);
+      const local: GitBranchInfo[] = stdout
+        .split('\n')
+        .filter((l) => l.trim())
+        .map((line) => {
+          const [name, upstream, head] = line.split('\t');
+          return {
+            name: name.trim(),
+            current: (head || '').trim() === '*',
+            remote: false,
+            upstream: (upstream || '').trim() || undefined,
+          };
+        });
+      let remote: GitBranchInfo[] = [];
+      try {
+        const r = await git(['branch', '-r', '--format=%(refname:short)'], cwd);
+        remote = r.stdout
+          .split('\n')
+          .map((s) => s.trim())
+          .filter((s) => s && !s.includes('->'))
+          .map((name) => ({ name, current: false, remote: true }));
+      } catch {
+        // 没有远程时忽略
+      }
+      const current = local.find((b) => b.current)?.name;
+      return { success: true, local, remote, current };
+    }
+
+    const name = String(options.name ?? '').trim();
+    if (action === 'create') {
+      if (!isValidRefName(name)) return { success: false, error: `非法分支名：${name}` };
+      if (options.from && !isValidRefName(String(options.from))) {
+        return { success: false, error: `非法起点引用：${options.from}` };
+      }
+      const exists = await branchExists(cwd, name);
+      if (exists) return { success: false, error: `分支已存在：${name}（如需切换请直接用 git_checkout）` };
+      const args = options.checkout ? ['checkout', '-b', name] : ['branch', name];
+      if (options.from) args.push(String(options.from));
+      const r = await git(args, cwd);
+      const current = await gitCurrentBranch(cwd);
+      return {
+        success: true,
+        output: options.checkout
+          ? `已创建并切换到分支 ${name}（当前分支：${current}）`
+          : `已创建分支 ${name}${options.from ? `（起点 ${options.from}）` : ''}\n${(r.stdout || r.stderr || '').trim()}`,
+      };
+    }
+
+    if (action === 'delete') {
+      if (!isValidRefName(name)) return { success: false, error: `非法分支名：${name}` };
+      const current = await gitCurrentBranch(cwd);
+      if (name === current) return { success: false, error: `不能删除当前所在分支 ${name}，请先切换到其它分支` };
+      const r = await git(['branch', options.force ? '-D' : '-d', name], cwd);
+      return { success: true, output: (r.stdout || r.stderr || `已删除分支 ${name}`).trim() };
+    }
+
+    if (action === 'rename') {
+      const to = String(options.to ?? '').trim();
+      if (!isValidRefName(name)) return { success: false, error: `非法分支名：${name}` };
+      if (!isValidRefName(to)) return { success: false, error: `非法新分支名：${to}` };
+      const r = await git(['branch', '-m', name, to], cwd);
+      return { success: true, output: (r.stdout || r.stderr || `已重命名 ${name} -> ${to}`).trim() };
+    }
+
+    return { success: false, error: `未知 action：${action}` };
+  } catch (err: any) {
+    return { success: false, error: gitErrorText(err) };
+  }
+}
+
+async function branchExists(cwd: string, name: string): Promise<boolean> {
+  try {
+    await git(['rev-parse', '--verify', '--quiet', `refs/heads/${name}`], cwd);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 切换分支 / 创建并切换
+ * force=true 会丢弃工作区改动（git checkout -f），默认禁止
+ */
+export async function gitCheckout(
+  cwd: string,
+  target: string,
+  options: { create?: boolean; startPoint?: string; force?: boolean } = {}
+): Promise<GitOpResult & { branch?: string }> {
+  const name = String(target ?? '').trim();
+  try {
+    if (!(await isGitRepo(cwd))) return { success: false, error: '当前目录不是 git 仓库' };
+    if (!isValidRefName(name)) return { success: false, error: `非法目标引用：${name}` };
+
+    const args = ['checkout'];
+    if (options.create) {
+      args.push('-b', name);
+      if (options.startPoint) {
+        if (!isValidRefName(String(options.startPoint))) {
+          return { success: false, error: `非法起点引用：${options.startPoint}` };
+        }
+        args.push(String(options.startPoint));
+      }
+    } else {
+      if (options.force) args.push('-f');
+      args.push(name);
+    }
+
+    const r = await git(args, cwd);
+    const branch = await gitCurrentBranch(cwd);
+    const extra = (r.stderr || '').trim();
+    return {
+      success: true,
+      branch,
+      output: `已切换到 ${branch}${options.create ? '（新建）' : ''}${extra ? `\n${extra}` : ''}`,
+    };
+  } catch (err: any) {
+    return { success: false, error: gitErrorText(err) };
+  }
+}
+
+/** git fetch：只更新远程引用，不动工作区 */
+export async function gitFetch(
+  cwd: string,
+  options: { remote?: string; prune?: boolean } = {}
+): Promise<GitOpResult> {
+  try {
+    if (!(await isGitRepo(cwd))) return { success: false, error: '当前目录不是 git 仓库' };
+    const remotes = await gitRemotes(cwd);
+    if (remotes.length === 0) return { success: false, error: '当前仓库没有配置任何远程（git remote 为空）' };
+
+    const args = ['fetch'];
+    if (options.prune !== false) args.push('--prune');
+    if (options.remote) {
+      if (!isValidRefName(String(options.remote))) return { success: false, error: `非法远程名：${options.remote}` };
+      if (!remotes.includes(String(options.remote))) {
+        return { success: false, error: `远程 ${options.remote} 不存在，可用：${remotes.join(', ')}` };
+      }
+      args.push(String(options.remote));
+    } else if (!remotes.includes('origin')) {
+      args.push('--all');
+    } else {
+      args.push('origin');
+    }
+
+    const r = await git(args, cwd);
+    const text = `${(r.stdout || '').trim()}\n${(r.stderr || '').trim()}`.trim();
+    return { success: true, output: text || '已是最新（无新引用）' };
+  } catch (err: any) {
+    return { success: false, error: gitErrorText(err) };
+  }
+}
+
+/**
+ * git pull：默认只允许快进（--ff-only），分叉时直接失败并提示，不替用户造 merge commit
+ */
+export async function gitPull(
+  cwd: string,
+  options: { remote?: string; branch?: string; rebase?: boolean } = {}
+): Promise<GitOpResult & { branch?: string }> {
+  try {
+    if (!(await isGitRepo(cwd))) return { success: false, error: '当前目录不是 git 仓库' };
+    const remotes = await gitRemotes(cwd);
+    if (remotes.length === 0) return { success: false, error: '当前仓库没有配置任何远程（git remote 为空）' };
+
+    const remote = String(options.remote ?? (remotes.includes('origin') ? 'origin' : remotes[0])).trim();
+    if (!remotes.includes(remote)) return { success: false, error: `远程 ${remote} 不存在，可用：${remotes.join(', ')}` };
+    const branch = options.branch ? String(options.branch).trim() : '';
+    if (branch && !isValidRefName(branch)) return { success: false, error: `非法分支名：${branch}` };
+
+    const args = ['pull'];
+    args.push(options.rebase ? '--rebase' : '--ff-only');
+    args.push(remote);
+    if (branch) args.push(branch);
+
+    const r = await git(args, cwd);
+    const current = await gitCurrentBranch(cwd);
+    const text = `${(r.stdout || '').trim()}\n${(r.stderr || '').trim()}`.trim();
+    return { success: true, branch: current, output: text || `已与 ${remote} 同步` };
+  } catch (err: any) {
+    const raw = gitErrorText(err);
+    const hint = /fast-?forward|diverg|non-fast-forward/i.test(raw)
+      ? '\n提示：本地与远程已分叉，--ff-only 拒绝合并。可让用户决定是 rebase（git_pull rebase=true）还是手工合并。'
+      : '';
+    return { success: false, error: `${raw}${hint}` };
+  }
+}
+
+/**
+ * git push：永不强推；默认拒绝直推 main/master（需显式 allowProtected=true）
+ */
+export async function gitPush(
+  cwd: string,
+  options: {
+    remote?: string;
+    branch?: string;
+    setUpstream?: boolean;
+    tags?: boolean;
+    allowProtected?: boolean;
+  } = {}
+): Promise<GitOpResult & { branch?: string; ahead?: number; behind?: number }> {
+  try {
+    if (!(await isGitRepo(cwd))) return { success: false, error: '当前目录不是 git 仓库' };
+    const remotes = await gitRemotes(cwd);
+    if (remotes.length === 0) {
+      return { success: false, error: '当前仓库没有配置任何远程，无法 push。需要用户先 git remote add origin <url>' };
+    }
+
+    const current = await gitCurrentBranch(cwd);
+    if (current === 'HEAD' && !options.branch) {
+      return { success: false, error: '当前处于游离 HEAD 状态，请先切到某个分支再推送' };
+    }
+    const branch = String(options.branch ?? current).trim();
+    if (!isValidRefName(branch)) return { success: false, error: `非法分支名：${branch}` };
+    if (PROTECTED_BRANCHES.includes(branch) && !options.allowProtected) {
+      return {
+        success: false,
+        error:
+          `拒绝直接推送受保护分支 ${branch}。请先创建特性分支（git_branch action=create, name=feat/xxx, checkout=true）再推送；` +
+          `确需直推由用户显式确认后传 allowProtected=true。`,
+      };
+    }
+
+    const remote = String(options.remote ?? (remotes.includes('origin') ? 'origin' : remotes[0])).trim();
+    if (!remotes.includes(remote)) return { success: false, error: `远程 ${remote} 不存在，可用：${remotes.join(', ')}` };
+
+    const args = ['push'];
+    if (options.setUpstream) args.push('-u');
+    args.push(remote, branch);
+    if (options.tags) args.push('--tags');
+
+    const r = await git(args, cwd);
+    const ab = await gitAheadBehind(cwd);
+    const text = `${(r.stdout || '').trim()}\n${(r.stderr || '').trim()}`.trim();
+    return {
+      success: true,
+      branch,
+      ahead: ab?.ahead,
+      behind: ab?.behind,
+      output: text || `已推送 ${branch} 到 ${remote}`,
+    };
+  } catch (err: any) {
+    return { success: false, error: gitErrorText(err) };
+  }
+}

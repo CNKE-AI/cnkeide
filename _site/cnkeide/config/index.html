@@ -1,0 +1,988 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CnkeIDE 统一管理后台</title>
+<link rel="stylesheet" href="/assets/css/ios-glassmorphism.css">
+<link rel="stylesheet" href="/assets/css/cnkeide-admin.css">
+<style>
+  /* 局部覆盖：避免后台背景被主背景干扰 */
+  html, body { min-height: 100vh; }
+  body {
+    font-family: var(--font-sans);
+    color: var(--text-primary);
+    background:
+      radial-gradient(circle at 12% 8%, rgba(143,181,160,.22), transparent 28rem),
+      radial-gradient(circle at 88% 92%, rgba(108,142,191,.26), transparent 32rem),
+      var(--bg-body);
+    background-attachment: fixed;
+  }
+</style>
+</head>
+<body>
+
+<div class="ios-admin-shell">
+  <!-- 侧边栏 -->
+  <aside class="ios-admin-sidebar">
+    <div class="ios-admin-brand">
+      <div class="ios-admin-logo">A</div>
+      <div class="ios-admin-brand-text">
+        <div class="ios-admin-brand-title">CnkeIDE</div>
+        <div class="ios-admin-brand-sub">统一管理后台</div>
+      </div>
+    </div>
+
+    <nav class="ios-admin-nav">
+      <div class="ios-admin-nav-group">
+        <div class="ios-admin-nav-label">控制台</div>
+        <a href="#config" class="ios-admin-nav-item active" data-tab="config">
+          <span class="ios-admin-nav-ico">⚙️</span>
+          <span>内置 API 配置</span>
+        </a>
+        <a href="#announce" class="ios-admin-nav-item" data-tab="announce">
+          <span class="ios-admin-nav-ico">📢</span>
+          <span>远程公告</span>
+        </a>
+        <a href="#feedback" class="ios-admin-nav-item" data-tab="feedback">
+          <span class="ios-admin-nav-ico">💬</span>
+          <span>反馈管理</span>
+          <span id="fbBadge" class="ios-admin-badge" style="display:none">0</span>
+        </a>
+      </div>
+    </nav>
+
+    <div class="ios-admin-side-foot">
+      <span id="connBadge" class="ios-admin-pill" style="display:none"></span>
+      <button id="refreshBtn" class="ios-admin-mini-btn" title="刷新">🔄 刷新</button>
+      <button id="logoutBtn" class="ios-admin-mini-btn danger" style="display:none" title="退出登录">退出</button>
+    </div>
+  </aside>
+
+  <!-- 主区 -->
+  <main class="ios-admin-main">
+    <header class="ios-admin-topbar">
+      <div class="ios-admin-topbar-left">
+        <h2 id="pageTitle" class="ios-admin-page-title">内置 API 配置</h2>
+        <span id="statusDot" class="ios-admin-status-dot"></span>
+        <span id="statusText" class="ios-admin-status-text">接口未检测</span>
+      </div>
+      <div class="ios-admin-topbar-right">
+        <a href="/" target="_blank" class="ios-admin-mini-btn ghost">🏠 首页</a>
+      </div>
+    </header>
+
+    <div class="ios-admin-container">
+
+      <!-- 登录 -->
+      <section id="loginView" class="ios-admin-login-card glass-card">
+        <div class="ios-admin-login-head">
+          <div class="ios-admin-login-orb">A</div>
+          <h3>管理员登录</h3>
+          <p>请使用管理员账号登录 CnkeIDE 后台</p>
+        </div>
+        <div class="ios-admin-login-form">
+          <div class="ios-admin-form-row">
+            <label>账号</label>
+            <input type="text" id="userInput" class="form-input" placeholder="管理员账号">
+          </div>
+          <div class="ios-admin-form-row">
+            <label>密码</label>
+            <input type="password" id="passInput" class="form-input" placeholder="管理员密码">
+          </div>
+          <button id="loginBtn" class="btn btn-primary btn-lg btn-block">登 录</button>
+        </div>
+      </section>
+
+      <!-- 内置 API 配置（列表） -->
+      <section id="configView" style="display:none">
+        <div class="ios-admin-toolbar">
+          <div class="ios-admin-toolbar-left">
+            <span id="statusDot2" class="ios-admin-status-dot"></span>
+            <span id="statusText2" class="ios-admin-status-text">接口未检测</span>
+          </div>
+          <div class="ios-admin-toolbar-right">
+            <button id="batchBaseUrlBtn" class="btn btn-outline">🔁 批量替换 BaseURL</button>
+            <button id="addApiBtn" class="btn btn-primary">+ 新增内置 API</button>
+          </div>
+        </div>
+        <div id="apiList" class="ios-admin-card-list"></div>
+      </section>
+
+      <!-- 批量替换 BaseURL 弹层 -->
+      <section id="batchView" style="display:none">
+        <div class="glass-card ios-admin-panel">
+          <div class="ios-admin-panel-head">
+            <h3>🔁 批量替换 BaseURL</h3>
+            <span class="text-muted">支持部分替换 / 全部统一 / 仅换后缀三种策略</span>
+          </div>
+          <div class="ios-admin-panel-body">
+            <div class="ios-admin-form-row">
+              <label>替换模式</label>
+              <select id="b_mode" class="form-input">
+                <option value="replace">部分替换 —— 把旧地址片段换成新片段（保留其余部分）</option>
+                <option value="set">全部统一 —— 所有选中项的 BaseURL 都设成同一个值</option>
+                <option value="suffix">仅换后缀 —— 保留原主机，替换 from 及其之后的内容</option>
+              </select>
+              <span class="form-hint" id="b_modeHint"></span>
+            </div>
+
+            <div class="ios-admin-form-row" id="b_fromField">
+              <label>旧地址片段（from）</label>
+              <input type="text" id="b_from" class="form-input" placeholder="http://171.80.0.221:20598">
+              <span class="form-hint">当前列表中出现过的地址（点击可快速填入）：</span>
+              <div id="b_fromSuggest" class="ios-admin-suggest"></div>
+            </div>
+
+            <div class="ios-admin-form-row">
+              <label id="b_toLabel">新地址（to）</label>
+              <input type="text" id="b_to" class="form-input" placeholder="http://新IP:20598/v1">
+              <span class="form-hint" id="b_toHint"></span>
+            </div>
+
+            <div class="ios-admin-form-row">
+              <label>应用范围</label>
+              <div id="b_scopeList" class="ios-admin-scope"></div>
+              <label class="ios-admin-check-inline">
+                <input type="checkbox" id="b_selectAll" checked> 全选 / 全不选
+              </label>
+            </div>
+
+            <div class="ios-admin-actions">
+              <button id="batchPreviewBtn" class="btn btn-outline">👁 预览变更</button>
+              <button id="batchCancelBtn" class="btn btn-ghost">取消</button>
+              <button id="batchApplyBtn" class="btn btn-primary">✅ 确认替换</button>
+            </div>
+            <div id="batchPreview" class="ios-admin-preview"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 新增/编辑 API 弹层 -->
+      <section id="editorView" style="display:none">
+        <div class="glass-card ios-admin-panel">
+          <div class="ios-admin-panel-head">
+            <h3 id="editorTitle">新增内置 API</h3>
+          </div>
+          <div class="ios-admin-panel-body">
+            <div class="ios-admin-form-row">
+              <label>配置名称 (name)</label>
+              <input type="text" id="f_name" class="form-input" placeholder="内置 API">
+            </div>
+            <div class="ios-admin-form-row">
+              <label>Provider</label>
+              <select id="f_provider" class="form-input">
+                <option value="openai_compatible">openai_compatible（OpenAI 兼容）</option>
+                <option value="anthropic">anthropic（Claude）</option>
+                <option value="deepseek">deepseek</option>
+                <option value="custom">custom（自定义）</option>
+              </select>
+            </div>
+            <div class="ios-admin-form-row">
+              <label>模型 (model)</label>
+              <input type="text" id="f_model" class="form-input" placeholder="deepseek-v4-pro-0813">
+            </div>
+            <div class="ios-admin-form-row">
+              <label>Base URL (baseUrl)</label>
+              <input type="text" id="f_baseUrl" class="form-input" placeholder="https://api.example.com/v1">
+            </div>
+            <div class="ios-admin-form-row ios-admin-pwd-row">
+              <label>API Key (apiKey)</label>
+              <input type="password" id="f_apiKey" class="form-input" placeholder="sk-...">
+              <button id="toggleKeyBtn" class="ios-admin-eye" type="button">👁</button>
+            </div>
+            <div class="ios-admin-actions">
+              <button id="cancelEditBtn" class="btn btn-ghost">取消</button>
+              <button id="saveBtn" class="btn btn-primary">💾 保存</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 远程公告管理 -->
+      <section id="announceView" style="display:none">
+        <div class="ios-admin-toolbar">
+          <button id="annNewBtn" class="btn btn-primary">+ 新增公告</button>
+          <span id="annStatus" class="ios-admin-toolbar-status"></span>
+        </div>
+        <div id="annList" class="ios-admin-card-list"></div>
+      </section>
+
+      <!-- 新增/编辑公告弹层 -->
+      <section id="annEditorView" style="display:none">
+        <div class="glass-card ios-admin-panel">
+          <div class="ios-admin-panel-head">
+            <h3 id="annEditorTitle">新增公告</h3>
+          </div>
+          <div class="ios-admin-panel-body">
+            <div class="ios-admin-form-row">
+              <label>标题</label>
+              <input type="text" id="a_title" class="form-input" placeholder="公告标题">
+            </div>
+            <div class="ios-admin-form-row">
+              <label>内容（支持 HTML）</label>
+              <textarea id="a_content" class="form-textarea" style="min-height:140px" placeholder="公告内容，支持简单 HTML"></textarea>
+            </div>
+            <div class="ios-admin-form-grid">
+              <div class="ios-admin-form-row">
+                <label>类型</label>
+                <select id="a_type" class="form-input">
+                  <option value="info">info（普通信息）</option>
+                  <option value="warning">warning（警告）</option>
+                  <option value="urgent">urgent（紧急）</option>
+                </select>
+              </div>
+              <div class="ios-admin-form-row">
+                <label>平台（all / win / mac）</label>
+                <input type="text" id="a_platform" class="form-input" placeholder="all" value="all">
+              </div>
+            </div>
+            <div class="ios-admin-form-grid">
+              <div class="ios-admin-form-row">
+                <label>最低版本（可选，含）</label>
+                <input type="text" id="a_minVersion" class="form-input" placeholder="例如 1.1.2">
+              </div>
+              <div class="ios-admin-form-row">
+                <label>最高版本（可选，不含）</label>
+                <input type="text" id="a_maxVersion" class="form-input" placeholder="例如 1.1.5">
+              </div>
+            </div>
+            <div class="ios-admin-form-grid">
+              <div class="ios-admin-form-row">
+                <label>生效时间（可选）</label>
+                <input type="datetime-local" id="a_startAt" class="form-input">
+              </div>
+              <div class="ios-admin-form-row">
+                <label>结束时间（可选）</label>
+                <input type="datetime-local" id="a_endAt" class="form-input">
+              </div>
+            </div>
+            <div class="ios-admin-form-row ios-admin-check-row">
+              <label class="ios-admin-check-inline">
+                <input type="checkbox" id="a_enabled" checked> 启用
+              </label>
+              <label class="ios-admin-check-inline">
+                <input type="checkbox" id="a_once" checked> 只弹一次（已读后不再提示）
+              </label>
+            </div>
+            <div class="ios-admin-actions">
+              <button id="annCancelBtn" class="btn btn-ghost">取消</button>
+              <button id="annSaveBtn" class="btn btn-primary">💾 保存公告</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 反馈管理 -->
+      <section id="feedbackView" style="display:none">
+        <div class="ios-admin-toolbar">
+          <button id="fbLoadBtn" class="btn btn-outline">🔄 加载反馈</button>
+          <span id="fbStatus" class="ios-admin-toolbar-status"></span>
+        </div>
+        <div id="fbList" class="ios-admin-card-list"></div>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+<!-- 顶部浮窗提示 -->
+<div id="toast" class="ios-admin-toast"></div>
+
+<script>
+const TOKEN_KEY = 'cnkeide_admin_token';
+let token = localStorage.getItem(TOKEN_KEY) || '';
+let cfgApi = './api.php';
+let fbApi = '/feedback/api.php';
+let currentTab = 'config';
+let fbPolling = null;
+let editingId = null;
+
+const $ = (id) => document.getElementById(id);
+
+function toast(msg, isError) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.className = 'ios-admin-toast show' + (isError ? ' error' : '');
+  setTimeout(() => t.className = 'ios-admin-toast', 2500);
+}
+
+function setStatus(ok, text) {
+  $('statusDot').className = 'ios-admin-status-dot ' + (ok ? 'online' : 'offline');
+  $('statusText').textContent = text;
+  $('statusDot2').className = 'ios-admin-status-dot ' + (ok ? 'online' : 'offline');
+  $('statusText2').textContent = text;
+}
+
+function setTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll('.ios-admin-nav-item').forEach(t => {
+    t.classList.toggle('active', t.dataset.tab === tab);
+  });
+  const titles = { config: '内置 API 配置', announce: '远程公告', feedback: '反馈管理' };
+  $('pageTitle').textContent = titles[tab] || '管理后台';
+  $('configView').style.display    = tab === 'config'    ? 'block' : 'none';
+  $('announceView').style.display  = tab === 'announce'  ? 'block' : 'none';
+  $('annEditorView').style.display = 'none';
+  $('batchView').style.display     = 'none';
+  $('feedbackView').style.display  = tab === 'feedback'  ? 'block' : 'none';
+  if (tab === 'config')    { $('editorView').style.display = 'none'; loadConfig(); }
+  if (tab === 'announce' && token) loadAnnouncements();
+  if (tab === 'feedback' && token) { loadFeedback(); startPolling(); }
+  if (tab !== 'feedback') stopPolling();
+}
+
+function showLogin() {
+  $('loginView').style.display = 'block';
+  $('configView').style.display = 'none';
+  $('editorView').style.display = 'none';
+  $('announceView').style.display = 'none';
+  $('annEditorView').style.display = 'none';
+  $('batchView').style.display = 'none';
+  $('feedbackView').style.display = 'none';
+  document.querySelectorAll('.ios-admin-nav-item').forEach(t => t.classList.remove('active'));
+  $('logoutBtn').style.display = 'none';
+  stopPolling();
+}
+
+function showApp() {
+  $('loginView').style.display = 'none';
+  $('logoutBtn').style.display = 'inline-flex';
+  setTab(currentTab);
+}
+
+async function api(url, opts) {
+  const res = await fetch(url, opts);
+  return res.json();
+}
+
+// ---------- 登录 ----------
+async function doLogin() {
+  const user = $('userInput').value.trim();
+  const pass = $('passInput').value;
+  if (!user || !pass) { toast('请输入账号和密码', true); return; }
+  const btn = $('loginBtn');
+  btn.disabled = true;
+  btn.textContent = '登录中...';
+  try {
+    const d = await api(cfgApi + '?action=login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: user, password: pass }),
+    });
+    if (d.success && d.token) {
+      token = d.token;
+      localStorage.setItem(TOKEN_KEY, token);
+      showApp();
+    } else toast(d.error || '登录失败', true);
+  } catch (e) { toast('网络错误', true); }
+  btn.disabled = false;
+  btn.textContent = '登 录';
+}
+
+// ---------- 内置 API 列表 ----------
+async function loadConfig() {
+  if (!token) return;
+  setStatus(false, '加载中...');
+  try {
+    const d = await api(cfgApi + '?action=get&token=' + encodeURIComponent(token));
+    if (!d.success) {
+      if (d.error && String(d.error).includes('未授权')) { toast('登录已失效，请重新登录', true); handleUnauth(); return; }
+      setStatus(false, '加载失败');
+      return;
+    }
+    setStatus(true, '接口已连接 · ' + (d.builtins || []).length + ' 个内置 API');
+    bCache = d.builtins || [];
+    renderApiList(bCache);
+  } catch (e) { setStatus(false, '无法连接'); }
+}
+
+function renderApiList(builtins) {
+  const view = $('apiList');
+  if (!builtins.length) {
+    view.innerHTML = '<div class="ios-admin-empty">暂无内置 API，点击右上角"新增内置 API"开始</div>';
+    return;
+  }
+  let html = '';
+  builtins.forEach((it, idx) => {
+    const logo = pickLogo(it);
+    html += '<div class="ios-admin-api-item glass-card">';
+    html += '<div class="ios-admin-api-head">';
+    html += '<div class="ios-admin-api-logo" style="background:' + logo.bg + '">' + logo.svg + '</div>';
+    html += '<span class="ios-admin-api-name">' + esc(it.name) + '</span>';
+    html += '<span class="ios-admin-tag accent">' + (idx === 0 ? '默认' : '') + '</span>';
+    html += '<span class="ios-admin-spacer"></span>';
+    html += '<button class="btn btn-outline btn-sm" onclick="openEditor(\'' + esc(it.id) + '\')">✏️ 编辑</button>';
+    html += '<button class="btn btn-danger btn-sm" onclick="removeApi(\'' + esc(it.id) + '\')">🗑 删除</button>';
+    html += '</div>';
+    html += '<div class="ios-admin-api-meta">';
+    html += '<div><span class="ios-admin-meta-label">提供商</span><span class="ios-admin-meta-val">' + esc(logo.label) + '</span></div>';
+    html += '<div><span class="ios-admin-meta-label">模型</span><span class="ios-admin-meta-val mono">' + esc(it.model) + '</span></div>';
+    html += '<div><span class="ios-admin-meta-label">BaseURL</span><span class="ios-admin-meta-val mono">' + esc(it.baseUrl) + '</span></div>';
+    html += '</div>';
+    html += '</div>';
+  });
+  view.innerHTML = html;
+}
+
+/* ===== 官方厂商 Logo 映射 ===== */
+const LOGO_DEEPSEEK = '<svg viewBox="0 0 24 24" fill="none"><path d="M12 2C7 2 3 6 3 11c0 4 3 8 7 9v-2.5c-2.5-.7-4.3-3-4.3-5.7 0-3.3 2.7-6 6-6 1.7 0 3.2.7 4.3 1.8L14 10h7v-1c0-4-4-7-9-7z" fill="#fff"/></svg>';
+const LOGO_KIMI = '<svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" fill="#fff"/><circle cx="12" cy="12" r="4.5" fill="#1c1c1c"/><circle cx="12" cy="12" r="1.8" fill="#fff"/></svg>';
+const LOGO_GLM = '<svg viewBox="0 0 24 24" fill="none"><path d="M12 2l9 5.2v10.4L12 22.8 3 17.6V7.2L12 2z" fill="#fff"/><path d="M12 6.5l4.8 2.8v6l-4.8 2.8-4.8-2.8v-6L12 6.5z" fill="#3a78b8"/></svg>';
+const LOGO_QWEN = '<svg viewBox="0 0 24 24" fill="none"><path d="M3 12c0-5 4-9 9-9s9 4 9 9c0 3.5-2 6.5-5 8l-1-2c2-1 3-3.3 3-6 0-3.3-2.7-6-6-6s-6 2.7-6 6c0 2.7 1 5 3 6l-1 2c-3-1.5-5-4.5-5-8z" fill="#fff"/><circle cx="12" cy="12" r="3" fill="#fff"/></svg>';
+const LOGO_OPENAI = '<svg viewBox="0 0 24 24" fill="none"><path d="M22 14.4a5 5 0 0 0-7.6-6.4 5 5 0 0 0-9 3 5 5 0 0 0 1 9.4 5 5 0 0 0 7.6 1 5 5 0 0 0 8-7zM12 7.5l3.5 3.5L12 14.5 8.5 11 12 7.5z" fill="#fff"/></svg>';
+const LOGO_CLAUDE = '<circle cx="12" cy="12" r="10" fill="#fff"/><path d="M12 4l2.5 7.5h7.5L15.5 16l2 7L12 18l-5.5 5 2-7L3 11.5h7.5L12 4z" fill="#d97706"/>';
+const LOGO_GEMINI = '<svg viewBox="0 0 24 24" fill="none"><path d="M12 3l3 6 6 3-6 3-3 6-3-6-6-3 6-3 3-6z" fill="#fff"/></svg>';
+const LOGO_DOUBAO = '<svg viewBox="0 0 24 24" fill="none"><path d="M5 6c0-1.1.9-2 2-2h6c3.3 0 6 2.7 6 6s-2.7 6-6 6h-2v6l-6-6V6z" fill="#fff"/></svg>';
+const LOGO_HUNYUAN = '<svg viewBox="0 0 24 24" fill="none"><path d="M12 2c5 0 9 4 9 10s-4 10-9 10S3 18 3 12 7 2 12 2zm-3 7h6v3h-2v6h-2v-6H9V9z" fill="#fff"/></svg>';
+const LOGO_SPARK = '<svg viewBox="0 0 24 24" fill="none"><path d="M12 2l2 7h7l-6 4 2 7-5-4-5 4 2-7-6-4h7l2-7z" fill="#fff"/></svg>';
+const LOGO_BAIDU = '<svg viewBox="0 0 24 24" fill="none"><path d="M12 3c5 0 9 4 9 9 0 3-1.5 5.5-4 7l-1-2c1.5-1 2.5-2.7 2.5-5 0-3.6-3-6.5-6.5-6.5S5.5 8.4 5.5 12c0 2.3 1 4 2.5 5l-1 2c-2.5-1.5-4-4-4-7 0-5 4-9 9-9zm-2 5h4v3h-4V8zm0 4h4v3h-4v-3z" fill="#fff"/></svg>';
+const LOGO_CUSTOM = '<svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" fill="#fff"/><path d="M19 12a7 7 0 0 0-.2-1.7l2-1.6-2-3.4-2.4 1a7 7 0 0 0-2.9-1.7L13 2h-4l-.5 2.6a7 7 0 0 0-2.9 1.7l-2.4-1-2 3.4 2 1.6A7 7 0 0 0 3 12c0 .6.1 1.2.2 1.7l-2 1.6 2 3.4 2.4-1a7 7 0 0 0 2.9 1.7L9 22h4l.5-2.6a7 7 0 0 0 2.9-1.7l2.4 1 2-3.4-2-1.6c.1-.5.2-1.1.2-1.7z" stroke="#fff" stroke-width="1.5" fill="none"/></svg>';
+const LOGO_HY = '<svg viewBox="0 0 24 24" fill="none"><path d="M5 6h14v12H5z" fill="#fff" opacity=".3"/><text x="12" y="16" text-anchor="middle" fill="#fff" font-size="10" font-weight="700" font-family="Arial">H</text></svg>';
+const LOGO_MINIMAX = '<svg viewBox="0 0 24 24" fill="none"><path d="M12 2L4 7v10l8 5 8-5V7l-8-5z" fill="#fff"/><path d="M12 8l4 2.5v5L12 18l-4-2.5v-5L12 8z" fill="#1a8a4a"/></svg>';
+
+const MODEL_LOGOS = [
+  { match: /minimax/i,                label: 'MiniMax',           bg: 'linear-gradient(135deg,#ff6b35,#f7931e)', svg: LOGO_MINIMAX },
+  { match: /deepseek/i,               label: 'DeepSeek',          bg: 'linear-gradient(135deg,#1e40af,#3b82f6)', svg: LOGO_DEEPSEEK },
+  { match: /kimi|moonshot/i,          label: 'Moonshot Kimi',     bg: 'linear-gradient(135deg,#1c1c1c,#404040)', svg: LOGO_KIMI },
+  { match: /hy[\-_]?\d|hy\d/i,        label: 'Hunyuan',           bg: 'linear-gradient(135deg,#0052d9,#1f7fff)', svg: LOGO_HUNYUAN },
+  { match: /glm|chatglm|智谱|zhipu/i, label: '智谱 GLM',           bg: 'linear-gradient(135deg,#1d4ed8,#3b82f6)', svg: LOGO_GLM },
+  { match: /qwen|通义|tongyi/i,       label: '通义千问 Qwen',      bg: 'linear-gradient(135deg,#ff6a00,#ff9d3d)', svg: LOGO_QWEN },
+  { match: /doubao|字节|bytedance/i,  label: '豆包 Doubao',        bg: 'linear-gradient(135deg,#1e88e5,#42a5f5)', svg: LOGO_DOUBAO },
+  { match: /gpt|openai|o1|o3|o4/i,    label: 'OpenAI',            bg: 'linear-gradient(135deg,#10a37f,#1ec99c)', svg: LOGO_OPENAI },
+  { match: /claude|anthropic/i,       label: 'Anthropic Claude',  bg: 'linear-gradient(135deg,#d97706,#fb923c)', svg: LOGO_CLAUDE },
+  { match: /gemini/i,                 label: 'Google Gemini',     bg: 'linear-gradient(135deg,#4285f4,#34a853)', svg: LOGO_GEMINI },
+  { match: /spark|星火|讯飞|xfyun/i,  label: '讯飞星火 Spark',     bg: 'linear-gradient(135deg,#0ea5e9,#38bdf8)', svg: LOGO_SPARK },
+  { match: /文心|ernie|baidu/i,       label: '百度文心 ERNIE',     bg: 'linear-gradient(135deg,#dc2626,#ef4444)', svg: LOGO_BAIDU },
+];
+
+function pickLogo(item) {
+  const hay = ((item.name || '') + ' ' + (item.model || '') + ' ' + (item.provider || '')).toLowerCase();
+  for (const m of MODEL_LOGOS) {
+    if (m.match.test(hay)) return { label: m.label, bg: m.bg, svg: m.svg };
+  }
+  if ((item.provider || '').toLowerCase().includes('anthropic')) return { label: 'Anthropic', bg: 'linear-gradient(135deg,#d97706,#fb923c)', svg: LOGO_CLAUDE };
+  if ((item.provider || '').toLowerCase().includes('custom')) return { label: 'Custom', bg: 'linear-gradient(135deg,#64748b,#94a3b8)', svg: LOGO_CUSTOM };
+  return { label: 'AI 模型', bg: 'linear-gradient(135deg,#1080c8,#3a9ee0)', svg: LOGO_OPENAI };
+}
+
+// ---------- 新增 / 编辑 ----------
+function openEditor(id) {
+  editingId = id || null;
+  $('editorTitle').textContent = id ? '编辑内置 API' : '新增内置 API';
+  if (id) {
+    api(cfgApi + '?action=get&token=' + encodeURIComponent(token)).then(d => {
+      const it = (d.builtins || []).find(x => x.id === id);
+      if (it) fillEditor(it);
+    });
+  } else fillEditor({});
+  $('configView').style.display = 'none';
+  $('editorView').style.display = 'block';
+}
+
+function fillEditor(it) {
+  $('f_name').value = it.name || '';
+  $('f_provider').value = it.provider || 'openai_compatible';
+  $('f_model').value = it.model || '';
+  $('f_baseUrl').value = it.baseUrl || '';
+  $('f_apiKey').value = it.apiKey || '';
+  // 编辑态：apiKey 为掩码值，占位提示需重新输入才会更新
+  $('f_apiKey').placeholder = editingId ? '留空或保持掩码则不改动原 Key' : 'sk-...';
+  $('f_apiKey').type = editingId ? 'text' : 'password';
+}
+
+function closeEditor() {
+  editingId = null;
+  $('editorView').style.display = 'none';
+  $('configView').style.display = 'block';
+  loadConfig();
+}
+
+async function saveApi() {
+  const payload = {
+    name: $('f_name').value.trim(),
+    provider: $('f_provider').value,
+    model: $('f_model').value.trim(),
+    baseUrl: $('f_baseUrl').value.trim(),
+    apiKey: $('f_apiKey').value.trim(),
+  };
+  if (!payload.name || !payload.model || !payload.baseUrl || !payload.apiKey) {
+    toast('name、model、baseUrl、apiKey 不能为空', true);
+    return;
+  }
+  const action = editingId ? 'update' : 'add';
+  if (editingId) payload.id = editingId;
+  const btn = $('saveBtn');
+  btn.disabled = true;
+  btn.textContent = '保存中...';
+  try {
+    const d = await api(cfgApi + '?action=' + action + '&token=' + encodeURIComponent(token), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (d.success) { toast(editingId ? '更新成功' : '新增成功'); closeEditor(); }
+    else toast(d.error || '保存失败', true);
+  } catch (e) { toast('网络错误', true); }
+  btn.disabled = false;
+  btn.textContent = '💾 保存';
+}
+
+async function removeApi(id) {
+  if (!confirm('确认删除该内置 API？')) return;
+  try {
+    const d = await api(cfgApi + '?action=remove&token=' + encodeURIComponent(token), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: id }),
+    });
+    if (d.success) { toast('已删除'); loadConfig(); }
+    else toast(d.error || '删除失败', true);
+  } catch (e) { toast('网络错误', true); }
+}
+
+// ---------- 批量替换 BaseURL ----------
+let bCache = [];
+
+const MODE_HINT = {
+  replace: '把旧片段原样换成新片段。例：http://171.80.0.221:20598 → http://103.39.65.150:20598，尾部 /v1 自动保留。',
+  set:     '不看原值，把所有选中项的 BaseURL 直接设为下面填的新地址。适合整体切换出口。',
+  suffix:  '保留原主机名，把「旧片段」及其之后的内容替换成新值。例：from=http://a.com:1 会得到新值作为后缀。',
+};
+
+function openBatch() {
+  if (!bCache.length) { toast('暂无可操作的内置 API', true); return; }
+  $('b_mode').value = 'replace';
+  $('b_from').value = '';
+  $('b_to').value = '';
+  $('b_selectAll').checked = true;
+  $('batchPreview').innerHTML = '';
+  renderBatchScope();
+  renderFromSuggest();
+  syncBatchMode();
+  $('configView').style.display = 'none';
+  $('batchView').style.display = 'block';
+}
+
+function closeBatch() {
+  $('batchView').style.display = 'none';
+  $('configView').style.display = 'block';
+  loadConfig();
+}
+
+function renderFromSuggest() {
+  const hostSet = new Map();
+  bCache.forEach(it => {
+    const u = it.baseUrl || '';
+    const m = u.match(/^(https?:\/\/[^\/]+)/i);
+    if (m) hostSet.set(m[1], (hostSet.get(m[1]) || 0) + 1);
+  });
+  const box = $('b_fromSuggest');
+  if (!hostSet.size) { box.innerHTML = '<span class="form-hint">（无可用地址）</span>'; return; }
+  let html = '';
+  for (const [host, n] of hostSet) {
+    html += '<button type="button" class="btn btn-outline btn-sm" data-host="' + esc(host) + '">'
+          + esc(host) + ' <span class="ios-admin-mini-tag">×' + n + '</span></button>';
+  }
+  box.innerHTML = html;
+  box.querySelectorAll('button[data-host]').forEach(btn => {
+    btn.onclick = () => { $('b_from').value = btn.dataset.host; };
+  });
+}
+
+function renderBatchScope() {
+  const box = $('b_scopeList');
+  let html = '';
+  bCache.forEach((it, i) => {
+    html += '<label class="ios-admin-scope-row">';
+    html += '<input type="checkbox" class="b_pick" data-id="' + esc(it.id) + '" data-idx="' + i + '" checked>';
+    html += '<span class="ios-admin-scope-name">' + esc(it.name) + '</span>';
+    html += '<span class="ios-admin-scope-url">' + esc(it.baseUrl || '') + '</span>';
+    html += '</label>';
+  });
+  box.innerHTML = html;
+}
+
+function syncBatchMode() {
+  const mode = $('b_mode').value;
+  $('b_modeHint').textContent = MODE_HINT[mode] || '';
+  $('b_fromField').style.display = (mode === 'set') ? 'none' : 'block';
+  $('b_toLabel').textContent = (mode === 'set') ? '新地址（to，完整 URL）' : '新地址片段（to）';
+  $('b_toHint').textContent = (mode === 'set')
+    ? '例：http://103.39.65.150:20598/v1'
+    : '例：http://103.39.65.150:20598';
+}
+
+function pickedIds() {
+  return Array.from(document.querySelectorAll('.b_pick'))
+    .filter(c => c.checked)
+    .map(c => c.dataset.id);
+}
+
+function batchPayload(dryRun) {
+  const mode = $('b_mode').value;
+  const ids = pickedIds();
+  const body = { mode: mode, to: $('b_to').value.trim(), ids: ids, dryRun: !!dryRun };
+  if (mode !== 'set') body.from = $('b_from').value.trim();
+  return body;
+}
+
+function renderBatchPreview(d) {
+  const box = $('batchPreview');
+  if (!d.items || !d.items.length) {
+    box.innerHTML = '<div class="ios-admin-empty">没有匹配到需要替换的地址，请检查「旧地址片段」是否填写正确</div>';
+    return;
+  }
+  let html = '<div class="ios-admin-preview-summary">'
+           + '将变更 <b>' + d.changed + '</b> 项'
+           + (d.unaffected ? '，未受影响 ' + d.unaffected + ' 项' : '')
+           + '</div>';
+  d.items.forEach(it => {
+    html += '<div class="ios-admin-api-item glass-card">';
+    html += '<div class="ios-admin-api-name">' + esc(it.name) + '</div>';
+    html += '<div class="ios-admin-preview-row del">- ' + esc(it.oldBaseUrl) + '</div>';
+    html += '<div class="ios-admin-preview-row add">+ ' + esc(it.newBaseUrl) + '</div>';
+    html += '</div>';
+  });
+  box.innerHTML = html;
+}
+
+async function batchPreview() {
+  const body = batchPayload(true);
+  if (body.to === '') { toast('请填写新地址', true); return; }
+  if (body.mode !== 'set' && !body.from) { toast('请填写旧地址片段', true); return; }
+  if (!body.ids.length) { toast('请至少勾选一个内置 API', true); return; }
+  try {
+    const d = await api(cfgApi + '?action=replace_baseurl&token=' + encodeURIComponent(token), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (d.success) renderBatchPreview(d);
+    else toast(d.error || '预览失败', true);
+  } catch (e) { toast('网络错误', true); }
+}
+
+async function batchApply() {
+  const body = batchPayload(false);
+  if (body.to === '') { toast('请填写新地址', true); return; }
+  if (body.mode !== 'set' && !body.from) { toast('请填写旧地址片段', true); return; }
+  if (!body.ids.length) { toast('请至少勾选一个内置 API', true); return; }
+  if (!confirm('确认对 ' + body.ids.length + ' 个内置 API 执行 BaseURL 替换？此操作会立即生效。')) return;
+  const btn = $('batchApplyBtn');
+  btn.disabled = true;
+  btn.textContent = '替换中...';
+  try {
+    const d = await api(cfgApi + '?action=replace_baseurl&token=' + encodeURIComponent(token), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (d.success) {
+      renderBatchPreview(d);
+      toast('已替换 ' + d.changed + ' 项' + (d.unaffected ? '，跳过 ' + d.unaffected + ' 项' : ''));
+      bCache = [];
+      setTimeout(closeBatch, 900);
+    } else toast(d.error || '替换失败', true);
+  } catch (e) { toast('网络错误', true); }
+  btn.disabled = false;
+  btn.textContent = '✅ 确认替换';
+}
+
+// ---------- 远程公告管理 ----------
+let annEditingId = null;
+
+function dtToLocal(dt) {
+  if (!dt) return '';
+  return dt.replace(' ', 'T').slice(0, 16);
+}
+
+function localToDt(s) {
+  if (!s) return '';
+  return s.replace('T', ' ');
+}
+
+async function loadAnnouncements() {
+  if (!token) return;
+  $('annStatus').textContent = '加载中...';
+  try {
+    const d = await api(cfgApi + '?action=ann_list&token=' + encodeURIComponent(token));
+    if (!d.success) {
+      if (d.error && String(d.error).includes('未授权')) { toast('登录已失效，请重新登录', true); handleUnauth(); return; }
+      $('annStatus').textContent = d.error || '加载失败';
+      return;
+    }
+    $('annStatus').textContent = '共 ' + (d.announcements || []).length + ' 条公告';
+    renderAnnouncements(d.announcements || []);
+  } catch (e) { $('annStatus').textContent = '网络错误'; }
+}
+
+function annTypeBadge(type) {
+  const map = { info: 'ios-admin-tag info', warning: 'ios-admin-tag warn', urgent: 'ios-admin-tag danger' };
+  return '<span class="' + (map[type] || 'ios-admin-tag info') + '">' + esc(type || 'info') + '</span>';
+}
+
+function renderAnnouncements(list) {
+  const view = $('annList');
+  if (!list.length) { view.innerHTML = '<div class="ios-admin-empty">暂无公告，点击右上角新增</div>'; return; }
+  let html = '';
+  list.forEach(it => {
+    const ver = (it.minVersion || it.maxVersion) ? '≥' + (it.minVersion || '任意') + ' ~ <' + (it.maxVersion || '不限') : '全部';
+    html += '<div class="ios-admin-api-item glass-card">';
+    html += '<div class="ios-admin-api-head">';
+    html += annTypeBadge(it.type);
+    html += '<span class="ios-admin-api-name">' + esc(it.title) + '</span>';
+    html += '<span class="ios-admin-tag">' + esc(it.platform || 'all') + '</span>';
+    html += '<span class="ios-admin-tag">版本: ' + ver + '</span>';
+    html += '<span class="ios-admin-spacer"></span>';
+    html += '<span class="ios-admin-tag">' + (it.enabled ? '✅ 启用' : '⛔ 禁用') + '</span>';
+    html += '<button class="btn btn-outline btn-sm" onclick="annEdit(\'' + esc(it.id) + '\')">✏️ 编辑</button>';
+    html += '<button class="btn btn-danger btn-sm" onclick="annDelete(\'' + esc(it.id) + '\')">🗑 删除</button>';
+    html += '</div>';
+    html += '<div class="ios-admin-ann-meta">';
+    html += '<span>' + (it.startAt ? '起: ' + esc(it.startAt) : '') + (it.endAt ? ' 止: ' + esc(it.endAt) : '') + '</span>';
+    html += '<span>' + (it.once ? '只弹一次' : '每次弹') + '</span>';
+    html += '</div>';
+    html += '<div class="ios-admin-ann-content">' + esc(it.content) + '</div>';
+    html += '</div>';
+  });
+  view.innerHTML = html;
+}
+
+function annOpenEditor(item) {
+  annEditingId = item ? item.id : null;
+  $('annEditorTitle').textContent = item ? '编辑公告' : '新增公告';
+  $('a_title').value = item ? item.title || '' : '';
+  $('a_content').value = item ? item.content || '' : '';
+  $('a_type').value = item ? item.type || 'info' : 'info';
+  $('a_platform').value = item ? item.platform || 'all' : 'all';
+  $('a_minVersion').value = item ? item.minVersion || '' : '';
+  $('a_maxVersion').value = item ? item.maxVersion || '' : '';
+  $('a_startAt').value = dtToLocal(item ? item.startAt : '');
+  $('a_endAt').value = dtToLocal(item ? item.endAt : '');
+  $('a_enabled').checked = item ? !!item.enabled : true;
+  $('a_once').checked = item ? !!item.once : true;
+  $('announceView').style.display = 'none';
+  $('annEditorView').style.display = 'block';
+}
+
+function annCloseEditor() {
+  annEditingId = null;
+  $('annEditorView').style.display = 'none';
+  $('announceView').style.display = 'block';
+  loadAnnouncements();
+}
+
+async function annSave() {
+  const payload = {
+    id: annEditingId || '',
+    title: $('a_title').value.trim(),
+    content: $('a_content').value.trim(),
+    type: $('a_type').value,
+    platform: $('a_platform').value.trim() || 'all',
+    minVersion: $('a_minVersion').value.trim(),
+    maxVersion: $('a_maxVersion').value.trim(),
+    startAt: localToDt($('a_startAt').value),
+    endAt: localToDt($('a_endAt').value),
+    enabled: $('a_enabled').checked ? 1 : 0,
+    once: $('a_once').checked ? 1 : 0,
+  };
+  if (!payload.title || !payload.content) { toast('标题和内容不能为空', true); return; }
+  const btn = $('annSaveBtn');
+  btn.disabled = true;
+  btn.textContent = '保存中...';
+  try {
+    const d = await api(cfgApi + '?action=ann_save&token=' + encodeURIComponent(token), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (d.success) { toast(annEditingId ? '公告已更新' : '公告已新增'); annCloseEditor(); }
+    else toast(d.error || '保存失败', true);
+  } catch (e) { toast('网络错误', true); }
+  btn.disabled = false;
+  btn.textContent = '💾 保存公告';
+}
+
+function annEdit(id) {
+  api(cfgApi + '?action=ann_list&token=' + encodeURIComponent(token)).then(d => {
+    const it = (d.announcements || []).find(x => x.id === id);
+    if (it) annOpenEditor(it);
+  });
+}
+
+async function annDelete(id) {
+  if (!confirm('确认删除该公告？')) return;
+  try {
+    const d = await api(cfgApi + '?action=ann_delete&token=' + encodeURIComponent(token), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: id }),
+    });
+    if (d.success) { toast('已删除'); loadAnnouncements(); }
+    else toast(d.error || '删除失败', true);
+  } catch (e) { toast('网络错误', true); }
+}
+
+// ---------- 反馈管理 ----------
+function fmtTime(ms) {
+  if (!ms) return '';
+  const d = new Date(ms);
+  const pad = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+}
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+async function loadFeedback() {
+  if (!token) return;
+  $('fbStatus').textContent = '加载中...';
+  try {
+    const d = await api(fbApi + '?action=admin_list&token=' + encodeURIComponent(token));
+    if (!d.success) {
+      if (d.error && String(d.error).includes('未授权')) {
+        // 后台登录态过期（token 24h）：直接回登录页，而不是留一句"鉴权失败"让人猜
+        $('fbStatus').textContent = '登录已失效';
+        toast('登录已失效，请重新登录', true);
+        handleUnauth();
+        return;
+      }
+      $('fbStatus').textContent = d.error || '加载失败';
+      return;
+    }
+    $('fbStatus').textContent = '';
+    renderFeedback(d.devices || []);
+    loadFbCount();
+  } catch (e) { $('fbStatus').textContent = '网络错误'; }
+}
+
+async function loadFbCount() {
+  if (!token) return;
+  try {
+    const d = await api(fbApi + '?action=admin_count&token=' + encodeURIComponent(token));
+    const n = d.unread || 0;
+    const badge = $('fbBadge');
+    if (n > 0) { badge.style.display = 'inline-flex'; badge.textContent = n; }
+    else badge.style.display = 'none';
+  } catch (e) {}
+}
+
+function renderFeedback(devices) {
+  const view = $('fbList');
+  if (!devices.length) { view.innerHTML = '<div class="ios-admin-empty">暂无反馈</div>'; return; }
+  let html = '';
+  devices.forEach(dev => {
+    const hasUnread = (dev.items || []).some(it => !it.replies || it.replies.length === 0);
+    html += '<div class="glass-card ios-admin-device-card ' + (hasUnread ? 'unread' : '') + '">';
+    html += '<div class="ios-admin-device-head"><span class="ios-admin-device-name">📱 ' + esc(dev.device) + '</span><span class="ios-admin-device-count">' + (dev.items || []).length + ' 条</span></div>';
+    (dev.items || []).forEach(it => {
+      html += '<div class="ios-admin-fb-item">';
+      html += '<div class="ios-admin-fb-msg">' + esc(it.msg) + '</div>';
+      html += '<div class="ios-admin-fb-meta">';
+      html += '<span>' + fmtTime(it.time) + '</span>';
+      if (it.contact) html += '<span>联系方式: ' + esc(it.contact) + '</span>';
+      if (it.version) html += '<span>版本: ' + esc(it.version) + '</span>';
+      if (it.replies && it.replies.length === 0) html += '<span class="ios-admin-tag danger">未回复</span>';
+      html += '</div>';
+      (it.replies || []).forEach(r => {
+        html += '<div class="ios-admin-fb-reply">↪ ' + esc(r.content) + ' <span class="time">(' + fmtTime(r.time) + ')</span></div>';
+      });
+      html += '<div class="ios-admin-fb-reply-form">';
+      html += '<input id="reply_' + esc(dev.device) + '_' + esc(it.id) + '" class="form-input" placeholder="输入回复...">';
+      html += '<button class="btn btn-primary btn-sm" onclick="replyFb(\'' + esc(dev.device) + '\',\'' + esc(it.id) + '\')">回复</button>';
+      html += '</div>';
+      html += '</div>';
+    });
+    html += '</div>';
+  });
+  view.innerHTML = html;
+}
+
+async function replyFb(device, msgId) {
+  if (!token) return;
+  const input = document.getElementById('reply_' + device + '_' + msgId);
+  const content = input.value.trim();
+  if (!content) return;
+  const fd = new FormData();
+  fd.append('action', 'reply');
+  fd.append('token', token);
+  fd.append('device', device);
+  fd.append('msg_id', msgId);
+  fd.append('content', content);
+  try {
+    const d = await api(fbApi, { method: 'POST', body: fd });
+    if (d.success) { toast('回复成功'); loadFeedback(); }
+    else toast(d.error || '回复失败', true);
+  } catch (e) { toast('网络错误', true); }
+}
+
+function startPolling() {
+  stopPolling();
+  fbPolling = setInterval(() => {
+    if (currentTab === 'feedback' && token) loadFeedback();
+  }, 5000);
+}
+function stopPolling() {
+  if (fbPolling) { clearInterval(fbPolling); fbPolling = null; }
+}
+
+function handleUnauth() {
+  localStorage.removeItem(TOKEN_KEY);
+  token = '';
+  showLogin();
+}
+
+// ---------- 初始化 ----------
+function init() {
+  if (token) showApp();
+
+  $('loginBtn').onclick = doLogin;
+  $('passInput').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+
+  $('logoutBtn').onclick = () => {
+    localStorage.removeItem(TOKEN_KEY);
+    token = '';
+    showLogin();
+  };
+
+  $('refreshBtn').onclick = () => {
+    if (currentTab === 'config') loadConfig();
+    if (currentTab === 'announce') loadAnnouncements();
+    if (currentTab === 'feedback') loadFeedback();
+  };
+
+  $('addApiBtn').onclick = () => openEditor(null);
+  $('cancelEditBtn').onclick = closeEditor;
+  $('saveBtn').onclick = saveApi;
+
+  $('batchBaseUrlBtn').onclick = openBatch;
+  $('batchCancelBtn').onclick = closeBatch;
+  $('batchPreviewBtn').onclick = batchPreview;
+  $('batchApplyBtn').onclick = batchApply;
+  $('b_mode').onchange = syncBatchMode;
+  $('b_selectAll').onchange = () => {
+    document.querySelectorAll('.b_pick').forEach(c => { c.checked = $('b_selectAll').checked; });
+  };
+  $('b_from').addEventListener('input', () => { $('batchPreview').innerHTML = ''; });
+  $('b_to').addEventListener('input', () => { $('batchPreview').innerHTML = ''; });
+  $('annNewBtn').onclick = () => annOpenEditor(null);
+  $('annCancelBtn').onclick = annCloseEditor;
+  $('annSaveBtn').onclick = annSave;
+  $('fbLoadBtn').onclick = loadFeedback;
+
+  $('toggleKeyBtn').onclick = () => {
+    const inp = $('f_apiKey');
+    inp.type = inp.type === 'password' ? 'text' : 'password';
+  };
+
+  document.querySelectorAll('.ios-admin-nav-item').forEach(t => {
+    t.onclick = (e) => { e.preventDefault(); setTab(t.dataset.tab); };
+  });
+}
+
+init();
+</script>
+</body>
+</html>

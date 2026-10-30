@@ -251,19 +251,22 @@ function findNodeByNormalizedPath(nodes: FileNode[], normPath: string): FileNode
 // 只在模块加载时订阅一次；变更按目录聚合后只刷新受影响的目录，
 // 避免整树重载带来的视图跳动与性能损耗。
 let watcherBound = false;
+/** 常驻监听器的注销句柄：只在应用退出 / 显式解绑时使用 */
+let watcherDispose: (() => void) | null = null;
 
 /** 绑定工作区文件监听：由 AppProvider 在工作区就绪后调用 */
 export function bindWorkspaceWatcher(rootPath: string): () => void {
-  if (watcherBound) {
-    // 已绑定则仅切换主进程监听根目录
-    void window.cnke.fs.watchWorkspace(rootPath);
-    return () => {};
-  }
-  watcherBound = true;
-
+  // 每次调用都让主进程把监听根目录切到当前工作区
   void window.cnke.fs.watchWorkspace(rootPath);
 
-  const dispose = window.cnke.fs.onChanged(async (payload) => {
+  // 监听器是模块级单例，切换工作区时只需要换主进程的监听根目录。
+  // 这里必须返回空清理函数：上一版首次返回了真正的 dispose，
+  // AppProvider 的 effect 在 workspacePath 变化时执行旧 cleanup 会把监听器摘掉，
+  // 表现为「换过一次工作区之后文件树再也不自动刷新」（任务改名后就踩到了）。
+  if (watcherBound) return () => {};
+  watcherBound = true;
+
+  watcherDispose = window.cnke.fs.onChanged(async (payload) => {
     const state = useFileStore.getState();
     const root = state.rootPath;
     if (!root || !payload?.changes?.length) return;
@@ -295,11 +298,14 @@ export function bindWorkspaceWatcher(rootPath: string): () => void {
     }
   });
 
-  return dispose;
+  // 不返回真实 dispose：见函数开头说明（cleanup 会摘掉常驻监听器）
+  return () => {};
 }
 
-/** 解绑（切换工作区时调用） */
+/** 解绑（应用退出时调用；切换工作区不需要解绑，换监听根目录即可） */
 export function unbindWorkspaceWatcher(): void {
+  watcherDispose?.();
+  watcherDispose = null;
   watcherBound = false;
   void window.cnke.fs.unwatchWorkspace();
 }

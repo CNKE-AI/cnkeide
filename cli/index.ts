@@ -57,6 +57,8 @@ interface CliOptions {
   approvePolicy: HeadlessApprovalPolicy;
   allowTools: string[];
   allowCommandPatterns: string[];
+  /** 执行权限档位：read-only | standard | full-access（覆盖配置文件里的 permissionMode） */
+  permissionMode?: 'read-only' | 'standard' | 'full-access';
   json: boolean;
   finalOnly: boolean;
   noPersist: boolean;
@@ -87,6 +89,7 @@ const HELP = `CnkeIDE CLI ${VERSION}
 
 权限（默认 untrusted：只读自动放行，写入与命令需显式授权）
       --approve-policy <p>   never | untrusted | on-request
+      --permission <mode>    read-only | standard | full-access（只读档会拦掉写文件/执行命令）
       --allow-tool <name>    额外允许的工具，可重复或逗号分隔
       --allow-command-pattern <regex>  允许执行的命令正则，可重复
 
@@ -196,6 +199,20 @@ function parseArgs(argv: string[]): CliOptions {
       case '--allow-command-pattern':
         opts.allowCommandPatterns.push(next());
         break;
+      case '--permission': {
+        const value = next().toLowerCase();
+        const map: Record<string, 'read-only' | 'standard' | 'full-access'> = {
+          'read-only': 'read-only',
+          readonly: 'read-only',
+          standard: 'standard',
+          'full-access': 'full-access',
+          full: 'full-access',
+        };
+        const mode = map[value];
+        if (!mode) throw new UsageError(`未知权限档位 ${value}，可选 read-only | standard | full-access`);
+        opts.permissionMode = mode;
+        break;
+      }
       case '--json':
         opts.json = true;
         break;
@@ -298,6 +315,7 @@ async function main(): Promise<number> {
       approvalPolicy: opts.approvePolicy,
       allowTools: opts.allowTools,
       allowCommandPatterns: opts.allowCommandPatterns,
+      permissionMode: opts.permissionMode,
       enableMcp: opts.mcp,
       enableMemory: !opts.noMemory,
       log: opts.verbose ? (message, level) => log(message, level) : undefined,

@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { AppProvider } from './store/AppProvider';
 import MainLayout from './components/MainLayout';
 import ToastHost from './components/chat/ToastHost';
-import { useThemeStore } from './store/themeStore';
+import { applyTheme, useThemeStore } from './store/themeStore';
 import { X, Sparkles } from 'lucide-react';
 
 /** 更新公告弹窗：启动时检测是否刚完成更新，若是则弹出 releasenotes 内容 */
@@ -81,12 +81,7 @@ const App: React.FC = () => {
   const theme = useThemeStore((s) => s.theme);
 
   useEffect(() => {
-    const root = document.documentElement;
-    if (theme === 'light') {
-      root.classList.add('light');
-    } else {
-      root.classList.remove('light');
-    }
+    applyTheme(theme);
   }, [theme]);
 
   return (

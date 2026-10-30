@@ -40,6 +40,7 @@ TEXT=$(cnkeide -p "总结这次改动" --final-only)
 | `--max-turns <n>` | Agent 最大轮次 |
 | `--timeout <sec>` | 整体超时，超时触发 `abort` 并以 124 退出 |
 | `--approve-policy <p>` | `never` / `untrusted`（默认）/ `on-request` |
+| `--permission <mode>` | 权限档位：`read-only` / `standard` / `full-access`（只读档连 `--approve-policy never` 也拦写操作） |
 | `--allow-tool <name>` | 额外放行的工具，可重复或逗号分隔，`*` 表示全部 |
 | `--allow-command-pattern <re>` | `execute_command` 允许的命令正则，可重复 |
 | `--json` | NDJSON 事件流（每行一个 JSON 对象） |
@@ -76,6 +77,19 @@ TEXT=$(cnkeide -p "总结这次改动" --final-only)
 - 被拒时不会落盘，工具结果返回「已拒绝」，Agent 会拿到该结果继续推理。
 
 只读白名单见 `electron/headless/bootstrap.ts` 的 `READ_ONLY_TOOLS`。
+
+### 权限档位（`--permission`）
+
+档位在内核侧（`electron/core-fork/checkpoint/PermissionTier.ts`）先于审批裁决，优先级：
+用户 `deny` 规则 > 档位硬拦 > 用户 `allow` 规则 > 档位默认。
+
+| 档位 | 读 / 联网读 | 写文件 | 删除/重命名 | 执行命令 / git 提交 / MCP |
+| --- | --- | --- | --- | --- |
+| `read-only` | 放行 | 拦截 | 拦截 | 拦截（命令白名单命中除外） |
+| `standard`（默认） | 放行 | 放行 | 询问 | 询问 |
+| `full-access` | 放行 | 放行 | 放行 | 放行（等价自动放行，无需再叠 `--approve-policy never`） |
+
+`read-only` 的拦截不受 `--approve-policy never` 影响——它就是要保证"这次只许看"。
 
 > GUI 不注入裁决器，行为与之前完全一致（仍走弹窗 + 60s 超时）。
 

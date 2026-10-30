@@ -10,12 +10,18 @@ import EditorPanel from './editor/EditorPanel';
 import TerminalPanel from './editor/TerminalPanel';
 import PreviewPanel from './preview/PreviewPanel';
 import SettingsSheet from './SettingsSheet';
+import StatsPage from './stats/StatsPage';
 import AnnouncementCenter from './backend/AnnouncementCenter';
-import { Code2, TerminalSquare, FolderTree, X, MessageCircle, Monitor } from 'lucide-react';
+import GlobalSearch, { OPEN_GLOBAL_SEARCH_EVENT } from './search/GlobalSearch';
+import { Code2, TerminalSquare, FolderTree, X, MessageCircle, Monitor, Search } from 'lucide-react';
 
-/** 面板拖拽分隔条统一样式：加宽命中区 + 悬停/拖拽高亮 */
-const RESIZE_HANDLE_H = 'h-1 bg-border/60 hover:bg-primary/60 active:bg-primary transition-colors';
-const RESIZE_HANDLE_W = 'w-1 bg-border/60 hover:bg-primary/60 active:bg-primary transition-colors';
+/**
+ * 面板拖拽分隔条统一样式。
+ * 视觉上完全隐形（透明背景），只靠 index.css 里的 ::after 光带在 hover/拖拽时浮现，
+ * 命中区仍然保留 8px，符合 iOS "无边框、靠浮起分层"的表达方式。
+ */
+const RESIZE_HANDLE_H = 'h-2 bg-transparent';
+const RESIZE_HANDLE_W = 'w-2 bg-transparent';
 
 /** 折叠窄条的单条宽度（与合并后的容器宽度保持一致，避免视觉错位） */
 const COLLAPSED_BAR_W = 32;
@@ -45,7 +51,7 @@ interface CollapsedItem {
  * 避免出现多条并排的窄条把主区域挤得又碎又窄。
  */
 const MainLayout: React.FC = () => {
-  const { settingsOpen } = useApp();
+  const { settingsOpen, activePage, setActivePage } = useApp();
   const { chatVisible, editorVisible, previewVisible, terminalVisible, explorerVisible, setPanelVisible } = useLayoutStore();
 
   // 应用启动时自动同步官方内置模型到「我的 API 配置」；用户自定义添加的配置不受影响
@@ -130,28 +136,32 @@ const MainLayout: React.FC = () => {
   const hasVisiblePanel = chatVisible || editorVisible || previewVisible || terminalVisible || explorerVisible;
 
   return (
-    <div className="flex flex-col h-screen w-screen overflow-hidden bg-background text-foreground">
+    <div className="app-shell relative flex flex-col h-screen w-screen overflow-hidden bg-background text-foreground">
+      {/* 环境光：让上层毛玻璃面板透出颜色，是半透明质感成立的前提 */}
+      <div className="app-ambient" aria-hidden="true">
+        <div className="app-ambient__glow" />
+      </div>
       <TitleBar />
-      <div className="flex-1 overflow-hidden">
-        <PanelGroup direction="horizontal">
+      {/* relative：统计看板作为内容区的浮层挂在这里，天然避开标题栏的拖拽区 */}
+      <div className="relative flex-1 overflow-hidden">
+        <PanelGroup direction="horizontal" className="h-full p-1.5 gap-0">
           {/* 最左：AI 对话 */}
           {chatVisible && (
             <>
               <Panel defaultSize={50} minSize={25}>
-                <div className="flex flex-col h-full">
+                <div className="panel-card flex flex-col h-full">
                   {/* 头部：标题 + 隐藏按钮（与其他面板一致） */}
                   <div className="panel-header shrink-0">
-                    <span className="flex items-center gap-1.5 text-[11px] text-foreground/80 font-medium">
-                      <MessageCircle className="w-3 h-3 text-primary" />
+                    <span className="panel-header__title">
+                      <MessageCircle className="w-3.5 h-3.5 text-primary" />
                       对话
                     </span>
                     <button
                       onClick={() => setPanelVisible('chat', false)}
-                      className="p-1 rounded hover:bg-muted-foreground/20 text-muted-foreground hover:text-foreground transition-colors"
                       title="隐藏对话"
                       aria-label="隐藏对话"
                     >
-                      <X className="w-3 h-3" />
+                      <X className="w-3.5 h-3.5" />
                     </button>
                   </div>
                   <div className="flex-1 overflow-hidden">
@@ -166,7 +176,7 @@ const MainLayout: React.FC = () => {
           {/* 中间：编辑区（编辑器 + 预览 + 终端） */}
           {(editorVisible || previewVisible || terminalVisible) && (
             <Panel defaultSize={40} minSize={20}>
-              <div className="flex flex-col h-full">{editorArea}</div>
+              <div className="panel-card flex flex-col h-full">{editorArea}</div>
             </Panel>
           )}
 
@@ -175,21 +185,30 @@ const MainLayout: React.FC = () => {
             <>
               <PanelResizeHandle className={RESIZE_HANDLE_W} />
               <Panel defaultSize={16} minSize={8}>
-                <div className="flex flex-col h-full">
+                <div className="panel-card flex flex-col h-full">
                   {/* 顶部标签栏：标题 + 关闭按钮 */}
                   <div className="panel-header shrink-0">
-                    <div className="flex items-center gap-1.5 text-[11px] text-foreground/80 font-medium">
-                      <FolderTree className="w-3 h-3 text-amber-400" />
+                    <div className="panel-header__title">
+                      <FolderTree className="w-3.5 h-3.5 text-amber-400" />
                       资源管理器
                     </div>
-                    <button
-                      onClick={() => setPanelVisible('explorer', false)}
-                      className="p-1 rounded hover:bg-muted-foreground/20 text-muted-foreground hover:text-foreground transition-colors"
-                      title="隐藏资源管理器"
-                      aria-label="隐藏资源管理器"
-                    >
-                      <X className="w-3 h-3" />
-                    </button>
+                    <div className="flex items-center gap-0.5">
+                      {/* 全文搜索入口：快捷键之外给个可点的入口，否则新用户发现不了 */}
+                      <button
+                        onClick={() => window.dispatchEvent(new Event(OPEN_GLOBAL_SEARCH_EVENT))}
+                        title="在工作区中搜索内容 (Ctrl+Shift+F)"
+                        aria-label="全文搜索"
+                      >
+                        <Search className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={() => setPanelVisible('explorer', false)}
+                        title="隐藏资源管理器"
+                        aria-label="隐藏资源管理器"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
                   <div className="flex-1 overflow-hidden">
                     <FileTree />
@@ -213,8 +232,12 @@ const MainLayout: React.FC = () => {
             />
           )}
         </PanelGroup>
+        {/* 历史统计看板：整页浮层，覆盖主布局但保留标题栏入口 */}
+        {activePage === 'stats' && <StatsPage onClose={() => setActivePage('ide')} />}
       </div>
       {settingsOpen && <SettingsSheet />}
+      {/* 全文搜索：自带快捷键与开关状态，常驻挂载、关闭时不渲染任何 DOM */}
+      <GlobalSearch />
       <AnnouncementCenter />
     </div>
   );
@@ -235,10 +258,10 @@ const CollapsedBar: React.FC<{
   bordered: boolean;
 }> = ({ items, onClick, bordered }) => (
   <div
-    className={`shrink-0 flex flex-col items-center gap-1 py-2 overflow-y-auto bg-secondary/20 ${
-      bordered ? 'border-l border-border' : ''
+    className={`shrink-0 flex flex-col items-center gap-1.5 py-2 overflow-y-auto glass-panel-flat ${
+      bordered ? 'ml-1.5' : ''
     }`}
-    style={{ width: COLLAPSED_BAR_W }}
+    style={{ width: COLLAPSED_BAR_W, borderRadius: 14 }}
     role="toolbar"
     aria-label="已隐藏的面板"
   >
@@ -246,13 +269,13 @@ const CollapsedBar: React.FC<{
       <button
         key={item.key}
         onClick={() => onClick(item.key)}
-        className="group relative flex items-center justify-center w-6 h-6 rounded-md text-muted-foreground hover:bg-accent/60 hover:text-foreground transition-colors shrink-0"
+        className="group relative flex items-center justify-center w-6 h-6 rounded-[9px] text-muted-foreground ios-press hover:bg-white/10 hover:text-foreground shrink-0"
         title={item.title}
         aria-label={item.title}
       >
         {item.icon}
         {/* 悬浮标签：折叠条很窄，用绝对定位浮层展示完整名称 */}
-        <span className="pointer-events-none absolute left-full ml-2 z-50 hidden group-hover:block whitespace-nowrap rounded-md border border-border bg-popover px-2 py-1 text-[11px] text-popover-foreground shadow-md">
+        <span className="pointer-events-none absolute left-full ml-2.5 z-50 hidden group-hover:block whitespace-nowrap rounded-lg border border-hairline bg-popover/95 px-2.5 py-1 text-[11px] text-popover-foreground shadow-float backdrop-blur-glass">
           {item.label}
         </span>
       </button>

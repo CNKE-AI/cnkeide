@@ -56,7 +56,7 @@
 
 公共提示词含**结构化 Markdown 排版规范**（标题层级、列表缩进、表格列数、行内代码等 21 条），保证渲染稳定。
 
-## 4. 内置工具集（39 个）
+## 4. 内置工具集（46 个）
 
 注册于 `electron/core-fork/tools/ToolManager.ts`；MCP 动态工具运行时追加。
 
@@ -88,7 +88,7 @@
 
 `project_structure`：生成项目结构视图，供模型建立全局认知。
 
-### 4.4 Git（4）
+### 4.4 Git（9）
 
 | 工具 | 作用 |
 | --- | --- |
@@ -96,18 +96,25 @@
 | `git_diff` | 差异（带体积上限） |
 | `git_log` | 提交历史 |
 | `git_commit` | 提交（支持 `addAll`、作者） |
+| `git_branch` | 分支管理（list / create / delete / rename，可顺带 checkout） |
+| `git_checkout` | 切换分支或提交（支持 `create` + `startPoint`、`force`） |
+| `git_fetch` | 拉取远端引用（默认 `--prune`） |
+| `git_pull` | 拉取并合并（默认 `--ff-only`，分叉时报错并提示可改 rebase） |
+| `git_push` | 推送（从不 force；`main`/`master` 需显式 `allowProtected`，支持 `-u` 与 `--tags`） |
 
-### 4.5 执行与验证（2）
+### 4.5 执行与验证（3）
 
 | 工具 | 作用 |
 | --- | --- |
 | `execute_command` | 执行 Shell 命令（可指定 cwd、超时、可中止） |
-| `run_tests` | 自动识别测试框架并运行（npm/yarn/pnpm/pytest/go/cargo/make） |
+| `run_tests` | 自动识别测试框架并运行（npm/yarn/pnpm/pytest/go/cargo/make）；**失败时保留完整输出** |
+| `auto_fix_tests` | 测试自愈循环：跑测试 → 结构化解析失败 → 子 Agent 修代码 → 再跑，直到全绿 / 到轮数上限 / 无进展 |
 
-### 4.6 任务计划（5）
+### 4.6 任务计划与委派（6）
 
 | 工具 | 作用 |
 | --- | --- |
+| `delegate_subagent` | 委派子 Agent（general-purpose / explore，explore 强制只读白名单） |
 | `create_plan` | 创建计划 |
 | `update_plan_status` | 推进/更新步骤状态 |
 | `add_plan_item` | 追加步骤 |
@@ -170,7 +177,9 @@
 
 - **多提供商配置**：OpenAI 兼容协议；预设 AI Platform、DeepSeek、通义千问、智谱 GLM、Claude、Ollama、自定义中转。
 - **能力矩阵**：`ProviderCapabilities` 描述 function calling / vision / reasoning / streaming、上下文窗口、档位（flagship / standard / fast / reasoning），覆盖 17+ 模型。
-- **路由**：`ModelRouter` 三层决策 + 任务类型识别（vision / reasoning / plan / code / summarize / chat）。
+- **路由**：`ModelRouter` 四层决策 + 任务类型识别（vision / reasoning / plan / code / summarize / chat）。
+- **模型 AUTO（W28）**：模型下拉首项 `AUTO`，按任务自动升降档；**候选池仅内置 API**（`official_` 前缀或 `builtin` 标记），用户自定义配置只能手动选用、永不参与自动路由，无内置模型时沿用当前模型并提示；能力硬约束先过滤（带图只发 vision 模型，`@` 到不满足能力的模型会被拦截并改由路由选择）、重工具链（≥3 条工具结果）直上旗舰档、推理强弱信号分级防误判；首轮决策写入本次 run 的应答配置，多轮不漂移；每次决策通过 `model_routed` 事件回传界面，展示本轮模型与理由；`modelSelectionMode=manual` 时行为与固定模型完全一致。
+- **AUTO 路由设置（W28 P1）**：设置 → Agent 页提供「任务 → 模型映射」（日常问答 / 编码任务 / 推理分析 / 图片理解 / 规划任务 / 总结摘要），候选项只列内置模型，留空即跟随自动选档；写入 `agentConfig.routing`，保存时只保留合法任务键，脏键不会落盘。
 - **别名与提及**：`resolveModelAlias` 模糊匹配、`extractModelMention` 解析 `@模型`。
 - **参数可调**：温度、topP、`maxTurns`、历史条数、系统提示词覆盖。
 - **用量回传**：usage 解析后计入上下文追踪与消息底部统计。
@@ -416,7 +425,7 @@
 
 - 类型检查：`tsc -p electron/tsconfig.json --noEmit`、`tsc -p renderer/tsconfig.json --noEmit`。
 - 提交前：`npm run build`（tsc + vite build）。
-- 回归：`scripts/run_all_w1_w16.ps1` 汇总 W1–W16 阶段单测（LLM 容错、并行调度、计划、工具、语义检索、路由、审批、压缩与子代理、加固、RAG、上下文、浏览器与图片、更新器等），累计 400+ 断言。
+- 回归：`scripts/run_all_w1_w16.ps1` 汇总 W1–W16 阶段单测（LLM 容错、并行调度、计划、工具、语义检索、路由、审批、压缩与子代理、加固、RAG、上下文、浏览器与图片、更新器等）；W18–W28 另有独立脚本（历史统计、任务工作区、报告导出、任务管理、内容检索、项目指令、权限档位、git 写操作、测试自愈循环、模型 AUTO 路由、AUTO 界面验收）。
 - Lint：ESLint 9（`typescript-eslint` + `react-hooks`）。
 
 ## 23. 已知边界与未实现项
@@ -425,11 +434,9 @@
 
 | 优先级 | 缺失项 | 说明 |
 | --- | --- | --- |
-| P0 | **执行沙箱与权限档位** | `execute_command` 直接执行，无路径/命令/网络隔离；仅有工具级审批，缺少 read-only / auto / full-access 会话档位与域名白名单 |
-| P0 | **仓库级指令文件** | 不支持 `AGENTS.md` 一类按目录层级加载的项目约定，规则只能进全局记忆或技能 |
-| P0 | **Git 写操作闭环** | 只有 status/diff/log/commit，缺 branch / checkout / push / PR 创建 |
-| P0 | **非交互（headless）执行** | 无独立 CLI 入口，无法接入 CI / 定时任务 |
 | P1 | **并行任务隔离** | 无 git worktree 级隔离，多会话并行改同一仓库会互相覆盖 |
+| P1 | **代码托管平台集成** | git 写操作已闭环（branch / checkout / fetch / pull / push），但未对接 GitHub / GitLab API：不能自动建 PR、读 CI 状态、处理评审意见 |
+| P1 | **合并冲突处理** | `git_pull` 默认 `--ff-only`，遇到真实冲突不自动解决，只返回提示让人决策 |
 | P1 | **结构化代码审查** | 无 `/review` 式分支级审查面板（可用 checkpoint diff 复用实现） |
 | P1 | **推理强度开关** | 可选模型但未暴露 reasoning effort |
 | P1 | **成本与限额** | 有 token 统计，缺费用累计与超限告警 |

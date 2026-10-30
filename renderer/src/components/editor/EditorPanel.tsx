@@ -23,7 +23,7 @@ import { cpp } from '@codemirror/lang-cpp';
 import { php } from '@codemirror/lang-php';
 import { yaml } from '@codemirror/lang-yaml';
 import { useEditorStore } from '../../store/editorStore';
-import { useAgentActivityStore } from '../../store/agentActivityStore';
+import { useAgentActivityStore, toolLabel } from '../../store/agentActivityStore';
 import { useUiStore } from '../../store/uiStore';
 import { useLayoutStore } from '../../store/layoutStore';
 import { inlineCompletion, inlineSuggestionTheme } from './inlineCompletion';
@@ -169,9 +169,86 @@ const lightHighlightStyle = HighlightStyle.define([
   { tag: t.invalid, color: '#b31d28' },
 ]);
 
+const auroraEditorTheme = EditorView.theme({
+  '&': { backgroundColor: '#0e1923', color: '#e5f0f0', height: '100%', fontSize: '12px' },
+  '.cm-content': { fontFamily: "'JetBrains Mono', 'Cascadia Code', 'Consolas', monospace", caretColor: '#5eead4' },
+  '.cm-gutters': { backgroundColor: '#0e1923', color: '#8aa5b8', border: 'none' },
+  '.cm-activeLine': { backgroundColor: '#5eead40a' },
+  '.cm-activeLineGutter': { backgroundColor: '#5eead414', color: '#5eead4' },
+  '.cm-selectionMatch': { backgroundColor: '#5eead426' },
+  '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection': { backgroundColor: '#274952' },
+  '&.cm-focused .cm-cursor, .cm-cursor': { borderLeftColor: '#5eead4' },
+  '.cm-matchingBracket': { color: '#99f6e4', backgroundColor: '#5eead41a' },
+  '.cm-foldPlaceholder': { backgroundColor: '#203343', color: '#a3bccb', border: '1px solid #365060' },
+  '.cm-tooltip, .cm-panels': { backgroundColor: '#1b2b38', color: '#e5f0f0', border: '1px solid #365060' },
+  '.cm-tooltip-autocomplete > ul > li[aria-selected]': { backgroundColor: '#274952', color: '#99f6e4' },
+  '.cm-searchMatch': { backgroundColor: '#fbbf2433' },
+  '.cm-searchMatch.cm-searchMatch-selected': { backgroundColor: '#fbbf2466' },
+}, { dark: true });
+
+const auroraHighlightStyle = HighlightStyle.define([
+  { tag: t.keyword, color: '#7dd3fc' },
+  { tag: [t.function(t.variableName), t.labelName], color: '#5eead4' },
+  { tag: [t.string, t.inserted], color: '#a7f3d0' },
+  { tag: [t.number, t.bool, t.atom], color: '#fcd34d' },
+  { tag: [t.typeName, t.className], color: '#c4b5fd' },
+  { tag: t.comment, color: '#8aa5b8', fontStyle: 'italic' },
+  { tag: t.operator, color: '#cbd5e1' },
+  { tag: [t.invalid, t.deleted], color: '#fda4af' },
+]);
+
+const coordinatedHighlightStyle = HighlightStyle.define([
+  { tag: [t.name, t.propertyName, t.operator, t.punctuation], color: 'var(--code-fg)' },
+  { tag: [t.keyword, t.operatorKeyword], color: 'var(--code-keyword)' },
+  { tag: [t.function(t.variableName), t.labelName], color: 'var(--code-function)' },
+  { tag: [t.string, t.regexp, t.inserted], color: 'var(--code-string)' },
+  { tag: [t.number, t.bool, t.atom, t.meta], color: 'var(--code-number)' },
+  { tag: [t.typeName, t.className], color: 'var(--code-type)' },
+  { tag: t.comment, color: 'var(--code-comment)', fontStyle: 'italic' },
+  { tag: [t.invalid, t.deleted], color: 'var(--code-error)' },
+  { tag: t.heading, color: 'var(--code-keyword)', fontWeight: 'bold' },
+  { tag: t.link, color: 'var(--code-function)', textDecoration: 'underline' },
+  { tag: t.strong, fontWeight: 'bold' },
+  { tag: t.emphasis, fontStyle: 'italic' },
+]);
+
+function coordinatedEditorTheme(dark: boolean) {
+  return EditorView.theme({
+    '&': { backgroundColor: 'var(--code-bg)', color: 'var(--code-fg)', height: '100%', fontSize: '12px' },
+    '.cm-content': { fontFamily: "'JetBrains Mono', 'Cascadia Code', 'Consolas', monospace", caretColor: 'var(--code-keyword)' },
+    '.cm-gutters': { backgroundColor: 'var(--code-bg)', color: 'var(--code-comment)', border: 'none' },
+    '.cm-activeLine': { backgroundColor: 'hsl(var(--primary) / 0.06)' },
+    '.cm-activeLineGutter': { backgroundColor: 'hsl(var(--primary) / 0.1)', color: 'var(--code-keyword)' },
+    '.cm-selectionMatch, .cm-matchingBracket': { backgroundColor: 'hsl(var(--primary) / 0.12)' },
+    '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection': { backgroundColor: 'var(--code-selection)' },
+    '.cm-cursor, &.cm-focused .cm-cursor': { borderLeftColor: 'var(--code-keyword)' },
+    '.cm-foldPlaceholder, .cm-tooltip, .cm-panels': { backgroundColor: 'hsl(var(--popover))', color: 'var(--code-fg)', border: '1px solid hsl(var(--border))' },
+    '.cm-tooltip-autocomplete > ul > li[aria-selected]': { backgroundColor: 'var(--code-selection)', color: 'var(--code-fg)' },
+    '.cm-searchMatch': { backgroundColor: 'var(--code-search)' },
+    '.cm-searchMatch.cm-searchMatch-selected': { outline: '1px solid var(--code-number)' },
+    '.cm-textfield, .cm-button': { background: 'hsl(var(--card))', color: 'var(--code-fg)', border: '1px solid hsl(var(--input))' },
+  }, { dark });
+}
+
+const coordinatedEditorThemes = {
+  cyber: coordinatedEditorTheme(true),
+  muse: coordinatedEditorTheme(false),
+  nebula: coordinatedEditorTheme(true),
+  forest: coordinatedEditorTheme(true),
+  amber: coordinatedEditorTheme(true),
+  glacier: coordinatedEditorTheme(false),
+  sakura: coordinatedEditorTheme(false),
+};
+
 /** 根据主题返回编辑器主题扩展集合 */
-function themeExtensions(dark: boolean) {
-  if (dark) {
+function themeExtensions(theme: import('../../store/themeStore').ThemeMode) {
+  if (theme === 'cyber' || theme === 'muse' || theme === 'nebula' || theme === 'forest' || theme === 'amber' || theme === 'glacier' || theme === 'sakura') {
+    return [coordinatedEditorThemes[theme], syntaxHighlighting(coordinatedHighlightStyle)];
+  }
+  if (theme === 'aurora') {
+    return [auroraEditorTheme, syntaxHighlighting(auroraHighlightStyle), syntaxHighlighting(defaultHighlightStyle, { fallback: true })];
+  }
+  if (theme === 'dark') {
     return [editorTheme, oneDark, syntaxHighlighting(defaultHighlightStyle, { fallback: true })];
   }
   return [lightTheme, syntaxHighlighting(lightHighlightStyle, { fallback: true })];
@@ -296,7 +373,7 @@ const EditorPanel: React.FC = () => {
     const state = EditorState.create({
       doc: active?.content ?? '',
       extensions: [
-        themeCompartmentRef.current.of(themeExtensions(theme === 'dark')),
+        themeCompartmentRef.current.of(themeExtensions(theme)),
         highlightSpecialChars(),
         drawSelection(),
         dropCursor(),
@@ -394,9 +471,36 @@ const EditorPanel: React.FC = () => {
   useEffect(() => {
     if (!viewRef.current) return;
     viewRef.current.dispatch({
-      effects: themeCompartmentRef.current.reconfigure(themeExtensions(theme === 'dark')),
+      effects: themeCompartmentRef.current.reconfigure(themeExtensions(theme)),
     });
   }, [theme]);
+
+  /**
+   * 全文搜索结果点击 → 跳到指定行。
+   *
+   * 位置是 store 先 openFile 再广播的，所以这里能拿到已就绪的 view；
+   * 用 ts 去重，避免用户切回该标签时又跳一次（那会打断正在读的代码）。
+   */
+  const pendingGoto = useEditorStore((s) => s.pendingGoto);
+  const handledGotoRef = useRef(0);
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!pendingGoto || !view || !active) return;
+    if (pendingGoto.ts === handledGotoRef.current) return;
+    if (!samePath(pendingGoto.path, active.path)) return;
+
+    handledGotoRef.current = pendingGoto.ts;
+    const lineNo = Math.min(Math.max(1, pendingGoto.line), view.state.doc.lines);
+    const line = view.state.doc.line(lineNo);
+    // 列可能超出该行长度（搜索后被格式化过），夹到行尾，避免抛 RangeError
+    const pos = Math.min(line.from + Math.max(0, (pendingGoto.column ?? 1) - 1), line.to);
+    view.dispatch({
+      selection: { anchor: pos },
+      effects: EditorView.scrollIntoView(pos, { y: 'center' }),
+    });
+    view.focus();
+    useEditorStore.getState().clearGoto();
+  }, [pendingGoto, active]);
 
   // 发送选区到对话
   const sendSelectionToChat = useCallback(() => {
@@ -469,10 +573,10 @@ const EditorPanel: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col h-full bg-background">
-      {/* 标签栏 */}
-      <div className="flex items-center justify-between border-b border-border bg-secondary/20 shrink-0">
-        <div className="flex items-center overflow-x-auto flex-1" style={{ scrollbarWidth: 'none' }}>
+    <div className="flex flex-col h-full bg-transparent">
+      {/* 标签栏：文件标签做成 iOS 风格浮块，active 用玻璃高光而非整块换底色 */}
+      <div className="flex items-center justify-between border-b border-white/[0.07] bg-white/[0.015] shrink-0">
+        <div className="flex items-center gap-0.5 overflow-x-auto flex-1 px-1 py-1" style={{ scrollbarWidth: 'none' }}>
           {tabs.length === 0 ? (
             <span className="px-3 py-2 text-[11px] text-muted-foreground/50">暂无打开的文件，点击资源管理器中的文件打开</span>
           ) : (
@@ -483,8 +587,10 @@ const EditorPanel: React.FC = () => {
                 <div
                   key={t.path}
                   onClick={() => useEditorStore.setState({ activePath: t.path })}
-                  className={`group flex items-center gap-1 px-2 py-1.5 text-[11px] border-r border-border cursor-pointer whitespace-nowrap transition-colors shrink-0 ${
-                    isActive ? 'bg-background text-foreground border-t-2 border-t-violet-500' : 'text-muted-foreground hover:bg-accent/50'
+                  className={`group flex items-center gap-1.5 px-2.5 py-[5px] text-[11.5px] rounded-[9px] border cursor-pointer whitespace-nowrap shrink-0 transition-all duration-200 ease-ios ${
+                    isActive
+                      ? 'bg-white/[0.1] text-foreground border-white/[0.14] shadow-[inset_0_1px_0_rgba(255,255,255,0.14),0_3px_10px_-6px_rgba(0,0,0,0.9)]'
+                      : 'border-transparent text-muted-foreground hover:bg-white/[0.05] hover:text-foreground'
                   }`}
                   title={t.path}
                 >
@@ -584,7 +690,7 @@ const EditorPanel: React.FC = () => {
           <span className="flex items-center gap-1.5 text-[10px] text-violet-300 truncate">
             <Bot className="w-3 h-3 shrink-0" />
             AI 修改了此文件
-            <span className="text-violet-400/60">({activeAgentEdit.toolName})</span>
+            <span className="text-violet-400/60">（{toolLabel(activeAgentEdit.toolName)}）</span>
           </span>
           <button
             onClick={() => void undoAgentEdit(active.path)}

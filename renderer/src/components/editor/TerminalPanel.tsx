@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useApp } from '../../store/AppProvider';
 import { useLayoutStore } from '../../store/layoutStore';
-import { useAgentActivityStore, AgentActivityLine } from '../../store/agentActivityStore';
+import { useAgentActivityStore, AgentActivityLine, toolLabel, splitOutputLines } from '../../store/agentActivityStore';
 import { Terminal, Trash2, Loader2, X, Bot, Check, AlertTriangle } from 'lucide-react';
 
 interface TerminalLine {
@@ -56,6 +56,29 @@ function formatDuration(ms: number): string {
   return `${Math.floor(ms / 60000)}m${Math.round((ms % 60000) / 1000)}s`;
 }
 
+/** 活动行时间戳（时:分:秒，等宽对齐） */
+function timeOf(ts: number): string {
+  const d = new Date(ts);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+/**
+ * 动作徽标的文字色。
+ * 徽标底色与描边由 index.css 的 .act-badge 用 currentColor 派生，
+ * 因此只需在此指定语义色，10 套主题下都能自动保持可读对比度。
+ */
+const BADGE_TEXT_CLASS: Record<AgentActivityLine['kind'], string> = {
+  info: 'text-foreground/70',
+  command: 'text-sky-300',
+  output: 'text-muted-foreground',
+  success: 'text-emerald-400',
+  error: 'text-red-400',
+  thinking: 'text-violet-300',
+  file: 'text-amber-300',
+  divider: 'text-muted-foreground',
+};
+
 /**
  * 终端面板：双标签（Shell / Agent）
  *
@@ -100,15 +123,22 @@ const TerminalPanel: React.FC = () => {
   const isAgentActive = phase === 'thinking' || phase === 'streaming' || phase === 'tool';
 
   const appendText = useCallback((text: string) => {
+    // 积压保护：onOutput 高频回调时 pending 可能持续膨胀，超限只保留尾部
+    if (pendingRef.current.length > 128 * 1024) {
+      pendingRef.current = pendingRef.current.slice(-64 * 1024);
+    }
     pendingRef.current += text;
     const parts = pendingRef.current.split('\n');
     pendingRef.current = parts.pop() ?? '';
     if (parts.length > 0) {
+      // 复用扫描防白屏裁剪：\r 重绘只留末段、单行截断、批量只留尾部
+      const added = splitOutputLines(parts.join('\n'), (p) => ({
+        id: ++lineIdRef.current,
+        text: p,
+      }));
+      if (added.length === 0) return;
       setLines((prev) => {
-        const next = [
-          ...prev,
-          ...parts.map((p) => ({ id: ++lineIdRef.current, text: p.replace(/\r$/, '') })),
-        ];
+        const next = [...prev, ...added];
         return next.length > MAX_LINES ? next.slice(next.length - MAX_LINES) : next;
       });
     }
@@ -226,9 +256,9 @@ const TerminalPanel: React.FC = () => {
   );
 
   return (
-    <div className="flex flex-col h-full bg-background" onClick={handleClick}>
+    <div className="terminal-panel flex flex-col h-full bg-transparent" onClick={handleClick}>
       {/* 头部：标签切换 + 状态 */}
-      <div className="flex items-center justify-between px-2.5 py-1 border-b border-border bg-secondary/20 shrink-0">
+      <div className="flex items-center justify-between px-2.5 py-1 border-b border-white/[0.07] bg-white/[0.015] shrink-0">
         <div className="flex items-center gap-1">
           {/* Shell 标签 */}
           <button
@@ -238,8 +268,8 @@ const TerminalPanel: React.FC = () => {
             }}
             className={`flex items-center gap-1.5 px-2 py-1 rounded text-[10px] font-medium transition-colors ${
               tab === 'shell'
-                ? 'bg-background text-foreground shadow-sm'
-                : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'
+                ? 'bg-white/[0.1] text-foreground shadow-soft'
+                : 'text-muted-foreground hover:text-foreground hover:bg-white/[0.06]'
             }`}
           >
             <Terminal className="w-3 h-3 text-emerald-400" />
@@ -255,8 +285,8 @@ const TerminalPanel: React.FC = () => {
             }}
             className={`flex items-center gap-1.5 px-2 py-1 rounded text-[10px] font-medium transition-colors ${
               tab === 'agent'
-                ? 'bg-background text-foreground shadow-sm'
-                : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'
+                ? 'bg-white/[0.1] text-foreground shadow-soft'
+                : 'text-muted-foreground hover:text-foreground hover:bg-white/[0.06]'
             }`}
           >
             <Bot className={`w-3 h-3 ${isAgentActive ? 'text-violet-400' : 'text-muted-foreground'}`} />
@@ -275,7 +305,7 @@ const TerminalPanel: React.FC = () => {
             {phase !== 'idle' && (
               <>
                 {ph.text}
-                {isAgentActive && currentTool && <span className="opacity-70">· {currentTool}</span>}
+                {isAgentActive && currentTool && <span className="opacity-70">· {toolLabel(currentTool)}</span>}
                 {isAgentActive && elapsed > 0 && <span className="opacity-60">{formatDuration(elapsed)}</span>}
                 {!isAgentActive && toolCount > 0 && (
                   <span className="opacity-60 flex items-center gap-0.5">
@@ -322,21 +352,60 @@ const TerminalPanel: React.FC = () => {
               <span className="text-[10px] opacity-60">在左侧对话框发送消息，执行过程会实时显示在这里</span>
             </div>
           ) : (
-            visibleAgentLines.map((l) => (
-              <div
-                key={l.id}
-                className={`whitespace-pre-wrap break-words ${KIND_CLASS[l.kind]}`}
-              >
-                {l.text || ' '}
-              </div>
-            ))
+            visibleAgentLines.map((l) => {
+              // 分隔线：渐变细线夹住阶段名，替代原来的 ── 文本包围
+              if (l.kind === 'divider') {
+                return (
+                  <div key={l.id} className="flex items-center gap-2 my-2 first:mt-0">
+                    <span className="h-px flex-1 bg-gradient-to-r from-transparent via-border to-border/40" />
+                    <span className="text-[9px] tracking-[0.2em] text-muted-foreground/55 whitespace-nowrap">
+                      {l.text}
+                    </span>
+                    <span className="h-px flex-1 bg-gradient-to-l from-transparent via-border to-border/40" />
+                  </div>
+                );
+              }
+              // 结构化行：时间戳 + 中文动作徽标 + 参数正文
+              if (l.label) {
+                return (
+                  <div key={l.id} className="flex items-start gap-1.5 py-[1px] group">
+                    <span className="shrink-0 w-[46px] text-[9px] leading-[18px] tabular-nums text-muted-foreground/35 select-none">
+                      {timeOf(l.at)}
+                    </span>
+                    <span
+                      className={`act-badge shrink-0 inline-flex items-center gap-1 h-[18px] px-1.5 rounded-[5px] text-[10px] leading-none font-medium ${BADGE_TEXT_CLASS[l.kind]}`}
+                      title={l.tool ? `工具：${l.tool}` : undefined}
+                    >
+                      <span className="w-1 h-1 rounded-full bg-current opacity-80" />
+                      {l.label}
+                    </span>
+                    <span
+                      className={`min-w-0 flex-1 break-all ${KIND_CLASS[l.kind]} opacity-95`}
+                    >
+                      {l.detail || '—'}
+                    </span>
+                  </div>
+                );
+              }
+              // 普通行：时间戳 + 正文
+              return (
+                <div key={l.id} className="flex items-start gap-1.5 py-[1px]">
+                  <span className="shrink-0 w-[46px] text-[9px] leading-[18px] tabular-nums text-muted-foreground/35 select-none">
+                    {timeOf(l.at)}
+                  </span>
+                  <span className={`min-w-0 flex-1 whitespace-pre-wrap break-words ${KIND_CLASS[l.kind]}`}>
+                    {l.text || ' '}
+                  </span>
+                </div>
+              );
+            })
           )}
           {/* 运行中的光标指示 */}
           {isAgentActive && (
-            <div className="flex items-center gap-1.5 text-violet-400/80 mt-1">
+            <div className="flex items-center gap-1.5 text-violet-400/80 mt-1.5 pl-[52px]">
               <Loader2 className="w-2.5 h-2.5 animate-spin" />
               <span className="text-[10px]">
-                {phase === 'tool' && currentTool ? `正在执行 ${currentTool}…` : 'Agent 处理中…'}
+                {phase === 'tool' && currentTool ? `正在执行「${toolLabel(currentTool)}」…` : 'Agent 处理中…'}
               </span>
             </div>
           )}
@@ -362,7 +431,7 @@ const TerminalPanel: React.FC = () => {
           </div>
 
           {/* ------------------ Shell 输入区 ------------------ */}
-          <div className="flex items-center gap-2 px-2.5 py-1.5 border-t border-border bg-secondary/20 shrink-0 font-mono">
+          <div className="flex items-center gap-2 px-2.5 py-1.5 border-t border-white/[0.07] bg-white/[0.03] shrink-0 font-mono">
             <span className="text-emerald-500 text-[11px] shrink-0 select-none">$</span>
             <input
               ref={inputRef}

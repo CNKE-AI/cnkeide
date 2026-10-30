@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { nanoid } from 'nanoid';
+import { resolveConversation, type ConversationDecision } from '../../../electron/core-fork/agent/ConversationRouter';
 
 /**
  * agent 事件订阅管理（模块级单例）：
@@ -85,10 +86,15 @@ interface ChatState {
   mode: AgentMode;
   /** 全自动模式：运行时自动批准所有工具调用，不弹确认窗口 */
   autoMode: boolean;
+  autoInteraction: boolean;
+  conversation: ConversationDecision | null;
+  setAutoInteraction: (enabled: boolean) => void;
   /** 当前会话绑定的工作区路径（切换对话时自动切换，驱动 FileTree 等） */
   activeWorkspaceId: string | null;
   setMessages: (msgs: ChatMessage[]) => void;
   setSessionId: (id: string | null) => void;
+  /** 直接改「当前会话绑定的工作区」：任务改名把目录搬走后要跟着换绑 */
+  setActiveWorkspaceId: (id: string | null) => void;
   setLoading: (v: boolean) => void;
   setMode: (m: AgentMode) => void;
   setAutoMode: (v: boolean) => void;
@@ -237,6 +243,19 @@ function subscribeRunEvents(opts: {
           tc && tc.id === d.toolCallId ? { ...tc, result: d.result } : tc
         ),
       }));
+    } else if (event.type === 'tool_progress') {
+      // 长命令实时进度：回填到对应 toolCall，渲染层据此画进度条
+      const d = event.data || {};
+      if (d.toolCallId) {
+        patchLast((last) => ({
+          ...last,
+          toolCalls: (last.toolCalls || []).map((tc: any) =>
+            tc && tc.id === d.toolCallId
+              ? { ...tc, progress: { current: d.current, total: d.total, percent: d.percent } }
+              : tc
+          ),
+        }));
+      }
     } else if (event.type === 'model_fallback') {
       // 模型请求失败自动降级：显式告知用户实际使用的模型，避免"切换成功"的错觉
       const d = event.data || {};
@@ -298,7 +317,14 @@ async function startAgentRun(
   set: (patch: Partial<ChatState>) => void,
   get: () => ChatState
 ): Promise<void> {
-  const { sid, prompt, workspaceId, mode, history, images, files, autoMode } = params;
+  const { sid, prompt, workspaceId, images, files, autoMode } = params;
+  const autoInteraction = get().autoInteraction;
+  const originalMessage = [...get().messages].reverse().find((m) => m.role === 'user');
+  const originalPrompt = originalMessage?.displayContent ?? originalMessage?.content ?? prompt;
+  const routed = resolveConversation(originalPrompt, workspaceId, params.history, autoInteraction ? undefined : params.mode);
+  const mode = routed.decision.mode;
+  const history = routed.history;
+  set({ mode, conversation: routed.decision });
 
   const removeEvent = subscribeRunEvents({
     sessionId: sid,
@@ -318,7 +344,7 @@ async function startAgentRun(
   // 任务开始：通知主进程启用窗口保护（防误最小化 / 关闭需二次确认）
   window.cnke.window.setAgentBusy(true);
   try {
-    await window.cnke.agent.run({ sessionId: sid, workspaceId, prompt, history, mode, images, files, autoApprove: autoMode });
+    await window.cnke.agent.run({ sessionId: sid, workspaceId, prompt, history, mode, images, files, autoApprove: autoMode, autoInteraction: false, originalPrompt });
   } catch (err: any) {
     // agent.run 抛出（如 IPC 断开 / 主进程崩溃后 invoke reject）
     window.cnke.window.setAgentBusy(false);
@@ -345,20 +371,35 @@ export const useChatStore = create<ChatState>((set, get) => ({
   loading: false,
   mode: 'coder',
   autoMode: false,
+  autoInteraction: true,
+  conversation: null,
+  setAutoInteraction: (enabled) => {
+    if (get().loading) return;
+    set({ autoInteraction: enabled });
+    void window.cnke.config.set('agentConfig.autoInteraction', enabled);
+  },
   activeWorkspaceId: null,
   setMessages: (msgs) => set({ messages: msgs }),
-  setSessionId: (id) => set({ sessionId: id }),
+  setSessionId: (id) => set({ sessionId: id, conversation: null }),
+  setActiveWorkspaceId: (id) => set({ activeWorkspaceId: id, conversation: null }),
   setLoading: (v) => set({ loading: v }),
-  setMode: (m) => set({ mode: m }),
+  setMode: (m) => {
+    if (get().loading) return;
+    set({ mode: m, autoInteraction: false });
+    void window.cnke.config.set('agentConfig.autoInteraction', false);
+  },
   setAutoMode: (v) => {
     set({ autoMode: v });
     window.cnke.config.set('agentConfig.autoApproveTools', v);
   },
   initAutoMode: async () => {
-    const v = await window.cnke.config.get('agentConfig.autoApproveTools');
-    set({ autoMode: !!v });
+    const [v, interaction] = await Promise.all([
+      window.cnke.config.get('agentConfig.autoApproveTools'),
+      window.cnke.config.get('agentConfig.autoInteraction'),
+    ]);
+    set({ autoMode: !!v, autoInteraction: interaction !== false });
   },
-  clearMessages: () => set({ messages: [] }),
+  clearMessages: () => set({ messages: [], conversation: null }),
 
   refreshSessions: async (_workspaceId?: string) => {
     // 全局拉取所有会话（跨工作区），每个对话可绑定不同工作区
@@ -375,7 +416,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // 用新会话的 workspaceId 会把旧会话整体搬到新工作区，导致会话归属错乱
     if (sessionId && messages.length) await saveCurrentSession(activeWorkspaceId || workspaceId);
     const session = await window.cnke.session.create(workspaceId, '新对话');
-    set({ sessionId: session.id, messages: [], activeWorkspaceId: workspaceId });
+    set({ sessionId: session.id, messages: [], activeWorkspaceId: workspaceId, conversation: null });
     await get().refreshSessions(workspaceId);
   },
 
@@ -411,7 +452,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         await get().switchSession(rest[0].workspaceId || workspaceId, rest[0].id);
       } else {
         const session = await window.cnke.session.create(workspaceId, '新对话');
-        set({ sessionId: session.id, messages: [], activeWorkspaceId: workspaceId });
+        set({ sessionId: session.id, messages: [], activeWorkspaceId: workspaceId, conversation: null });
       }
     }
     await window.cnke.session.delete(sessionId);
@@ -419,6 +460,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   sendMessage: async (prompt: string, workspaceId: string, images?: string[], files?: UploadedFile[], displayPrompt?: string) => {
+    if (get().loading) return;
+    if (get().activeWorkspaceId && get().activeWorkspaceId !== workspaceId) {
+      await get().startNewSession(workspaceId);
+    }
     const { mode, sessionId, messages, autoMode } = get();
     let sid = sessionId;
     if (!sid) {

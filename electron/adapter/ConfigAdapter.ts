@@ -106,6 +106,8 @@ export class ConfigAdapter {
         fallbackModelIds: [],
         // W2 新增：单轮工具最大并发数（并行工具调度）
         toolConcurrency: 4,
+        // W27 新增：auto_fix_tests 的默认修复轮数（1-5）
+        autoFixMaxRounds: 3,
         // W5 新增：embedding 模型（用于 semantic_search 语义召回）
         embeddingModel: 'text-embedding-3-small',
         // W6 新增：模型路由（首轮按任务类型自动选 model）
@@ -117,6 +119,16 @@ export class ConfigAdapter {
         },
         // W7 新增：工具调用信任规则（按 toolName / pathPattern / commandPattern 匹配）
         approvalRules: [],
+        // W24 新增：仓库级指令文件（AGENTS.md / CNKE.md）自动注入
+        useProjectInstructions: true,
+        // 项目指令注入的字节预算（单文件上限 12000，总量不超过此值）
+        projectInstructionsBudget: 24000,
+        // W25 新增：执行权限档位 read-only | standard | full-access
+        permissionMode: 'standard',
+        // 命令白名单：命中后 execute_command 直接放行（前缀，或含 * 的通配）
+        commandAllowlist: [],
+        // 域名白名单：非空时 web_fetch / web_search / 浏览器导航只允许访问这些域名
+        domainAllowlist: [],
         // 可选运行时工具：浏览器默认尝试启用，图片生成必须由用户显式启用并绑定 API 配置。
         browserAutomation: { enabled: true },
         imageGeneration: { enabled: false, apiConfigId: '' },
@@ -145,8 +157,58 @@ export class ConfigAdapter {
     };
   }
 
+  /**
+   * 运行时覆盖层：只影响本进程内的读取，永不写盘。
+   * 用于 CLI 单次运行参数（--permission / --mode / --max-turns / --model）——
+   * 若直接 set()，退出前的 flush 会把一次性参数写进桌面端配置，
+   * 例如跑一次只读模式就把 GUI 永久改成只读档。
+   */
+  private runtimeOverrides = new Map<string, any>();
+
+  setRuntimeOverride(key: string, value: any): void {
+    const rootKey = key.split('.')[0];
+    if (rootKey === key) {
+      this.runtimeOverrides.set(rootKey, value);
+      return;
+    }
+    const existing = this.runtimeOverrides.get(rootKey);
+    const base: any = existing && typeof existing === 'object' ? { ...existing } : {};
+    const rest = key.slice(rootKey.length + 1).split('.');
+    let obj: any = base;
+    for (let i = 0; i < rest.length - 1; i++) {
+      if (!obj[rest[i]] || typeof obj[rest[i]] !== 'object') obj[rest[i]] = {};
+      obj = obj[rest[i]];
+    }
+    obj[rest[rest.length - 1]] = value;
+    this.runtimeOverrides.set(rootKey, base);
+  }
+
+  getRuntimeOverrides(): Record<string, any> {
+    return Object.fromEntries(this.runtimeOverrides);
+  }
+
+  clearRuntimeOverrides(): void {
+    this.runtimeOverrides.clear();
+  }
+
   get<T = any>(key: string, defaultValue?: T): T {
     const keys = key.split('.');
+    // 1) 运行时覆盖优先（CLI 一次性参数）
+    if (this.runtimeOverrides.has(keys[0])) {
+      let val: any = this.runtimeOverrides.get(keys[0]);
+      let resolved = true;
+      for (const k of keys.slice(1)) {
+        if (val && typeof val === 'object' && k in val) {
+          val = val[k];
+        } else {
+          resolved = false;
+          break;
+        }
+      }
+      if (resolved && val !== undefined) return val as T;
+      // 覆盖层里没有这个子键 → 继续走磁盘值 / 默认值
+    }
+    // 2) 磁盘配置
     let val: any = this.data;
     for (const k of keys) {
       if (val && typeof val === 'object' && k in val) {
@@ -168,6 +230,11 @@ export class ConfigAdapter {
       obj = obj[keys[i]];
     }
     obj[keys[keys.length - 1]] = value;
+    // 该根键已被运行时覆盖时同步一份，否则读取会被旧的覆盖值遮蔽
+    // （例如 headless 运行中途 addApprovalRule 写 config.set('agentConfig.approvalRules')）
+    if (this.runtimeOverrides.has(keys[0])) {
+      this.setRuntimeOverride(key, value);
+    }
     this.scheduleWrite();
   }
 

@@ -214,6 +214,50 @@ try {
     check('文件已创建', fs.existsSync(path.join(workDir, 'never.txt')), `code=${r.code} ${r.stderr.slice(0, 200)}`);
   }
 
+  console.log('\n[4b] --permission read-only 硬拦写操作（即使 --approve-policy never）');
+  {
+    const target = path.join(workDir, 'readonly.txt');
+    fs.rmSync(target, { force: true });
+    const r = await run(
+      [...COMMON, '-p', '写一个文件', '--json', '--no-memory', '--approve-policy', 'never', '--permission', 'read-only'],
+      T('write_to_file', { path: 'readonly.txt', content: 'x' })
+    );
+    const events = r.stdout
+      .split('\n')
+      .filter(Boolean)
+      .flatMap((l) => {
+        try {
+          return [JSON.parse(l)];
+        } catch {
+          return [];
+        }
+      });
+    const toolResult = events.find((e) => e.type === 'tool_result');
+    check('工具结果标记拦截', !!toolResult && /拦截/.test(String(toolResult.output)), JSON.stringify(toolResult || {}).slice(0, 200));
+    check('只读档下文件未落盘', !fs.existsSync(target));
+
+    // 回归：--permission 只能影响本次运行，不能把一次性参数写进配置文件
+    const saved = JSON.parse(fs.readFileSync(path.join(dataDir, 'config', 'app-config.json'), 'utf8'));
+    check('--permission 未污染配置文件', saved?.agentConfig?.permissionMode !== 'read-only', JSON.stringify(saved?.agentConfig || {}).slice(0, 160));
+  }
+
+  console.log('\n[4c] --permission full-access 无需额外授权即可写盘');
+  {
+    const target = path.join(workDir, 'fullaccess.txt');
+    fs.rmSync(target, { force: true });
+    const r = await run(
+      [...COMMON, '-p', '写一个文件', '--json', '--no-memory', '--permission', 'full-access'],
+      T('write_to_file', { path: 'fullaccess.txt', content: 'FA' })
+    );
+    check('完全访问档文件已创建', fs.existsSync(target), `code=${r.code} ${r.stderr.slice(0, 200)}`);
+  }
+
+  console.log('\n[4d] --permission 非法值退出码 2');
+  {
+    const r = await run([...COMMON, '-p', 'x', '--permission', 'whatever']);
+    check('非法档位退出码 2', r.code === 2, `code=${r.code}`);
+  }
+
   console.log('\n[5] --final-only 纯文本输出');
   {
     const r = await run([...COMMON, '-p', '读一下 hello.txt', '--final-only', '--no-memory'], T('read_file', { path: 'hello.txt' }));

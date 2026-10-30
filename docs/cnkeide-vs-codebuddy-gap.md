@@ -41,7 +41,7 @@
 | `checkpoint/` | CheckpointManager / ApprovalPolicy | 每轮快照 + diff + 恢复；工具审批信任规则（allow/deny/ask） |
 | `mcp/` | McpHub | stdio + HTTP 双协议 MCP 客户端 |
 
-**39 个内置工具清单**：read_file / write_to_file / create_file / delete_file / rename_file / search_files / list_directory / execute_command / apply_diff / search_symbol / get_file_outline / semantic_search / doc_ingest / doc_query / doc_list / doc_remove / browser_navigate / browser_screenshot / browser_click / browser_input / browser_extract / browser_close / image_generate / find_references / project_structure / create_plan / update_plan_status / add_plan_item / get_plan / mark_plan_complete / web_search / web_fetch / git_status / git_diff / git_commit / git_log / grep / run_tests / format_code
+**46 个内置工具清单**：read_file / write_to_file / create_file / delete_file / rename_file / search_files / list_directory / execute_command / apply_diff / search_symbol / get_file_outline / semantic_search / doc_ingest / doc_query / doc_list / doc_remove / browser_navigate / browser_screenshot / browser_click / browser_input / browser_extract / browser_close / image_generate / find_references / project_structure / create_plan / update_plan_status / add_plan_item / get_plan / mark_plan_complete / delegate_subagent / web_search / web_fetch / git_status / git_diff / git_commit / git_log / git_branch / git_checkout / git_fetch / git_pull / git_push / grep / run_tests / auto_fix_tests / format_code
 
 ### 2.3 IPC 端点全貌（ipc/handlers.ts 核对，约 90 个 handle + 多个 on）
 - `session:*` 多会话 CRUD（listAll 跨工作区）

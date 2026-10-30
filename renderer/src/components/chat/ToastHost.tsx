@@ -34,7 +34,7 @@ const ToastHost: React.FC = () => {
         <div
           key={t.id}
           role="status"
-          className={`toast-in flex items-start gap-2 rounded-xl border px-3 py-2 text-[12px] leading-relaxed shadow-xl backdrop-blur-md ${STYLE[t.kind].cls}`}
+          className={`toast-in flex items-start gap-2 rounded-2xl border px-3.5 py-2.5 text-[12.5px] leading-relaxed shadow-modal backdrop-blur-xl ${STYLE[t.kind].cls}`}
         >
           <span className="mt-[1px]">{STYLE[t.kind].icon}</span>
           <span className="min-w-0 break-words">{t.text}</span>

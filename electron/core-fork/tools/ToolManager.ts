@@ -4,7 +4,18 @@ import { McpHub } from '../mcp/McpHub';
 import { CheckpointManager } from '../checkpoint/CheckpointManager';
 import { CodebaseIndexer } from '../codebase/CodebaseIndexer';
 import { webSearch, webFetch } from './WebTools';
-import { gitStatus, gitDiff, gitCommit, gitLog, isGitRepo } from './GitTools';
+import {
+  gitStatus,
+  gitDiff,
+  gitCommit,
+  gitLog,
+  isGitRepo,
+  gitBranch,
+  gitCheckout,
+  gitFetch,
+  gitPull,
+  gitPush,
+} from './GitTools';
 import { grep, isRipgrepAvailable } from './GrepTool';
 import { detectTestFramework, runTests } from './TestRunner';
 import { detectFormatter, formatCode } from './CodeFormatter';
@@ -12,6 +23,9 @@ import { SemanticRetriever } from '../codebase/SemanticRetriever';
 import { RagManager } from '../rag/RagManager';
 import { PlaywrightAdapter, MockPlaywrightAdapter, createRealPlaywrightAdapter } from './PlaywrightTools';
 import { ImageGenAdapter, MockImageGenAdapter, OpenAIImageGenAdapter } from './ImageGenTools';
+import { parseProgress, type ToolProgress } from './progress';
+import { resolvePython } from '../python/PythonRuntime';
+import { parsePythonTraceback, type PythonTracebackMeta } from '../python/traceback';
 import fs from 'node:fs/promises';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import path, { join } from 'node:path';
@@ -29,6 +43,13 @@ export interface ToolDefinition {
  * 常量放在这里，避免 AgentManager 与 ToolManager 互相 import 形成循环依赖。
  */
 export const SUBAGENT_TOOL_NAME = 'delegate_subagent';
+
+/**
+ * W27：测试自愈工具。
+ * 与委派同理——需要"跑测试 → 调 LLM 改代码 → 再跑"的多轮循环，
+ * execute() 承载不了，由 AgentManager 拦截后交给 AutoFixLoop。
+ */
+export const AUTOFIX_TOOL_NAME = 'auto_fix_tests';
 
 /** W12 浏览器工具名集合：仅在真实 Playwright 就绪时才投递给模型 */
 const BROWSER_TOOL_NAMES = new Set([
@@ -69,7 +90,15 @@ export interface ToolResult {
     /** 修改后内容；删除文件为 undefined */
     after?: string;
   };
+  /**
+   * Python traceback 结构化信息（仅 run_python 失败时填充）。
+   * 只供前端做「跳转到出错行」，不进 LLM 上下文（AgentManager 会剥离）。
+   */
+  errorMeta?: PythonTracebackMeta;
 }
+
+export type { ToolProgress } from './progress';
+export type { PythonTracebackMeta } from '../python/traceback';
 
 export interface ToolManagerConfig {
   fsAdapter: FileSystemAdapter;
@@ -218,6 +247,7 @@ export class ToolManager {
 
   async getAvailableTools(mode: string): Promise<ToolDefinition[]> {
     const builtin = this.getBuiltinTools(mode);
+    if (mode === 'ask' || mode === 'architect') return builtin;
     const mcpTools = await this.getMcpTools();
     return [...builtin, ...mcpTools];
   }
@@ -301,7 +331,10 @@ export class ToolManager {
       },
       {
         name: 'execute_command',
-        description: '在终端执行 Shell 命令。参数：command（命令）、cwd（工作目录，可选）。',
+        description:
+          '在终端执行 Shell 命令。参数：command（命令）、cwd（工作目录，可选）。' +
+          '长任务请在脚本中输出形如 PROGRESS 3/10 或 PROGRESS 45% 的行，界面会显示进度条。' +
+          '扫描类命令务必限定范围（-Depth/-First/Select-Object/过滤条件），输出过大会被截断。',
         parameters: {
           type: 'object',
           properties: {
@@ -309,6 +342,27 @@ export class ToolManager {
             cwd: { type: 'string', description: '工作目录' },
           },
           required: ['command'],
+        },
+      },
+      {
+        name: 'run_python',
+        description:
+          '运行 Python 脚本或代码片段（自动选择解释器：配置 > 项目 venv > 内置 > 系统；强制 UTF-8 与无缓冲输出）。' +
+          '参数：file（脚本路径，与 code 二选一）、code（内联代码）、args（命令行参数数组）、cwd（工作目录）、timeout（毫秒，默认 240000）。' +
+          '失败时会返回结构化的 traceback（文件/行号/异常类型）。长任务可在脚本中用 print 输出 PROGRESS n/m。',
+        parameters: {
+          type: 'object',
+          properties: {
+            file: { type: 'string', description: 'Python 脚本路径（相对工作区或绝对路径）' },
+            code: { type: 'string', description: '内联 Python 代码（与 file 二选一）' },
+            args: {
+              type: 'array',
+              items: { type: 'string' },
+              description: '传给脚本的命令行参数',
+            },
+            cwd: { type: 'string', description: '工作目录，默认工作区根' },
+            timeout: { type: 'number', description: '超时毫秒，默认 240000' },
+          },
         },
       },
       {
@@ -610,6 +664,81 @@ export class ToolManager {
         },
       },
       {
+        name: 'git_branch',
+        description:
+          'Git 分支操作。action：list（默认，列出本地与远程分支，标注当前分支与上游）| create（新建分支，name 必填，from 指定起点，checkout=true 建完直接切过去）| delete（删除分支，force=true 用 -D 丢弃未合并提交）| rename（重命名为 to）。',
+        parameters: {
+          type: 'object',
+          properties: {
+            action: { type: 'string', description: 'list | create | delete | rename，默认 list' },
+            name: { type: 'string', description: '分支名（create/delete/rename 必填）' },
+            from: { type: 'string', description: 'create 时的起点引用（可选）' },
+            to: { type: 'string', description: 'rename 后的新名字' },
+            force: { type: 'boolean', description: 'delete 时是否强制删除' },
+            checkout: { type: 'boolean', description: 'create 后是否切换到新分支' },
+          },
+          required: [],
+        },
+      },
+      {
+        name: 'git_checkout',
+        description:
+          '切换分支（或创建并切换）。参数：target（分支/提交，必填）、create（true 时新建分支）、startPoint（新建的起点）、force（默认 false；true 会丢弃工作区未提交改动，慎用）。',
+        parameters: {
+          type: 'object',
+          properties: {
+            target: { type: 'string', description: '目标分支或提交' },
+            create: { type: 'boolean', description: '是否新建分支' },
+            startPoint: { type: 'string', description: '新建分支的起点' },
+            force: { type: 'boolean', description: '强制切换（丢弃改动）' },
+          },
+          required: ['target'],
+        },
+      },
+      {
+        name: 'git_fetch',
+        description:
+          'git fetch：只拉取远程引用，不改动工作区。参数：remote（默认 origin）、prune（默认 true，清理远程已删除的分支）。',
+        parameters: {
+          type: 'object',
+          properties: {
+            remote: { type: 'string', description: '远程名，默认 origin' },
+            prune: { type: 'boolean', description: '是否清理失效远程分支，默认 true' },
+          },
+          required: [],
+        },
+      },
+      {
+        name: 'git_pull',
+        description:
+          'git pull：拉取并快进当前分支。参数：remote（默认 origin）、branch（默认当前分支上游）、rebase（默认 false）。默认 --ff-only，本地与远程分叉时会失败并提示，不会自动造 merge commit。',
+        parameters: {
+          type: 'object',
+          properties: {
+            remote: { type: 'string', description: '远程名，默认 origin' },
+            branch: { type: 'string', description: '要拉取的远程分支' },
+            rebase: { type: 'boolean', description: '是否用 rebase 方式（默认 false）' },
+          },
+          required: [],
+        },
+      },
+      {
+        name: 'git_push',
+        description:
+          'git push：推送当前分支到远程（永不强推）。参数：remote（默认 origin）、branch（默认当前分支）、setUpstream（首次推送新分支时置 true）、tags（同时推标签）、allowProtected（默认 false；直接推 main/master 会被拒绝，需用户明确同意后才可置 true）。',
+        parameters: {
+          type: 'object',
+          properties: {
+            remote: { type: 'string', description: '远程名，默认 origin' },
+            branch: { type: 'string', description: '要推送的分支，默认当前分支' },
+            setUpstream: { type: 'boolean', description: '是否 -u 建立追踪' },
+            tags: { type: 'boolean', description: '是否同时推送标签' },
+            allowProtected: { type: 'boolean', description: '允许直推 main/master，默认 false' },
+          },
+          required: [],
+        },
+      },
+      {
         name: 'grep',
         description: 'ripgrep 风格的高速文本搜索（若系统未装 rg 则用 Node 兜底）。参数：path（搜索根目录）、pattern（正则）、glob（文件 glob 过滤数组，可选）、ignoreCase（默认 false）、maxResults（默认 200）。',
         parameters: {
@@ -667,6 +796,22 @@ export class ToolManager {
           required: ['description'],
         },
       },
+      {
+        name: AUTOFIX_TOOL_NAME,
+        description:
+          '测试自愈循环：跑测试 → 解析失败（file:line + 原因）→ 派子 Agent 修代码 → 再跑，直到全绿或到达轮数上限。适合「刚改完代码，把测试修绿」这类机械循环。会禁止改断言/skip 测试来伪造通过。参数：maxRounds（修复轮数，默认 3，上限 5）、framework / extraArgs / timeoutMs（透传给 run_tests）、fixTurns（每轮子 Agent 最大轮数，默认 10）。',
+        parameters: {
+          type: 'object',
+          properties: {
+            maxRounds: { type: 'number', description: '修复轮数，默认 3，上限 5' },
+            framework: { type: 'string', enum: ['npm', 'yarn', 'pnpm', 'pytest', 'go', 'cargo', 'make'] },
+            extraArgs: { type: 'array', items: { type: 'string' } },
+            timeoutMs: { type: 'number' },
+            fixTurns: { type: 'number', description: '每轮修复子 Agent 的最大轮数，默认 10，上限 20' },
+          },
+          required: [],
+        },
+      },
     ];
 
     // 只投递真正可用的工具。无法工作的工具留在表里，模型会照调不误——
@@ -677,8 +822,10 @@ export class ToolManager {
       return true;
     });
 
-    if (mode === 'ask') {
-      return available.filter((t) => ['read_file', 'search_files', 'list_directory', 'get_plan', 'grep', 'web_search', 'web_fetch', 'git_status', 'git_log', 'semantic_search'].includes(t.name));
+    if (mode === 'ask' || mode === 'architect') {
+      const readOnly = ['read_file', 'search_files', 'list_directory', 'get_plan', 'grep', 'web_search', 'web_fetch', 'git_status', 'git_log', 'semantic_search'];
+      const planning = ['create_plan', 'update_plan_status', 'add_plan_item', 'get_plan', 'mark_plan_complete'];
+      return available.filter((t) => readOnly.includes(t.name) || (mode === 'architect' && planning.includes(t.name)));
     }
     return available;
   }
@@ -702,13 +849,18 @@ export class ToolManager {
    * 全量塞进 messages 会瞬间逼近上下文上限并稀释模型注意力，
    * 因此在这里统一截断；被截断时把完整结果落盘，返回路径供后续精确读取。
    */
-  async execute(toolName: string, args: any, signal?: AbortSignal): Promise<ToolResult> {
+  async execute(
+    toolName: string,
+    args: any,
+    signal?: AbortSignal,
+    onProgress?: (p: ToolProgress) => void,
+  ): Promise<ToolResult> {
     const planItem = this.planManager && this.sessionId && !toolName.startsWith('plan_')
       ? this.planManager.findMatchingItem(this.sessionId, toolName, args)
       : null;
     if (planItem?.status === 'pending') this.planManager!.startItem(this.sessionId!, planItem.id);
 
-    const result = await this.executeRaw(toolName, args, signal);
+    const result = await this.executeRaw(toolName, args, signal, onProgress);
     if (planItem) {
       const succeeded = result?.success !== false;
       if (succeeded) this.planManager!.completeItem(this.sessionId!, planItem.id);
@@ -763,7 +915,12 @@ export class ToolManager {
     }
   }
 
-  private async executeRaw(toolName: string, args: any, signal?: AbortSignal): Promise<ToolResult> {
+  private async executeRaw(
+    toolName: string,
+    args: any,
+    signal?: AbortSignal,
+    onProgress?: (p: ToolProgress) => void,
+  ): Promise<ToolResult> {
     try {
       if (toolName.startsWith('mcp__')) {
         const parts = toolName.split('__');
@@ -833,9 +990,118 @@ export class ToolManager {
         case 'execute_command': {
           // cwd 也按工作区解析：模型常给 "." 或相对子目录
           const cwd = args.cwd ? this.resolvePath(args.cwd) : this.workspaceId || process.cwd();
-          const result = await this.terminalAdapter.exec(args.command, cwd, args.timeout, signal);
-          if (!result.success) return { success: false, error: result.error, output: result.stdout };
-          return { success: true, output: result.stdout || result.stderr || '命令执行完成' };
+          // 命令输出上限：优先取设置项（KB），未配置则用内置默认
+          const maxKB = this.config?.get?.('agentConfig.maxCommandOutputKB', 0) || 0;
+          const maxChars = maxKB > 0 ? maxKB * 1024 : undefined;
+          // 实时进度：只在需要时挂载回调，避免每条命令都做字符串解析
+          let tail = '';
+          let lastEmit = 0;
+          const onChunk = onProgress
+            ? (text: string) => {
+                tail = (tail + text).slice(-4096);
+                const now = Date.now();
+                if (now - lastEmit < 200) return;
+                const p = parseProgress(tail);
+                if (p) {
+                  lastEmit = now;
+                  onProgress!(p);
+                }
+              }
+            : undefined;
+          const result = await this.terminalAdapter.exec(args.command, cwd, args.timeout, signal, { maxChars, onChunk });
+          // 输出被截断时必须显式告诉模型，否则它会以为命令真的只输出了这么点内容，
+          // 进而基于残缺结果继续推理（全盘扫描类命令最容易踩这个坑）。
+          const note = (s?: string): string => {
+            const body = s || '';
+            if (!result.truncated) return body;
+            return (
+              body +
+              `\n\n[输出过大已截断：仅保留前 ${body.length} 字符，另有约 ${result.droppedChars ?? 0} 字符被丢弃。` +
+              '请缩小命令的输出范围（限定目录/加 -Depth、-First、Select-Object 或过滤条件）后重试。]'
+            );
+          };
+          if (!result.success) return { success: false, error: result.error, output: note(result.stdout) };
+          return { success: true, output: note(result.stdout) || result.stderr || '命令执行完成' };
+        }
+        case 'run_python': {
+          const cwd = args.cwd ? this.resolvePath(args.cwd) : this.workspaceId || process.cwd();
+          const fileArg = typeof args.file === 'string' ? args.file.trim() : '';
+          const codeArg = typeof args.code === 'string' ? args.code : '';
+          if (!fileArg && !codeArg) return { success: false, error: '参数 file 与 code 至少提供一个' };
+
+          // 解析解释器：配置路径 > 项目 venv > 内置 > 系统；找不到直接报错，不静默
+          const configured =
+            String(this.config?.get?.('agentConfig.pythonPath', '') || '').trim() ||
+            String(this.config?.get?.('pptMaster.pythonPath', '') || '').trim() ||
+            null;
+          const py = await resolvePython({
+            configuredPath: configured,
+            resourcesPath: (process as any).resourcesPath || null,
+            projectRoot: this.workspaceId || cwd,
+          });
+          if (!py) {
+            return { success: false, error: '未找到可用的 Python 解释器。请安装 Python 3.9+，或在设置 - Agent 中指定解释器路径。' };
+          }
+          if (!py.usable) {
+            return { success: false, error: `Python 版本过低：${py.version ?? '未知'}，需要 3.9+` };
+          }
+
+          const scriptPath = fileArg ? this.resolvePath(fileArg) : '';
+          if (scriptPath && !existsSync(scriptPath)) {
+            return { success: false, error: `脚本不存在：${scriptPath}` };
+          }
+
+          // -u 无缓冲：管道下 stdout 否则会块缓冲，PROGRESS 进度行要攒满才吐出
+          const argv: string[] = ['-u'];
+          if (codeArg) argv.push('-c', codeArg);
+          else argv.push(scriptPath);
+          if (Array.isArray(args.args)) argv.push(...args.args.map((a: any) => String(a)));
+
+          const maxKB = this.config?.get?.('agentConfig.maxCommandOutputKB', 0) || 0;
+          const maxChars = maxKB > 0 ? maxKB * 1024 : undefined;
+          const rawTimeout = Number(args.timeout);
+          const timeout =
+            Number.isFinite(rawTimeout) && rawTimeout > 0
+              ? Math.min(900_000, Math.max(1_000, Math.floor(rawTimeout)))
+              : 240_000;
+
+          // 实时进度：与 execute_command 同款尾部窗口解析 PROGRESS
+          let tail = '';
+          let lastEmit = 0;
+          const onChunk = onProgress
+            ? (text: string) => {
+                tail = (tail + text).slice(-4096);
+                const now = Date.now();
+                if (now - lastEmit < 200) return;
+                const p = parseProgress(tail);
+                if (p) {
+                  lastEmit = now;
+                  onProgress!(p);
+                }
+              }
+            : undefined;
+
+          const result = await this.terminalAdapter.execProgram(py.path, argv, { cwd, timeout, signal, maxChars, onChunk });
+          const note = (s?: string): string => {
+            const body = s || '';
+            if (!result.truncated) return body;
+            return (
+              body +
+              `\n\n[输出过大已截断：仅保留前 ${body.length} 字符，另有约 ${result.droppedChars ?? 0} 字符被丢弃。` +
+              '请缩小输出范围（只打印关键信息 / 分批处理）后重试。]'
+            );
+          };
+          if (!result.success) {
+            const tb = parsePythonTraceback(result.stderr || '');
+            return {
+              success: false,
+              // 失败以 stderr（traceback）为准，模型才知道错了什么
+              error: note(result.stderr) || note(result.error) || '脚本执行失败',
+              output: note(result.stdout),
+              errorMeta: tb,
+            };
+          }
+          return { success: true, output: note(result.stdout) || result.stderr || '脚本执行完成' };
         }
         case 'apply_diff': {
           return this.applyDiff(this.resolvePath(args.path), args.diff);
@@ -1092,6 +1358,61 @@ export class ToolManager {
           if (!r.entries || r.entries.length === 0) return { success: true, output: '无提交记录' };
           const list = r.entries.map((e) => `${e.shortHash} | ${e.date} | ${e.author}\n   ${e.subject}`).join('\n');
           return { success: true, output: list };
+        }
+        case 'git_branch': {
+          if (!this.workspaceId) return { success: false, error: '无当前工作区' };
+          const r = await gitBranch(this.workspaceId, {
+            action: args.action,
+            name: args.name,
+            from: args.from,
+            to: args.to,
+            force: !!args.force,
+            checkout: !!args.checkout,
+          });
+          if (!r.success) return { success: false, error: r.error };
+          if (r.local) {
+            const locals = r.local.map((b) => `${b.current ? '*' : ' '} ${b.name}${b.upstream ? ` -> ${b.upstream}` : ''}`);
+            const remotes = (r.remote || []).map((b) => `  ${b.name}`);
+            const out = [`当前分支：${r.current || '(未知)'}`, '本地分支：', ...locals];
+            if (remotes.length) out.push('', '远程分支：', ...remotes);
+            return { success: true, output: out.join('\n') };
+          }
+          return { success: true, output: r.output || '完成' };
+        }
+        case 'git_checkout': {
+          if (!this.workspaceId) return { success: false, error: '无当前工作区' };
+          const r = await gitCheckout(this.workspaceId, args.target, {
+            create: !!args.create,
+            startPoint: args.startPoint,
+            force: !!args.force,
+          });
+          if (!r.success) return { success: false, error: r.error };
+          return { success: true, output: r.output || `已切换到 ${r.branch || args.target}` };
+        }
+        case 'git_fetch': {
+          if (!this.workspaceId) return { success: false, error: '无当前工作区' };
+          const r = await gitFetch(this.workspaceId, { remote: args.remote, prune: args.prune });
+          if (!r.success) return { success: false, error: r.error };
+          return { success: true, output: r.output || '已拉取远程引用' };
+        }
+        case 'git_pull': {
+          if (!this.workspaceId) return { success: false, error: '无当前工作区' };
+          const r = await gitPull(this.workspaceId, { remote: args.remote, branch: args.branch, rebase: !!args.rebase });
+          if (!r.success) return { success: false, error: r.error };
+          return { success: true, output: r.output || '已拉取并同步' };
+        }
+        case 'git_push': {
+          if (!this.workspaceId) return { success: false, error: '无当前工作区' };
+          const r = await gitPush(this.workspaceId, {
+            remote: args.remote,
+            branch: args.branch,
+            setUpstream: !!args.setUpstream,
+            tags: !!args.tags,
+            allowProtected: !!args.allowProtected,
+          });
+          if (!r.success) return { success: false, error: r.error };
+          const ab = typeof r.ahead === 'number' ? `（与上游：领先 ${r.ahead} / 落后 ${r.behind ?? 0}）` : '';
+          return { success: true, output: `${r.output || `已推送 ${r.branch}`}${ab}` };
         }
         case 'grep': {
           const r = await grep({

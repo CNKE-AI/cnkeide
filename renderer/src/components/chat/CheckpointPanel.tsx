@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { History, RotateCcw, X, Loader2, GitCompare } from 'lucide-react';
 
 import { toast } from '../../utils/toast';
+import { toolLabel } from '../../store/agentActivityStore';
 interface Snapshot {
   snapshotId?: string;
   id?: string;
@@ -66,7 +67,7 @@ const CheckpointPanel: React.FC<Props> = ({ sessionId, onClose }) => {
 
   return createPortal(
     <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-      <div className="bg-card border border-border rounded-xl w-[480px] max-h-[80vh] flex flex-col shadow-2xl">
+      <div className="overlay-panel w-[480px] max-h-[80vh] flex flex-col">
         <div className="flex items-center justify-between px-4 py-3 border-b border-border">
           <div className="flex items-center gap-2 text-sm font-semibold">
             <History className="w-4 h-4 text-cyan-400" />
@@ -93,7 +94,7 @@ const CheckpointPanel: React.FC<Props> = ({ sessionId, onClose }) => {
                     <div className="text-[10px] text-muted-foreground/60">
                       {s.createdAt ? new Date(s.createdAt).toLocaleString() : ''}
                       {s.fileCount !== undefined ? ` · ${s.fileCount} 文件` : ''}
-                      {s.toolName ? ` · ${s.toolName}` : ''}
+                      {s.toolName ? ` · ${toolLabel(s.toolName)}` : ''}
                     </div>
                   </div>
                   <button

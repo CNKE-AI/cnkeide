@@ -6,7 +6,9 @@ import { useChatStore, ChatMessage, AgentMode, UploadedFile, MAX_FILE_TEXT_CHARS
 import { useApp } from '../../store/AppProvider';
 import Markdown from './Markdown';
 import ToolCallView from './ToolCallView';
+import { toolLabel } from '../../store/agentActivityStore';
 import { MemoryPanel } from './MemoryPanel';
+import VoiceInputButton from './VoiceInputButton';
 import {
   Send, Square, Brain, Hammer, Bug, MessageCircleQuestion,
   Plus, ChevronDown, ChevronRight, Paperclip, Sparkles, Zap, MessageCircle,
@@ -23,12 +25,13 @@ import ChatHeader from './ChatHeader';
 import CheckpointPanel from './CheckpointPanel';
 import ApprovalRulesPanel from './ApprovalRulesPanel';
 import { useUiStore } from '../../store/uiStore';
+import type { TaskItem } from '../../global';
 
 const MODES: { id: AgentMode; label: string; icon: React.ReactNode; color: string }[] = [
-  { id: 'ask', label: 'Ask', icon: <MessageCircleQuestion className="w-3.5 h-3.5" />, color: 'text-amber-400' },
-  { id: 'coder', label: 'Craft', icon: <Hammer className="w-3.5 h-3.5" />, color: 'text-violet-400' },
-  { id: 'architect', label: 'Plan', icon: <Brain className="w-3.5 h-3.5" />, color: 'text-cyan-400' },
-  { id: 'debugger', label: 'Debug', icon: <Bug className="w-3.5 h-3.5" />, color: 'text-emerald-400' },
+  { id: 'ask', label: 'Ask', icon: <MessageCircleQuestion className="w-3 h-3" />, color: 'text-amber-400' },
+  { id: 'coder', label: 'Craft', icon: <Hammer className="w-3 h-3" />, color: 'text-violet-400' },
+  { id: 'architect', label: 'Plan', icon: <Brain className="w-3 h-3" />, color: 'text-cyan-400' },
+  { id: 'debugger', label: 'Debug', icon: <Bug className="w-3 h-3" />, color: 'text-emerald-400' },
 ];
 
 /**
@@ -440,7 +443,7 @@ const MessageBubble = React.memo(({ msg, streaming, onRegenerate, onRemember, on
   if (msg.role === 'user') {
     return (
       <div className="chat-msg flex justify-end mb-5">
-        <div className="max-w-[85%] bg-primary/10 border border-primary/15 rounded-2xl rounded-tr-md px-4 py-3 shadow-sm">
+        <div className="bubble-user max-w-[85%] px-4 py-3">
           {msg.files && msg.files.length > 0 && (
             <div className="flex flex-wrap gap-1.5 mb-1.5">
               {msg.files.map((f) => (
@@ -601,10 +604,10 @@ const ChatPanel: React.FC = () => {
   // 原来的写法让 store 里任何字段变化（含流式期间每帧的 messages）都触发本组件重渲染；
   // 配合下方 MessageBubble 的 memo，历史气泡虽然会跳过，但表头、输入区等仍被无谓重算。
   const {
-    messages, sessionId, sessions, loading, mode, autoMode,
+    messages, sessionId, sessions, loading, mode, autoMode, autoInteraction, conversation, setAutoInteraction,
     setMode, setAutoMode, initAutoMode, sendMessage, abort,
     refreshSessions, startNewSession, switchSession, removeSession,
-    rollback, regenerateMessage, activeWorkspaceId,
+    rollback, regenerateMessage, activeWorkspaceId, setActiveWorkspaceId,
   } = useChatStore(
     (s) => ({
       messages: s.messages,
@@ -613,6 +616,9 @@ const ChatPanel: React.FC = () => {
       loading: s.loading,
       mode: s.mode,
       autoMode: s.autoMode,
+      autoInteraction: s.autoInteraction,
+      conversation: s.conversation,
+      setAutoInteraction: s.setAutoInteraction,
       setMode: s.setMode,
       setAutoMode: s.setAutoMode,
       initAutoMode: s.initAutoMode,
@@ -625,6 +631,7 @@ const ChatPanel: React.FC = () => {
       rollback: s.rollback,
       regenerateMessage: s.regenerateMessage,
       activeWorkspaceId: s.activeWorkspaceId,
+      setActiveWorkspaceId: s.setActiveWorkspaceId,
     }),
     shallow
   );
@@ -1017,6 +1024,47 @@ const ChatPanel: React.FC = () => {
     await startNewSession(p);
   };
 
+  /**
+   * 打开任务（TRAE 式）：先切工作区，再进这个任务下的对话。
+   *
+   * 这里必须调用 setWorkspacePath 而不是只 switchSession：
+   * 文件树/编辑器/终端都挂在 AppProvider.workspacePath 上，
+   * 只切会话的话会出现"对话换了、左边还是旧文件夹"的错位。
+   * 有历史对话就回到最近那个，没有才新建，避免每次点任务都多出一个空对话。
+   */
+  const handleOpenTask = async (task: TaskItem) => {
+    if (loading) return;
+    setWorkspacePath(task.workspacePath);
+    await refreshSessions(task.workspacePath);
+    // refreshSessions 只写 store，返回值不受控，直接从 store 取本次结果
+    const recent = useChatStore
+      .getState()
+      .sessions.find((s) => (s.workspaceId || task.workspacePath) === task.workspacePath);
+    if (recent) await switchSession(task.workspacePath, recent.id);
+    else await startNewSession(task.workspacePath);
+  };
+
+  /** 刚建好的任务：文件夹是空的，直接开一个绑定它的新对话 */
+  const handleTaskCreated = async (task: TaskItem) => {
+    setWorkspacePath(task.workspacePath);
+    await startNewSession(task.workspacePath);
+  };
+
+  /**
+   * 当前任务被改名：主进程已经把目录和会话绑定都迁到新路径，
+   * 这里只要把工作区指过去，文件树/编辑器/终端就会跟着重连。
+   * 不是当前任务就不动 —— 否则会莫名其妙把用户踢出正在编辑的目录。
+   */
+  const handleTaskRenamed = async (task: TaskItem, previousPath: string) => {
+    if (!workspacePath || workspacePath !== previousPath) return;
+    // 顺序很关键：activeWorkspaceId 还指着旧目录时，下面那个
+    // 「activeWorkspaceId !== workspacePath 就切回去」的 effect
+    // 会立刻把工作区拽回已不存在的旧路径，所以先改绑再切。
+    setActiveWorkspaceId(task.workspacePath);
+    setWorkspacePath(task.workspacePath);
+    await refreshSessions(task.workspacePath);
+  };
+
   const handleDeleteCurrent = () => {
     const ws = activeWorkspaceId || workspacePath;
     if (!ws || !sessionId || loading) return;
@@ -1079,7 +1127,7 @@ const ChatPanel: React.FC = () => {
   }, [activeWorkspaceId, workspacePath, regenerateMessage]);
 
   return (
-    <div className="flex flex-col h-full bg-background">
+    <div className="flex flex-col h-full bg-transparent">
       {/* 顶部会话栏：会话标签自适应宽度 + 固定操作区，低频操作收进「更多」菜单 */}
       <ChatHeader
         sessions={sessions}
@@ -1100,6 +1148,9 @@ const ChatPanel: React.FC = () => {
         }}
         onCreate={() => void handleNewChat()}
         onCreateNewWorkspace={() => void handleNewChatNewWorkspace()}
+        onOpenTask={(t) => void handleOpenTask(t)}
+        onTaskCreated={(t) => void handleTaskCreated(t)}
+        onTaskRenamed={(t, prev) => void handleTaskRenamed(t, prev)}
         onImport={() => { void refreshSessions(workspacePath || activeWorkspaceId || ''); }}
         onSummarized={() => { if (sessionId) void refreshContext(sessionId); }}
         onRollback={() => { const ws = activeWorkspaceId || workspacePath; if (ws) void rollback(ws); }}
@@ -1134,7 +1185,7 @@ const ChatPanel: React.FC = () => {
                   // setWorkspacePath 已负责同步文件树 + 启动监听，是等价且无损的做法
                   if (p) setWorkspacePath(p);
                 })(); }}
-                className="text-xs border border-border rounded-lg px-3.5 py-1.5 hover:bg-accent transition-colors mt-1"
+                className="ios-btn mt-1.5"
               >
                 打开文件夹
               </button>
@@ -1167,7 +1218,7 @@ const ChatPanel: React.FC = () => {
         {!atBottom && (
           <button
             onClick={scrollToBottom}
-            className="absolute -top-11 left-1/2 -translate-x-1/2 flex items-center gap-1 rounded-full border border-border bg-popover/95 px-3 py-1.5 text-[11px] text-foreground shadow-lg backdrop-blur hover:bg-accent transition-colors"
+            className="ios-press absolute -top-11 left-1/2 -translate-x-1/2 flex items-center gap-1 rounded-pill border border-white/12 bg-popover/85 px-3.5 py-1.5 text-[11.5px] text-foreground shadow-float backdrop-blur-glass animate-pop-in"
           >
             <ArrowDown className="h-3 w-3" />
             回到底部
@@ -1178,11 +1229,16 @@ const ChatPanel: React.FC = () => {
       {/* 工具审批条：紧贴输入区上方（原实现放在输入区之后，实际渲染在窗口最底部，
           与"固定在输入区上方"的预期不符，且容易被误认为状态栏） */}
       {approval && (
-        <div className="mx-3 mb-1.5 rounded-xl border border-amber-500/30 bg-card/95 shadow-lg backdrop-blur p-3">
+        <div className="animate-pop-in mx-3 mb-1.5 rounded-xl border border-amber-300/25 bg-amber-500/[0.09] p-3 shadow-float backdrop-blur-glass">
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
               <div className="text-xs font-semibold text-amber-300">需要确认工具调用</div>
-              <div className="mt-0.5 truncate font-mono text-[11px] text-cyan-300">{approval.toolCall?.name}</div>
+              <div className="mt-0.5 truncate font-mono text-[11px] text-cyan-300">
+                {toolLabel(approval.toolCall?.name || '')}
+                {approval.toolCall?.name && toolLabel(approval.toolCall.name) !== approval.toolCall.name && (
+                  <span className="ml-1.5 text-[10px] text-muted-foreground/50">{approval.toolCall.name}</span>
+                )}
+              </div>
             </div>
             <div className="flex shrink-0 gap-2">
               <button onClick={() => { window.cnke.toolApprove.respond(approval.requestId, false); setApproval(null); }} className="rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-accent">拒绝</button>
@@ -1192,15 +1248,15 @@ const ChatPanel: React.FC = () => {
         </div>
       )}
 
-      {/* 输入区 */}
-      <div className="p-3 pt-2 border-t border-border/70 bg-secondary/15">
-        {/* 顶部拖动手柄：上下拖动调整下方输入框高度 */}
+      {/* 输入区：底部渐隐玻璃托底，让输入卡片"浮"在对话之上 */}
+      <div className="composer-dock px-3 pb-3 pt-2">
+        {/* 顶部拖动手柄：上下拖动调整输入框高度 */}
         <div
           onMouseDown={handleResizeMouseDown}
           className="flex items-center justify-center mb-1.5 -mt-0.5 h-3 cursor-ns-resize group select-none"
           title="上下拖动调整输入框高度"
         >
-          <div className="h-1 w-14 rounded-full bg-border/80 group-hover:bg-primary/60 transition-colors" />
+          <div className="h-1 w-14 rounded-pill bg-white/15 group-hover:bg-primary/70 transition-colors" />
         </div>
         {images.length > 0 && (
           <div className="flex flex-wrap gap-1.5 mb-2">
@@ -1238,9 +1294,9 @@ const ChatPanel: React.FC = () => {
           </div>
         )}
         {/* 整体输入卡片：顶部附件工具条 + 主输入区（统一边框） */}
-        <div className="brand-ring bg-card border border-transparent rounded-xl overflow-hidden shadow-md">
+        <div className="brand-ring composer-card overflow-hidden">
           {/* 顶部工具条：附件 / 引用 / PPT 等"给输入注入内容"的入口 */}
-          <div className="flex items-center gap-0.5 px-2 py-[5px] border-b border-border/50 bg-secondary/30">
+          <div className="flex items-center gap-0.5 px-2 py-[5px] border-b border-white/[0.06] bg-white/[0.03]">
             <button
               onClick={() => fileInputRef.current?.click()}
               className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition-colors"
@@ -1255,6 +1311,18 @@ const ChatPanel: React.FC = () => {
               className="hidden"
               onChange={(e) => void handleFileSelect(e)}
               aria-label="上传文件"
+            />
+            {/* 语音输入：内置离线中文识别，落定文字实时追加到输入框 */}
+            <VoiceInputButton
+              onText={(text: string) =>
+                setInput((prev: string) => {
+                  // 落定文本与已有内容之间智能衔接：空输入直接填入，否则补空格
+                  if (!prev) return text;
+                  const needSpace = !/\s$/.test(prev) && !/^\s/.test(text);
+                  return prev + (needSpace ? ' ' : '') + text;
+                })
+              }
+              className="w-8 h-8"
             />
             <button
               onClick={openRefPicker}
@@ -1312,52 +1380,74 @@ const ChatPanel: React.FC = () => {
             {loading ? (
               <button
                 onClick={handleStop}
-                className="p-2 bg-red-600/80 hover:bg-red-600 rounded-lg transition-colors shrink-0"
+                className="ios-press w-8 h-8 flex items-center justify-center rounded-[11px] bg-rose-500/85 hover:bg-rose-500 shadow-soft shrink-0"
                 title="停止生成"
+                aria-label="停止生成"
               >
-                <Square className="w-4 h-4 text-white" />
+                <Square className="w-3.5 h-3.5 text-white" />
               </button>
             ) : (
               <button
                 onClick={() => void handleSend()}
                 disabled={!input.trim() && images.length === 0 && files.length === 0}
-                className={`p-2 rounded-lg transition-colors shrink-0 ${
+                className={`w-8 h-8 flex items-center justify-center rounded-[11px] shrink-0 ${
                   !input.trim() && images.length === 0 && files.length === 0
-                    ? 'bg-secondary text-muted-foreground cursor-not-allowed'
+                    ? 'bg-white/[0.07] text-muted-foreground/60 cursor-not-allowed'
                     : 'btn-gradient'
                 }`}
                 title="发送"
+                aria-label="发送"
               >
-                <Send className="w-4 h-4" />
+                <Send className="w-3.5 h-3.5" />
               </button>
             )}
           </div>
         </div>
-        <div className="flex items-center justify-between gap-2 mt-2 px-0.5">
+        <div className="flex items-center justify-between gap-1.5 mt-1.5 px-0.5">
           {/* 模型切换 */}
           <ModelSwitcher />
           {/* Agent 模式切换 */}
-          <div className="segmented">
+          <div className="segmented shrink-0">
+            <button
+              type="button"
+              disabled={loading}
+              aria-pressed={autoInteraction}
+              aria-label="智能切换交互模式"
+              title="自动识别 Ask / Craft / Plan；不会开启自动审批"
+              onClick={() => setAutoInteraction(!autoInteraction)}
+              className={`segmented__item text-[10px] ${autoInteraction ? 'text-cyan-400 bg-white/[0.12]' : 'text-muted-foreground'}`}
+            >
+              智能
+            </button>
             {MODES.map((m) => (
               <button
                 key={m.id}
+                disabled={loading}
                 onClick={() => setMode(m.id)}
-                className={`segmented__item flex items-center justify-center gap-1 ${
+                className={`segmented__item ${
                   mode === m.id
-                    ? `bg-primary/15 border border-primary/30 ${m.color}`
-                    : 'text-muted-foreground hover:bg-accent/60 border border-transparent'
+                    ? `bg-white/[0.12] border border-white/[0.16] shadow-soft ${m.color}`
+                    : 'text-muted-foreground border-0'
                 }`}
                 title={m.label}
+                aria-label={m.label}
+                aria-pressed={mode === m.id}
               >
                 {m.icon}
-                <span className="hidden md:inline">{m.label}</span>
+                <span className="hidden xl:inline">{m.label}</span>
               </button>
             ))}
           </div>
         </div>
         {/* 状态提示行：模式 / 全自动 / 会话保存 */}
         <p className="text-[10px] text-muted-foreground/50 mt-1.5 px-1 flex items-center gap-1.5 truncate">
-          <span>{MODES.find((m) => m.id === mode)?.label} 模式</span>
+          <span>{autoInteraction ? '智能 · ' : ''}{MODES.find((m) => m.id === mode)?.label} 模式</span>
+          {conversation && (
+            <span data-testid="conversation-context" className="truncate" title={conversation.reason}>
+              {conversation.language.toUpperCase()} · {conversation.topic}
+              {conversation.resetHistory ? ' · 新话题' : ''}
+            </span>
+          )}
           {autoMode && (
             <span className="text-amber-500/80 flex items-center gap-0.5 shrink-0">
               <Zap className="w-2.5 h-2.5 fill-amber-400 text-amber-400" />
@@ -1367,6 +1457,13 @@ const ChatPanel: React.FC = () => {
           <span className="text-muted-foreground/30 shrink-0">·</span>
           <span className="truncate">支持上传文件/图片 · 会话自动保存</span>
         </p>
+      </div>
+
+      <div
+        data-testid="chat-ai-disclaimer"
+        className="shrink-0 select-none pointer-events-none px-3 pb-2 text-center text-[10px] leading-4 tracking-wide text-muted-foreground/60"
+      >
+        内容由 AI 生成，请核实重要信息。
       </div>
 
       {/* @ 引用 / #codebase 选择器 */}

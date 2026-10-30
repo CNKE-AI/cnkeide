@@ -104,6 +104,214 @@ export interface InlineCompletionRequest {
   suffix: string;
 }
 
+// ===== 任务工作区（W19）=====
+// 一个任务 = 一个工作区文件夹 + 绑定该文件夹的会话。
+// id 与 workspacePath 相同（绝对路径），即 session.workspaceId 的主键。
+export interface TaskItem {
+  id: string;
+  name: string;
+  dirName: string;
+  parentDir: string;
+  workspacePath: string;
+  createdAt: number;
+  sessionCount: number;
+  /** 已归档：默认折叠在「已归档」分组里，不参与日常切换 */
+  archived: boolean;
+  /** 归档时间（取消归档后为 0） */
+  archivedAt?: number;
+  /** 文件夹已不在磁盘上（被手动删除/移动/未挂载） */
+  missing: boolean;
+  /** 仅重命名返回：目录是否真的改了名 */
+  dirChanged?: boolean;
+  /** 仅重命名返回：改名前的路径（调用方据此更新本地状态） */
+  previousPath?: string;
+  /** 仅重命名返回：为释放目录占用而被关掉的终端数量 */
+  terminalsClosed?: number;
+}
+
+// ===== 历史统计看板（W18）=====
+// 与主进程 electron/core-fork/analytics 的返回结构一一对应；
+// 这里独立声明而非 import，避免渲染层跨 tsconfig 引用主进程源码。
+export type StatsRange = '7d' | '30d' | '90d' | 'all';
+export type StatsSortBy = 'updatedAt' | 'totalTokens' | 'messages' | 'toolCalls';
+
+export interface StatsQuery {
+  range?: StatsRange;
+  workspaceId?: string | null;
+  keyword?: string | null;
+  page?: number;
+  pageSize?: number;
+  sortBy?: StatsSortBy;
+}
+
+// ===== 全文搜索（W22）=====
+export interface SearchOptions {
+  caseSensitive?: boolean;
+  regex?: boolean;
+  wholeWord?: boolean;
+  maxResults?: number;
+}
+
+export interface ContentMatch {
+  file: string;
+  relativePath: string;
+  line: number;
+  column: number;
+  text: string;
+}
+
+export interface SearchResultSet {
+  matches: ContentMatch[];
+  filesScanned: number;
+  truncated: boolean;
+  skippedLarge: number;
+  timedOut: boolean;
+}
+
+/** 导出结果：canceled=true 表示用户在保存框里点了取消 */
+export interface StatsExportResult {
+  canceled: boolean;
+  filePath?: string;
+  bytes?: number;
+  rows?: number;
+}
+
+export interface StatsDailyPoint {
+  date: string;
+  sessions: number;
+  messages: number;
+  userMessages: number;
+  assistantMessages: number;
+  toolCalls: number;
+  toolFailures: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
+export interface StatsSummary {
+  sessions: number;
+  messages: number;
+  userMessages: number;
+  assistantMessages: number;
+  toolCalls: number;
+  toolFailures: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  cachedTokens: number;
+  reasoningTokens: number;
+  cacheHitRate: number;
+  toolFailureRate: number;
+  activeDays: number;
+  spanDays: number;
+  avgTokensPerSession: number;
+  avgMessagesPerSession: number;
+  avgTokensPerMessage: number;
+  peakDate: string | null;
+  peakTokens: number;
+  firstAt: number | null;
+  lastAt: number | null;
+}
+
+export interface StatsRingKpi {
+  key: string;
+  label: string;
+  value: number;
+  display: string;
+  sub: string;
+  tone: 'violet' | 'amber' | 'cyan' | 'emerald';
+}
+
+export interface StatsModelSlice {
+  model: string;
+  messages: number;
+  tokens: number;
+  share: number;
+}
+
+export interface StatsToolSlice {
+  tool: string;
+  count: number;
+  failures: number;
+  share: number;
+}
+
+export interface StatsInsight {
+  level: 'good' | 'warn' | 'info';
+  title: string;
+  detail: string;
+  metric?: string;
+}
+
+export interface StatsForecastPoint {
+  date: string;
+  tokens: number;
+  lower: number;
+  upper: number;
+}
+
+export interface StatsTrendModel {
+  slope: number;
+  r2: number;
+  movingAvg: number;
+  growthRate: number | null;
+  forecast: StatsForecastPoint[];
+  anomalies: { date: string; tokens: number; z: number }[];
+  direction: 'up' | 'down' | 'flat';
+}
+
+export interface StatsDashboard {
+  generatedAt: number;
+  range: string;
+  summary: StatsSummary;
+  kpis: StatsRingKpi[];
+  daily: StatsDailyPoint[];
+  trend: StatsTrendModel;
+  models: StatsModelSlice[];
+  tools: StatsToolSlice[];
+  hourly: number[];
+  insights: StatsInsight[];
+  activityScore: number;
+}
+
+export interface StatsSessionRow {
+  id: string;
+  title: string;
+  workspaceId: string;
+  mode: string;
+  createdAt: number;
+  updatedAt: number;
+  messages: number;
+  userMessages: number;
+  assistantMessages: number;
+  toolCalls: number;
+  toolFailures: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  models: string[];
+  firstMessageAt: number | null;
+  lastMessageAt: number | null;
+  durationMs: number;
+  preview: string;
+}
+
+export interface StatsWorkspaceOption {
+  id: string;
+  label: string;
+  sessions: number;
+}
+
+export interface StatsSessionPage {
+  rows: StatsSessionRow[];
+  total: number;
+  page: number;
+  pageSize: number;
+  pages: number;
+  workspaces: StatsWorkspaceOption[];
+}
+
 export interface CnkeAPI {
   window: {
     minimize: () => void;
@@ -172,6 +380,15 @@ export interface CnkeAPI {
     saveApiConfig: (config: unknown) => Promise<{ success: boolean; error?: string }>;
     deleteApiConfig: (id: string) => Promise<{ success: boolean; error?: string }>;
     syncBuiltins: () => Promise<{ success: boolean; added: number; updated: number; removed: number; error?: string }>;
+  };
+  /** 语音输入（内置离线识别，详见 electron/voice/VoiceEngine.ts） */
+  voice: {
+    status: () => Promise<{ ready: boolean; message: string; progress: number }>;
+    feed: (samples: number[]) => void;
+    finalize: () => Promise<string>;
+    reset: () => void;
+    onText: (cb: (data: { text: string; final: boolean }) => void) => () => void;
+    onStatus: (cb: (s: { ready: boolean; message: string; progress: number }) => void) => () => void;
   };
   /** AI 行内补全（独立轻量通道，不污染聊天会话） */
   completion: {
@@ -374,6 +591,65 @@ export interface CnkeAPI {
     ) => () => void;
     onInstallOutput: (handler: (line: string) => void) => () => void;
   };
+  /** 历史统计看板：统计模型在主进程完成聚合，渲染层只负责展示 */
+  stats: {
+    dashboard: (filter?: StatsQuery) => Promise<{ success: boolean; data?: StatsDashboard; error?: string }>;
+    sessions: (query?: StatsQuery) => Promise<{ success: boolean; data?: StatsSessionPage; error?: string }>;
+    /** 导出当前筛选结果（主进程弹保存框并写盘；canceled 表示用户取消） */
+    export: (
+      query?: StatsQuery,
+      format?: 'csv' | 'markdown',
+    ) => Promise<{ success: boolean; data?: StatsExportResult; error?: string }>;
+  };
+  /** 任务工作区：新建任务时由主进程建文件夹，渲染层只关心结果 */
+  task: {
+    list: () => Promise<{ success: boolean; data?: TaskItem[]; error?: string }>;
+    create: (name: string, parentDir?: string) => Promise<{ success: boolean; data?: TaskItem; error?: string }>;
+    reveal: (workspacePath: string) => Promise<{ success: boolean; error?: string }>;
+    rename: (id: string, newName: string) => Promise<{ success: boolean; data?: TaskItem; error?: string }>;
+    archive: (id: string, archived?: boolean) => Promise<{ success: boolean; error?: string }>;
+  };
+  /** 工作区全文搜索（Ctrl+Shift+F） */
+  search: {
+    content: (
+      rootPath: string,
+      query: string,
+      opts?: SearchOptions,
+    ) => Promise<{ success: boolean; data?: SearchResultSet; error?: string }>;
+  };
+  /** 仓库级指令文件（AGENTS.md / CNKE.md）：每轮对话自动注入 systemPrompt */
+  project: {
+    instructions: (rootPath?: string) => Promise<ProjectInstructionsReport>;
+    createInstruction: (
+      rootPath?: string,
+      fileName?: string,
+    ) => Promise<{ success: boolean; path?: string; created?: boolean; error?: string }>;
+  };
+}
+
+/** 单条已加载的项目指令文件 */
+export interface ProjectInstructionFile {
+  path: string;
+  /** 相对工作区根目录，/ 分隔 */
+  relPath: string;
+  bytes: number;
+  /** 超过单文件上限被截断 */
+  truncated: boolean;
+  /** 相对根目录的层级深度，根目录为 0 */
+  depth: number;
+}
+
+export interface ProjectInstructionsReport {
+  success: boolean;
+  root?: string;
+  files: ProjectInstructionFile[];
+  /** 被跳过的文件（空文件 / 超预算 / 读取失败） */
+  skipped: { path: string; relPath: string; reason: string }[];
+  /** 实际注入的字节数 */
+  totalBytes: number;
+  /** 将要拼进 systemPrompt 的提示块 */
+  block: string;
+  error?: string;
 }
 
 /** 工作区文件变更条目（主进程 fs:changed 广播） */

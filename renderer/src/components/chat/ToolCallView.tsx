@@ -3,6 +3,7 @@ import { Wrench, Check, X, Ban, Undo2, Loader2 } from 'lucide-react';
 import { useChatStore } from '../../store/chatStore';
 
 import { toast } from '../../utils/toast';
+import { toolLabel } from '../../store/agentActivityStore';
 /** 行 diff 的单行：ctx 未变 / add 新增 / del 删除 */
 type DiffRow = { type: 'ctx' | 'add' | 'del'; text: string };
 /** 折叠上下文后的间隙标记 */
@@ -74,6 +75,20 @@ function collapseContext(rows: DiffRow[], ctx = 3): (DiffRow | Gap)[] {
 /** 单行超长截断，避免压缩包/锁文件之类把布局撑爆 */
 const clipLine = (s: string) => (s.length > 500 ? `${s.slice(0, 500)}…` : s);
 
+/**
+ * 工具结果整体截断：扫描类命令的 output 即便经主进程 400KB 上限截断，
+ * 整块塞进一个 break-all 文本节点仍会卡住聊天气泡渲染（白屏诱因之一）。
+ * 展示层再收一道：超过 100KB 只渲染前 100KB，尾部标注省略信息。
+ */
+const MAX_OUTPUT_CHARS = 100_000;
+const clipOutput = (s: string) =>
+  s.length > MAX_OUTPUT_CHARS
+    ? `${s.slice(0, MAX_OUTPUT_CHARS)}\n…（输出过长，已省略 ${s.length - MAX_OUTPUT_CHARS} 字符，原始共 ${s.length} 字符）`
+    : s;
+
+/** 已耗时展示：短任务用秒，超过 1 分钟用 m:ss，避免长任务一直显示 900s */
+const fmtElapsed = (s: number) => (s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s`);
+
 const ToolCallView: React.FC<{ call: any }> = ({ call }) => {
   const [open, setOpen] = React.useState(false);
   const [rolled, setRolled] = React.useState(false);
@@ -88,6 +103,25 @@ const ToolCallView: React.FC<{ call: any }> = ({ call }) => {
   // 运行中判定要结合全局 loading：历史会话的旧 toolCall 没有结果字段，不能永远转圈
   const loading = useChatStore((s) => s.loading);
   const isRunning = !isDone && loading;
+  // 长命令实时进度（来自 tool_progress 事件）
+  const progress = call.progress as { current?: number; total?: number; percent?: number } | undefined;
+
+  // 运行中：记录起始时间并每秒刷新已耗时——长任务期间给用户确定性反馈，
+  // 避免「看起来卡死 / 白屏」的错觉（UI 线程本身并未阻塞，只是任务在跑）。
+  const [elapsed, setElapsed] = React.useState(0);
+  const startedAtRef = React.useRef<number | null>(null);
+  React.useEffect(() => {
+    if (!isRunning) {
+      startedAtRef.current = null;
+      setElapsed(0);
+      return;
+    }
+    if (startedAtRef.current === null) startedAtRef.current = Date.now();
+    const tick = () => setElapsed(Math.max(0, Math.floor((Date.now() - (startedAtRef.current || Date.now())) / 1000)));
+    tick();
+    const id = window.setInterval(tick, 1000);
+    return () => window.clearInterval(id);
+  }, [isRunning]);
 
   // 头部摘要：写操作显示目标文件名，其余显示参数截断
   const argsSummary =
@@ -137,13 +171,16 @@ const ToolCallView: React.FC<{ call: any }> = ({ call }) => {
   };
 
   return (
-    <div className="bg-card/70 border border-border/60 rounded-xl text-[11.5px] font-mono overflow-hidden shadow-sm">
+    <div className="glass-panel-flat rounded-xl text-[11.5px] font-mono overflow-hidden">
       <button
         onClick={() => setOpen(!open)}
         className="flex items-center gap-2.5 px-3.5 py-2.5 w-full hover:bg-accent/35 transition-colors text-left"
       >
         <Wrench className="w-3 h-3 text-primary shrink-0" />
-        <span className="text-cyan-300 font-semibold">{call.name}</span>
+        <span className="text-cyan-300 font-semibold">{toolLabel(call.name)}</span>
+        {toolLabel(call.name) !== call.name && (
+          <span className="text-[10px] text-muted-foreground/45 shrink-0">{call.name}</span>
+        )}
         <span className="text-muted-foreground truncate flex-1">{argsSummary}</span>
         {diffMeta && !rolled && (
           <span className="shrink-0 text-[10px]">
@@ -152,6 +189,10 @@ const ToolCallView: React.FC<{ call: any }> = ({ call }) => {
           </span>
         )}
         {rolled && <span className="shrink-0 text-[10px] text-amber-400">已回滚</span>}
+        {/* 运行中显示已耗时：让长任务有「还在动」的确定感 */}
+        {isRunning && elapsed > 0 && (
+          <span className="shrink-0 text-[10px] text-muted-foreground tabular-nums">{fmtElapsed(elapsed)}</span>
+        )}
         {/* 状态徽标：运行中旋转 / 成功 / 失败 / 被拒绝 / 历史数据无结果则不显示 */}
         <span className="shrink-0">
           {isRunning ? (
@@ -166,6 +207,22 @@ const ToolCallView: React.FC<{ call: any }> = ({ call }) => {
         </span>
         <span className="text-muted-foreground">{open ? '▾' : '▸'}</span>
       </button>
+
+      {/* 长命令实时进度条（来自 tool_progress）：仅运行中且有进度时显示 */}
+      {isRunning && typeof progress?.percent === 'number' && (
+        <div className="px-3.5 pb-2">
+          <div className="flex items-center justify-between text-[10px] text-muted-foreground mb-1">
+            <span>执行中{progress.total && progress.total > 1 ? ` · ${progress.current ?? 0}/${progress.total}` : ''}</span>
+            <span className="tabular-nums">{progress.percent}%</span>
+          </div>
+          <div className="h-1 w-full rounded bg-border/50 overflow-hidden">
+            <div
+              className="h-full bg-primary transition-[width] duration-300 ease-out"
+              style={{ width: `${Math.min(100, Math.max(0, progress.percent as number))}%` }}
+            />
+          </div>
+        </div>
+      )}
 
       {open && (
         <div className="border-t border-border/60">
@@ -241,14 +298,14 @@ const ToolCallView: React.FC<{ call: any }> = ({ call }) => {
             typeof result === 'object' &&
             result.output && (
               <div className="px-2.5 py-2 text-[11px] text-foreground/60 border-t border-border/60 whitespace-pre-wrap break-all max-h-32 overflow-y-auto">
-                {result.output}
+                {clipOutput(String(result.output))}
               </div>
             )
           )}
           {/* 子 Agent 等字符串型结果 */}
           {isDone && typeof result === 'string' && result !== '已拒绝' && (
             <div className="px-2.5 py-2 text-[11px] text-foreground/60 border-t border-border/60 whitespace-pre-wrap break-all max-h-32 overflow-y-auto">
-              {result}
+              {clipOutput(result)}
             </div>
           )}
         </div>

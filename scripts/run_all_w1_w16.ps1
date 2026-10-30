@@ -1,4 +1,4 @@
-# 一次性跑完 W1~W17 全部测试脚本。
+# 一次性跑完 W1~W27 全部测试脚本。
 # 注意：$ErrorActionPreference 必须是 Continue —— 原生命令（tsx）被 2>&1 重定向时，
 # stderr 会变成 ErrorRecord，Stop 策略下会直接抛 NativeCommandError 中断整个套件，
 # CI 上只能看到一个无明细的 exit code 1（曾经踩过）。这里改为收集失败、最后统一 exit 1。
@@ -24,7 +24,16 @@ $tests = @(
   'test_w15_safe_spawn',
   'test_w16_markdown_spec',
   'test_w16_render_check',
-  'test_w17_inline_completion'
+  'test_w17_inline_completion',
+  'test_w18_history_stats',
+  'test_w19_task_workspace',
+  'test_w20_report_export',
+  'test_w21_task_manage',
+  'test_w22_content_search',
+  'test_w24_project_instructions',
+  'test_w25_permission',
+  'test_w26_git_ops',
+  'test_w27_autofix'
 )
 
 $tsx = Join-Path $PSScriptRoot '..\node_modules\.bin\tsx.cmd'

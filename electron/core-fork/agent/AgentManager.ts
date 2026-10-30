@@ -1,6 +1,10 @@
 import { LLMProvider } from '../llm/LLMProvider';
-import { decideModelFromPromptWithImages } from '../llm/ModelRouter';
-import { ToolManager, SUBAGENT_TOOL_NAME } from '../tools/ToolManager';
+import { routeFastestModel, selectRoutingCandidates } from '../llm/ModelRouter';
+import { readModelLatency } from '../llm/ModelLatency';
+import { resolveConversation, conversationInstruction } from './ConversationRouter';
+import { ToolManager, SUBAGENT_TOOL_NAME, AUTOFIX_TOOL_NAME } from '../tools/ToolManager';
+import { runTests as runProjectTests } from '../tools/TestRunner';
+import { runAutoFixLoop, formatAutoFixReport, clampRounds } from './AutoFixLoop';
 import { scheduleToolCalls, DEFAULT_TOOL_POLICIES } from '../tools/ParallelToolScheduler';
 import { CodebaseIndexer } from '../codebase/CodebaseIndexer';
 import { FileSystemAdapter } from '../../adapter/FileSystemAdapter';
@@ -14,9 +18,11 @@ import { PlanManager } from '../plan/PlanManager';
 import { SkillRegistry } from '../skills/SkillRegistry';
 import { BUILTIN_PROMPT_SKILLS } from '../skills/builtins';
 import { ApprovalPolicy, ApprovalRule, PolicyDecision } from '../checkpoint/ApprovalPolicy';
+import { evaluatePermission, normalizeMode, PermissionResult } from '../checkpoint/PermissionTier';
 import { ContextTracker, ContextState } from './ContextTracker';
 import { ContextCompressor } from './ContextCompressor';
 import { SubAgentManager, SubAgentType, SubAgentResult, SubAgentExecutor, EXPLORE_TOOLS } from './SubAgentManager';
+import { loadProjectInstructions } from './ProjectInstructions';
 import { detectCapabilities } from '../llm/ProviderCapabilities';
 import { RagManager } from '../rag/RagManager';
 import { MockImageGenAdapter, OpenAIImageGenAdapter } from '../tools/ImageGenTools';
@@ -68,10 +74,12 @@ export interface RunParams {
   systemPromptOverride?: string;
   /** 全自动模式：为 true 时自动批准所有工具调用，不弹出审批窗口 */
   autoApprove?: boolean;
+  autoInteraction?: boolean;
+  originalPrompt?: string;
 }
 
 export interface AgentEvent {
-  type: 'start' | 'thinking' | 'assistant' | 'tool_call' | 'tool_result' | 'done' | 'error' | 'stream' | 'context_state' | 'model_fallback' | 'context_compressed' | 'approval_request' | 'approval_resolved';
+  type: 'start' | 'thinking' | 'assistant' | 'tool_call' | 'tool_result' | 'tool_progress' | 'done' | 'error' | 'stream' | 'context_state' | 'model_fallback' | 'context_compressed' | 'approval_request' | 'approval_resolved' | 'autofix_progress' | 'model_routed';
   sessionId: string;
   data: any;
 }
@@ -202,6 +210,20 @@ const PLAN_GUIDE = `
 5. **不要省略**：即使任务看起来简单，建一个 2 步的计划也比直接动手更让用户放心
 
 简单对话（单步即可完成）不需要建计划。`;
+
+// W26：git 写操作引导。让模型优先走结构化 git 工具，而不是用 execute_command 拼 shell，
+// 否则写操作既绕过了审批规则，也绕过了只读档位拦截。
+const GIT_GUIDE = `
+
+[版本控制]
+涉及 git 操作时优先使用内置 git 工具，不要用 execute_command 拼 \`git ...\` 命令（后者绕过了审批与只读档位）：
+- 查看：git_status（分支 + 变更）、git_diff、git_log
+- 分支：git_branch（action=list 列出 / create 新建 / delete 删除 / rename 改名）。新建默认不切换工作区，需要顺带切换时传 checkout=true
+- 切换：git_checkout（target 可为分支或提交；从某点新建用 create=true + startPoint）
+- 同步：git_fetch 拉取远端引用；git_pull 默认 --ff-only，若历史分叉会失败并返回提示，此时不要自作主张 merge，先问用户是否改用 rebase=true
+- 推送：git_push 从不 force；main/master 是受保护分支，除非用户明确同意，否则不要传 allowProtected=true
+- 提交：git_commit 只提交已暂存内容；执行前先确认用户意图与提交信息
+分支名必须是合法 ref（不含空格、~ ^ : ? * [ \\ .. 等）。只读档位下所有写操作会被拦截，此时只做只读操作并告知用户原因。`;
 
 
 // 自动记忆提取的系统提示：让 LLM 把本轮对话中「值得长期记住」的信息提炼为结构化 JSON
@@ -352,7 +374,13 @@ export class AgentManager {
   }
 
   async run(params: RunParams, emit: (event: AgentEvent) => void): Promise<{ success: boolean; error?: string; aborted?: boolean }> {
-    const { sessionId, workspaceId, prompt, history, mode, images, files, autoApprove } = params;
+    const { sessionId, workspaceId, prompt, images, files, autoApprove } = params;
+    const conversation = resolveConversation(
+      params.originalPrompt ?? prompt, workspaceId, params.history,
+      params.autoInteraction === true ? undefined : params.mode,
+    );
+    const mode = conversation.decision.mode;
+    const history = conversation.history;
 
     if (this.runningSessions.get(sessionId)) {
       return { success: false, error: '该会话正在运行中' };
@@ -403,13 +431,15 @@ export class AgentManager {
       const replyRule = replyFormat === 'plain' ? '' : REPLY_FORMAT_STRUCTURED;
       // W3：当 PlanManager 启用时，注入任务规划引导
       const planGuide = this.planManager ? PLAN_GUIDE : '';
+      // W26：ask 模式不带工具，注入 git 引导反而会误导模型，故只在有工具的模式下注入
+      const gitGuide = mode === 'ask' || mode === 'architect' ? '' : GIT_GUIDE;
       // 基础 Prompt = 核心身份准则 + 模式专属 Prompt + 用户自定义 Prompt + 全部启用提示词技能。
       // 这避免旧实现“最后点击的技能覆盖前一个技能”的互斥行为。
       const fullBasePrompt = `${BASE_SYSTEM_PROMPT}\n\n${basePrompt}${customPrompt ? `\n\n${customPrompt}` : ''}${skillPrompt}${packageSkillGuidance}`;
       // 工作区锚点：必须显式告知模型当前工作区根目录，否则模型只能靠猜
       // 相对路径（项目里最自然的写法），导致 read_file("src/a.ts") 直接 ENOENT。
       const workspaceInfo = this.buildWorkspaceInfo(workspaceId);
-      let systemPrompt = fullBasePrompt + planGuide + workspaceInfo + shellInfo + replyRule;
+      let systemPrompt = fullBasePrompt + planGuide + gitGuide + workspaceInfo + shellInfo + replyRule + conversationInstruction(conversation.decision);
 
       // 本地记忆：自动加载与当前工作区匹配的历史记忆（偏好/项目事实/摘要），
       // 让模型在多次调用之间延续上下文，用户无需重复交代相同背景
@@ -420,6 +450,25 @@ export class AgentManager {
           if (memBlock) systemPrompt += memBlock;
         } catch (err: any) {
           dbgLog(`[memory] injection failed: ${err.message}`);
+        }
+      }
+
+      // W24：仓库级指令文件（AGENTS.md / CNKE.md）。
+      // 把项目自己的约定（命名/目录/构建命令/禁区）按目录层级读出来注入，
+      // 用户不必每个会话重复交代；开关与预算都在设置面板里可调。
+      if (workspaceId && this.config.get<boolean>('agentConfig.useProjectInstructions', true)) {
+        try {
+          const budget = this.config.get<number>('agentConfig.projectInstructionsBudget', 24000);
+          const instructions = await loadProjectInstructions({ root: workspaceId, maxTotalBytes: budget });
+          if (instructions.block) {
+            systemPrompt += instructions.block;
+            dbgLog(
+              `[instructions] injected ${instructions.files.length} file(s) / ${instructions.totalBytes}B: ` +
+                instructions.files.map((f) => f.relPath).join(', ')
+            );
+          }
+        } catch (err: any) {
+          dbgLog(`[instructions] injection failed: ${err.message}`);
         }
       }
 
@@ -485,7 +534,16 @@ export class AgentManager {
         turn++;
         dbgLog(`[run] turn=${turn} session=${sessionId} msgCount=${currentMessages.length}`);
 
-        const apiConfig = activeRunConfig || this.resolveApiConfig(turn, prompt, images);
+        let apiConfig = activeRunConfig;
+        if (!apiConfig) {
+          // 历史中含 ≥3 条工具结果视为重工具链任务，路由时直接上旗舰档
+          const heavyToolUse = currentMessages.filter((m: any) => m && m.role === 'tool').length >= 3;
+          apiConfig = this.resolveApiConfig(turn, prompt, images, mode, (data) => {
+            emit({ type: 'model_routed', sessionId, data });
+          }, heavyToolUse);
+          // 首轮路由结果作为本次 run 的"实际应答配置"缓存，避免多轮漂移。
+          if (turn === 1 && apiConfig) activeRunConfig = apiConfig;
+        }
         if (!apiConfig) {
           emit({ type: 'error', sessionId, data: { error: '未配置 API，请在设置中添加模型配置' } });
           return { success: false, error: '未配置 API' };
@@ -627,6 +685,11 @@ export class AgentManager {
             concurrencyLimit: toolConcurrency,
             policyMap: toolPolicyMap,
             execute: async (call) => {
+              if (!tools.some((tool) => tool.name === call.name)) {
+                const result = { success: false, error: `当前 ${mode} 模式未授权工具 ${call.name}` };
+                emit({ type: 'tool_result', sessionId, data: { toolCallId: call.id, result } });
+                return result;
+              }
               dbgLog(`[run] executing tool=${call.name} id=${call.id} autoApprove=${autoApproveRun}`);
 
               // W8：子 Agent 委派需要独立的多轮 LLM 循环，ToolManager 承载不了，故在此拦截。
@@ -648,9 +711,20 @@ export class AgentManager {
                 return text;
               }
 
+              // W25：权限档位闸门（先于审批）。只读档下的写文件/执行命令连弹窗都不弹，
+              // 直接拦掉并把原因回给模型——否则自动放行模式会把只读档形同虚设。
+              const permission = this.evaluateToolPermission(call.name, call.arguments || {});
+              if (permission.action === 'deny') {
+                const blocked = permission.message || `⛔ 已被权限档位拦截：${permission.reason}`;
+                dbgLog(`[permission] deny ${call.name} (mode=${permission.mode}, effect=${permission.effect}): ${permission.reason}`);
+                emit({ type: 'tool_result', sessionId, data: { toolCallId: call.id, result: blocked } });
+                return { __rejected: true, tool_call_id: call.id, content: blocked };
+              }
+              dbgLog(`[permission] ${permission.action} ${call.name} (mode=${permission.mode}, effect=${permission.effect})`);
+
               // 单个工具的审批（仍串行，但不同工具之间可并发）
               if (!autoApproveRun) {
-                const approved = await this.requestToolApproval(sessionId, call as any);
+                const approved = await this.requestToolApproval(sessionId, call as any, permission);
                 dbgLog(`[run] approval ${approved ? 'granted' : 'rejected'} for ${call.name}`);
                 if (!approved) {
                   emit({ type: 'tool_result', sessionId, data: { toolCallId: call.id, result: '已拒绝' } });
@@ -658,8 +732,30 @@ export class AgentManager {
                 }
               }
 
+              // W27：自愈循环需要「跑测试 → LLM 改代码 → 再跑」的多轮流程，ToolManager 承载不了，故在此拦截。
+              // 注意位置在审批之后：它本身是 exec 类操作，先让用户为"要跑测试并改代码"这件事点一次头。
+              if (call.name === AUTOFIX_TOOL_NAME) {
+                const text = await this.runAutoFix(
+                  sessionId,
+                  workspaceId,
+                  call.arguments || {},
+                  abortController.signal,
+                  autoApproveRun
+                );
+                sessionToolNames.add(call.name);
+                emit({ type: 'tool_result', sessionId, data: { toolCallId: call.id, result: text } });
+                dbgLog(`[run] autofix done`);
+                return text;
+              }
+
               // 中断信号下钻到工具层：abort 后正在跑的长命令/构建会被真正杀掉
-              const result = await this.toolManager.execute(call.name, call.arguments, abortController.signal);
+              const result = await this.toolManager.execute(
+                call.name,
+                call.arguments,
+                abortController.signal,
+                // 长命令（全盘扫描等）的实时进度：转成 tool_progress 事件推给前端
+                (p) => emit({ type: 'tool_progress', sessionId, data: { toolCallId: call.id, ...p } }),
+              );
               // 反幻觉：记录实际执行过的工具名
               sessionToolNames.add(call.name);
               const resultPreview = (typeof result === 'string'
@@ -695,7 +791,7 @@ export class AgentManager {
           } else {
             // 剥离变更审查元数据：before/after 全文只给 UI 渲染 diff 用，
             // 进 LLM 上下文会翻倍占用 tokens
-            const { diff: _reviewOnly, ...slim } = typeof res === 'string' ? { text: res } : (res ?? {});
+            const { diff: _reviewOnly, errorMeta: _uiOnly, ...slim } = typeof res === 'string' ? { text: res } : (res ?? {});
             toolResults.push({
               tool_call_id: call.id,
               role: 'tool',
@@ -797,7 +893,7 @@ export class AgentManager {
     if (!content) return null;
     const calledAny = (names: string[]) => names.some((n) => sessionToolNames.has(n));
     const writeTools = ['write_to_file', 'apply_diff', 'create_file', 'replace_in_file', 'rewrite_file', 'delete_file', 'rename_file', 'edit_file'];
-    const execTools = ['execute_command', 'run_command'];
+    const execTools = ['execute_command', 'run_command', 'run_python'];
 
     const claims: string[] = [];
     // 1) 文件改动声称（修改/创建/写入/删除 + 明确宾语），但无写类工具执行记录
@@ -897,43 +993,63 @@ export class AgentManager {
   }
 
   /**
-   * W6：解析本轮应使用的 API 配置
-   * - 第一轮（turn=0）启用路由决策（@mention 优先 / 任务特征 / 用户配置 / active 兜底）
-   * - 后续轮次继续使用第一轮选定的配置，避免多轮间模型漂移
+   * W6/W28：解析本轮应使用的 API 配置
+   * - 首轮（turn=1）且模式为 AUTO 时启用路由决策（@mention / 用户配置 / 任务特征 / active 兜底）
+   * - 路由候选**仅限内置 API**：自动路由不得把请求打到用户自定义配置
+   * - 后续轮次沿用首轮结果（由 run() 中的 activeRunConfig 缓存保证），避免多轮间模型漂移
    */
-  private resolveApiConfig(turn: number, prompt: string, images?: string[]): any {
-    const configs = this.config.getApiKeyConfigs();
+  private resolveApiConfig(
+    turn: number,
+    prompt: string,
+    images: string[] | undefined,
+    mode: AgentMode,
+    onDecision?: (data: { model: string; reason: string; taskType: string; mode: 'auto' | 'manual' }) => void,
+    heavyToolUse = false
+  ): any {
+    const configs = this.config.getApiKeyConfigs().filter((c: any) => c && !c.disabled);
     const activeId = this.config.get<string>('activeApiConfigId');
-    if (!configs || configs.length === 0) return null;
+    if (configs.length === 0) return null;
 
-    const enableRouting = this.config.get<boolean>('agentConfig.enableRouting', true);
-    if (!enableRouting || turn !== 0) {
-      const matched = configs.find((c: any) => c.id === activeId);
-      if (!matched) {
-        // activeId 失效（配置被删/被同步清空）：兜底到第一个并留痕，便于排查"为什么用了旧模型"
-        dbgLog(
-          `[resolveApiConfig] activeId=${String(activeId)} not found in configs [${configs
-            .map((c: any) => c.id)
-            .join(', ')}] -> fallback to configs[0] (${configs[0]?.model || '?'})`
-        );
-      }
-      return matched || configs[0];
+    const automatic = this.config.get<boolean>('agentConfig.enableRouting', true) &&
+      this.config.get<string>('modelSelectionMode', 'manual') === 'auto';
+    const fallback = configs.find((c: any) => c.id === activeId) || configs[0];
+    if (!automatic || turn !== 1) {
+      if (turn === 1) onDecision?.({ model: fallback.model, reason: '固定模型', taskType: 'manual', mode: 'manual' });
+      return fallback;
     }
+
+    // 仅内置模型参与自动路由；没有内置模型时保持当前模型并明确告警
+    const candidates = selectRoutingCandidates(configs as any[]);
+    if (candidates.length === 0) {
+      dbgLog('[routing] no builtin api config, fallback to active');
+      onDecision?.({
+        model: fallback.model,
+        reason: '未找到可用的内置模型，已沿用当前模型（请等待内置模型同步完成）',
+        taskType: 'manual',
+        mode: 'manual',
+      });
+      return fallback;
+    }
+    const candidateActiveId = candidates.some((c: any) => c.id === activeId) ? activeId : null;
+
+    let decision: any;
     try {
-      const userRouting = this.config.get<any>('agentConfig.routing') || undefined;
-      const decision = decideModelFromPromptWithImages(
-        prompt || '',
-        configs as any,
-        activeId,
-        Array.isArray(images) && images.length > 0,
-        userRouting
+      decision = routeFastestModel(
+        prompt || '', candidates as any, candidateActiveId, Array.isArray(images) && images.length > 0,
+        mode === 'coder', readModelLatency(this.config),
       );
-      dbgLog(`[routing] turn=0 reason=${decision.reason} model=${decision.apiConfig.model} tier=${decision.caps.tier}`);
-      return decision.apiConfig;
     } catch (err: any) {
-      dbgLog(`[routing] failed: ${err.message}, fallback to active`);
-      return configs.find((c: any) => c.id === activeId) || configs[0];
+      // 路由失败绝不阻断对话：回退到固定模型并留痕
+      dbgLog(`[routing] failed: ${err?.message || err}, fallback to active`);
+      onDecision?.({ model: fallback.model, reason: `路由失败已回退：${err?.message || '未知错误'}`, taskType: 'manual', mode: 'manual' });
+      return fallback;
     }
+
+    const warnings: string[] = decision.warnings || [];
+    const reason = warnings.length ? `${decision.reason}（${warnings.join('；')}）` : decision.reason;
+    dbgLog(`[routing] turn=1 reason=${reason} model=${decision.apiConfig.model} tier=${decision.caps.tier} heavy=${heavyToolUse}`);
+    onDecision?.({ model: decision.apiConfig.model, reason, taskType: decision.taskType, mode: 'auto' });
+    return decision.apiConfig;
   }
 
   private getActiveApiConfig(): any {
@@ -1185,6 +1301,62 @@ export class AgentManager {
   }
 
   /**
+   * W27：执行一次测试自愈循环。
+   * 复用 runSubAgent 当"修复者"——它已具备多轮 LLM + 完整工具链 + 审批 + 权限档位，
+   * 这里只负责：跑测试 → 解析失败 → 把结构化失败喂过去 → 再跑一遍。
+   */
+  private async runAutoFix(
+    sessionId: string,
+    workspaceId: string,
+    args: any,
+    signal: AbortSignal,
+    autoApproveRun: boolean
+  ): Promise<string> {
+    if (!workspaceId) return '❌ 无当前工作区，无法运行测试';
+
+    const defaultRounds = this.config.get<number>('agentConfig.autoFixMaxRounds', 3);
+    const maxRounds = clampRounds(args?.maxRounds ?? defaultRounds);
+    const rawFixTurns = Number(args?.fixTurns);
+    const fixTurns = Number.isFinite(rawFixTurns) ? Math.max(1, Math.min(20, Math.trunc(rawFixTurns))) : 10;
+    const framework = args?.framework;
+    const extraArgs = Array.isArray(args?.extraArgs) ? (args.extraArgs as string[]) : undefined;
+    const timeoutMs = typeof args?.timeoutMs === 'number' ? args.timeoutMs : undefined;
+
+    this.emitSession(sessionId, {
+      type: 'autofix_progress',
+      sessionId,
+      data: { phase: 'start', maxRounds },
+    });
+
+    const report = await runAutoFixLoop(
+      {
+        signal,
+        runTests: () => runProjectTests(workspaceId, { framework, extraArgs, timeoutMs }),
+        applyFix: async (prompt) => {
+          // 子 Agent 不要再自己跑测试：外层循环会跑，重复跑既慢又会让它误判
+          const description = `${prompt}\n\n补充：改完就停，不要自己运行测试（外层会自动重跑）。`;
+          const sub = await this.runSubAgent(
+            sessionId,
+            { description, agentType: 'general-purpose', maxTurns: fixTurns },
+            signal,
+            autoApproveRun
+          );
+          return { success: sub.success, output: sub.output, error: sub.error };
+        },
+        emit: (event) => {
+          this.emitSession(sessionId, { type: 'autofix_progress', sessionId, data: event });
+        },
+      },
+      { maxRounds }
+    );
+
+    dbgLog(
+      `[autofix] reason=${report.stoppedReason} rounds=${report.rounds.length} failures=${report.failures.length}`
+    );
+    return formatAutoFixReport(report);
+  }
+
+  /**
    * W8：执行一次子 Agent 委派。
    * 子 Agent 复用同一个 LLMProvider，但拥有独立 messages（看不到主对话历史），
    * 因此委派时必须在 description 里写清自包含的任务背景。
@@ -1242,8 +1414,13 @@ export class AgentManager {
       executeTool: async (name, toolArgs) => {
         // 委派出去不等于绕过审批：子 Agent 的工具调用沿用与主 Agent 相同的审批策略，
         // 否则写文件/执行命令这类操作会变成用户看不见的"隐身执行"。
+        const permission = this.evaluateToolPermission(name, toolArgs || {});
+        if (permission.action === 'deny') {
+          dbgLog(`[permission] deny subagent tool ${name}: ${permission.reason}`);
+          return { success: false, error: permission.message || `已被权限档位拦截：${permission.reason}` };
+        }
         if (!autoApproveRun) {
-          const approved = await this.requestToolApproval(parentSessionId, { name, arguments: toolArgs });
+          const approved = await this.requestToolApproval(parentSessionId, { name, arguments: toolArgs }, permission);
           if (!approved) return { success: false, error: '用户拒绝了此工具调用' };
         }
         const r = await this.toolManager.execute(name, toolArgs, signal);
@@ -1310,7 +1487,35 @@ export class AgentManager {
     this.approvalHandler = handler;
   }
 
-  private async requestToolApproval(sessionId: string, toolCall: any): Promise<boolean> {
+  /**
+   * W25：权限档位裁决。把用户信任规则（approvalRules）一起喂进去，保证优先级：
+   * 用户 deny > 档位硬拦（只读档）> 用户 allow > 档位默认。
+   */
+  private evaluateToolPermission(name: string, args: Record<string, unknown>): PermissionResult {
+    const userDecision = this.approvalPolicy.evaluate({ name, arguments: args });
+    return evaluatePermission(
+      { name, arguments: args },
+      {
+        mode: normalizeMode(this.config.get<string>('agentConfig.permissionMode', 'standard')),
+        commandAllowlist: this.config.get<string[]>('agentConfig.commandAllowlist', []) || [],
+        domainAllowlist: this.config.get<string[]>('agentConfig.domainAllowlist', []) || [],
+        userAction: userDecision.matchedRule ? userDecision.action : undefined,
+        userReason: userDecision.reason,
+        zeroApprovalMode: this.config.get<boolean>('agentConfig.zeroApprovalMode', true) !== false,
+      }
+    );
+  }
+
+  private async requestToolApproval(
+    sessionId: string,
+    toolCall: any,
+    permission?: PermissionResult
+  ): Promise<boolean> {
+    // W25：档位拒绝优先（外部审批器也不能放行只读档下的写/执行）
+    if (permission?.action === 'deny') {
+      dbgLog(`[approval] permission-deny ${toolCall.name}: ${permission.reason}`);
+      return false;
+    }
     // W7：先评估审批策略（信任规则）
     const decision = this.approvalPolicy.evaluate({ name: toolCall.name, arguments: toolCall.arguments || {} });
     if (decision.action === 'allow') {
@@ -1332,6 +1537,12 @@ export class AgentManager {
       } catch {
         /* 裁决器异常时回落默认流程 */
       }
+    }
+    // W25：档位判定为放行时不再弹窗（标准档的读/写、完全访问档的全部工具）。
+    // 放在外部审批器之后：CLI 注入的 --approve-policy 仍代表用户显式策略，不能被档位默认值架空。
+    if (permission?.action === 'allow') {
+      dbgLog(`[approval] permission-allow ${toolCall.name} (${permission.matchedBy})`);
+      return true;
     }
     // 零弹窗模式（W19）：文件内容编辑类工具直接放行，不打断用户。
     // 仅在"没有任何用户规则命中"时生效，用户显式配置的规则始终优先。

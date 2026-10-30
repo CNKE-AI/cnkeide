@@ -55,6 +55,16 @@ interface EditorState {
    * 返回被关闭的标签数。
    */
   closeTabsOutsideRoot: (rootPath: string) => number;
+  /**
+   * 待跳转位置（全文搜索点结果时设置）。
+   * 由 EditorPanel 消费：文件可能还没打开完，所以不能直接操作 view，
+   * 只把"要去哪"广播出来，编辑器挂载好自己跳。
+   */
+  pendingGoto: { path: string; line: number; column?: number; ts: number } | null;
+  /** 打开文件并跳到指定行（1 起） */
+  gotoLine: (path: string, line: number, column?: number) => Promise<void>;
+  /** 编辑器完成跳转后清除，避免切标签时重复跳 */
+  clearGoto: () => void;
 }
 
 /** 路径规范化比较（Windows 大小写不敏感 + 分隔符统一） */
@@ -219,4 +229,15 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     set({ tabs: kept, activePath: nextActive });
     return removed;
   },
+
+  pendingGoto: null,
+
+  gotoLine: async (path, line, column) => {
+    // 先开文件（已打开则只是激活），再把位置广播出去；顺序不能反：
+    // EditorPanel 只有在文件成为 activePath 之后才会去消费这个位置。
+    await get().openFile(path);
+    set({ pendingGoto: { path, line, column, ts: Date.now() } });
+  },
+
+  clearGoto: () => set({ pendingGoto: null }),
 }));

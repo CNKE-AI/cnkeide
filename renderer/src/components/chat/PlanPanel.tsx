@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 
 import { toast } from '../../utils/toast';
+import { toolLabel } from '../../store/agentActivityStore';
 /**
  * 节点样式：每个步骤对应一个节点，状态通过节点描边/底色区分。
  * line 是节点之间的横向连接线颜色，用来把「已完成 → 当前 → 待执行」串成一条进度轨道。
@@ -200,7 +201,9 @@ const PlanPanel: React.FC<{ sessionId?: string }> = ({ sessionId }) => {
 
               {[activeStep.toolName, activeStep.filePath].filter(Boolean).length > 0 && (
                 <span className="mt-1 block truncate text-[11px] text-muted-foreground/80">
-                  {[activeStep.toolName, activeStep.filePath].filter(Boolean).join(' · ')}
+                  {[activeStep.toolName ? toolLabel(activeStep.toolName) : '', activeStep.filePath]
+                    .filter(Boolean)
+                    .join(' · ')}
                 </span>
               )}
               {activeStep.error && (

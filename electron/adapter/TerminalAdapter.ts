@@ -1,6 +1,8 @@
 import type { ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import path from 'node:path';
 import { spawnSafe, sanitizeEnv } from '../core-fork/util/SafeSpawn';
+import { decodeOutput } from '../core-fork/util/TextDecode';
 
 /**
  * 杀掉子进程及其全部子孙进程。
@@ -33,56 +35,23 @@ export interface TerminalSession {
 }
 
 /**
- * Windows 下子进程输出编码处理：
- * PowerShell/cmd 默认用系统代码页（GBK/936）输出，直接按 utf-8 解码会乱码。
- * 策略：
- * 1. 若字节流是合法 UTF-8（严格校验），直接按 UTF-8 解码；
- * 2. 否则按 GBK 解码（GBK 是兼容 ASCII 的双字节编码，特征为 0x81-0xFE + 0x40-0xFE）。
- */
-function decodeOutput(buf: Buffer): string {
-  // 严格 UTF-8 校验：任一非法序列即判定为非 UTF-8
-  let i = 0;
-  const len = buf.length;
-  let validUtf8 = true;
-  while (i < len) {
-    const b = buf[i];
-    if (b < 0x80) { i++; continue; }
-    if (b >= 0xc2 && b <= 0xdf) {
-      if (i + 1 >= len || (buf[i + 1] & 0xc0) !== 0x80) { validUtf8 = false; break; }
-      i += 2; continue;
-    }
-    if (b >= 0xe0 && b <= 0xef) {
-      if (i + 2 >= len || (buf[i + 1] & 0xc0) !== 0x80 || (buf[i + 2] & 0xc0) !== 0x80) { validUtf8 = false; break; }
-      // 排除过长编码 (overlong) 与代理区
-      if (b === 0xe0 && buf[i + 1] < 0xa0) { validUtf8 = false; break; }
-      if (b === 0xed && buf[i + 1] >= 0xa0) { validUtf8 = false; break; }
-      i += 3; continue;
-    }
-    if (b >= 0xf0 && b <= 0xf4) {
-      if (i + 3 >= len || (buf[i + 1] & 0xc0) !== 0x80 || (buf[i + 2] & 0xc0) !== 0x80 || (buf[i + 3] & 0xc0) !== 0x80) { validUtf8 = false; break; }
-      if (b === 0xf0 && buf[i + 1] < 0x90) { validUtf8 = false; break; }
-      if (b === 0xf4 && buf[i + 1] >= 0x90) { validUtf8 = false; break; }
-      i += 4; continue;
-    }
-    // 0x80-0xC1、0xF5-0xFF 均为非法起始字节
-    validUtf8 = false;
-    break;
-  }
-
-  if (validUtf8) return buf.toString('utf-8');
-
-  try {
-    return new TextDecoder('gb18030').decode(buf);
-  } catch {
-    return buf.toString('utf-8');
-  }
-}
-
-/**
  * TerminalAdapter - 终端适配层
  * 替换 VSCode integrated terminal / shell execution API
  * 用 Node.js spawn 创建伪终端子进程
  */
+
+/** exec / execProgram 的统一返回结构 */
+export interface ExecResult {
+  success: boolean;
+  stdout?: string;
+  stderr?: string;
+  error?: string;
+  /** 输出超过上限被截断 */
+  truncated?: boolean;
+  /** 被丢弃的字符数（仅截断时有意义） */
+  droppedChars?: number;
+}
+
 export class TerminalAdapter extends EventEmitter {
   private sessions: Map<number, TerminalSession> = new Map();
   private outputBuffer: Map<number, string[]> = new Map();
@@ -213,41 +182,207 @@ export class TerminalAdapter extends EventEmitter {
     return Array.from(this.sessions.keys());
   }
 
-  async exec(cmd: string, cwd: string, timeout: number = 30000, signal?: AbortSignal): Promise<{ success: boolean; stdout?: string; stderr?: string; error?: string }> {
-    if (signal?.aborted) return { success: false, error: '已中止' };
-    return new Promise((resolve) => {
-      const isWin = process.platform === 'win32';
-      let shell: string;
-      let shellArgs: string[];
-      if (isWin) {
-        // 用 -EncodedCommand (UTF-16LE Base64) 传递完整脚本，彻底规避单/双引号、$、反引号、% 等字符在 -Command 拼接时的转义陷阱
-        const psScript =
-          '[Console]::OutputEncoding=[Text.Encoding]::UTF8; ' +
-          '[Console]::InputEncoding=[Text.Encoding]::UTF8; ' +
-          '$OutputEncoding=[Text.Encoding]::UTF8; ' +
-          cmd;
-        const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
-        shell = 'powershell.exe';
-        shellArgs = ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded];
-      } else {
-        shell = '/bin/bash';
-        shellArgs = ['-c', cmd];
+  /**
+   * 关掉工作目录落在 dirPath（含子目录）下的所有终端会话，返回关掉的数量。
+   *
+   * Windows 上目录改名会因「有进程把该目录当当前工作目录」而 EBUSY，
+   * 而每个终端 shell 的 cwd 就是工作区根目录，所以任务改名/移动前必须先释放。
+   * 用的是杀进程树：只 kill 直接子进程会留下真正持有 cwd 的 powershell/cmd 孙进程。
+   */
+  killByCwd(dirPath: string): number {
+    if (!dirPath) return 0;
+    const target = path.resolve(dirPath);
+    const isWin = process.platform === 'win32';
+    let closed = 0;
+    for (const [pid, session] of Array.from(this.sessions.entries())) {
+      let cwd = '';
+      try {
+        cwd = path.resolve(session.cwd || '');
+      } catch {
+        continue;
       }
-      const child = spawnSafe(shell, shellArgs, { cwd, windowsHide: true });
+      if (cwd !== target && !cwd.startsWith(target + path.sep)) continue;
+      killProcessTree(session.child, isWin);
+      this.sessions.delete(pid);
+      this.outputBuffer.delete(pid);
+      closed += 1;
+    }
+    return closed;
+  }
+
+  /**
+   * 单条命令捕获输出的字符上限。
+   *
+   * 为什么必须有：Agent 经常发出「全盘扫描」类命令（例如 Get-ChildItem C:\ -Recurse、
+   * dir /s、where /r 之类），输出动辄几十万行。此前这里是无限累积 `stdout += chunk`：
+   * 主进程内存被撑到 GB 级 → 这段巨型字符串还要经 IPC 结构化复制进渲染进程、
+   * 再被塞进 DOM 文本节点 → 两个进程一起被拖死，表现出来就是「运行任务时整窗白屏」。
+   * 超限后只保留前 N 字符并标记 truncated，剩余内容边读边丢（管道必须继续读空，
+   * 否则子进程会因 stdout 缓冲区写满而卡住不退出）。
+   */
+  private static readonly MAX_CAPTURE_CHARS = 400_000;
+
+  /** 允许设置项把上限压得更低，但不允许无上限（下限 1 万字符，防止设成 0 后一屏都看不到） */
+  private static readonly MIN_CAPTURE_CHARS = 10_000;
+  private static readonly HARD_CAPTURE_CHARS = 5_000_000;
+
+  /** 把外部传入的上限收敛到安全区间；未传或非法时退回默认值 */
+  private static resolveMaxChars(v?: number): number {
+    const n = Number(v);
+    if (!Number.isFinite(n) || n <= 0) return TerminalAdapter.MAX_CAPTURE_CHARS;
+    return Math.min(TerminalAdapter.HARD_CAPTURE_CHARS, Math.max(TerminalAdapter.MIN_CAPTURE_CHARS, Math.floor(n)));
+  }
+
+  async exec(
+    cmd: string,
+    cwd: string,
+    timeout: number = 30000,
+    signal?: AbortSignal,
+    opts?: {
+      /** 本次命令的输出上限（字符），默认 MAX_CAPTURE_CHARS；由设置项覆盖 */
+      maxChars?: number;
+      /** 每收到一段已解码输出就回调一次（用于实时进度识别，回调异常不影响采集） */
+      onChunk?: (text: string, isStdout: boolean) => void;
+    },
+  ): Promise<ExecResult> {
+    if (signal?.aborted) return { success: false, error: '已中止' };
+    const isWin = process.platform === 'win32';
+    let shell: string;
+    let shellArgs: string[];
+    if (isWin) {
+      // 用 -EncodedCommand (UTF-16LE Base64) 传递完整脚本，彻底规避单/双引号、$、反引号、% 等字符在 -Command 拼接时的转义陷阱
+      const psScript =
+        '[Console]::OutputEncoding=[Text.Encoding]::UTF8; ' +
+        '[Console]::InputEncoding=[Text.Encoding]::UTF8; ' +
+        '$OutputEncoding=[Text.Encoding]::UTF8; ' +
+        cmd;
+      const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
+      shell = 'powershell.exe';
+      shellArgs = ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded];
+    } else {
+      shell = '/bin/bash';
+      shellArgs = ['-c', cmd];
+    }
+    return this.runCaptured(shell, shellArgs, { cwd, timeout, signal, ...opts });
+  }
+
+  /**
+   * 直接执行一个可执行文件（不经 shell）。
+   *
+   * run_python 必须走这里：脚本路径、参数里常带空格 / 引号 / 中文，一旦经
+   * PowerShell 字符串拼接就要处理多层转义，既容易出错又会污染 argv。
+   * 输出上限、实时回调、超时与进程树清理与 exec 完全一致。
+   */
+  async execProgram(
+    file: string,
+    args: string[],
+    opts?: {
+      cwd?: string;
+      timeout?: number;
+      signal?: AbortSignal;
+      maxChars?: number;
+      onChunk?: (text: string, isStdout: boolean) => void;
+      /** 追加的环境变量（Electron 注入变量仍会被清洗掉） */
+      env?: Record<string, string>;
+    },
+  ): Promise<ExecResult> {
+    if (opts?.signal?.aborted) return { success: false, error: '已中止' };
+    return this.runCaptured(file, args, opts || {});
+  }
+
+  /** exec / execProgram 的共同实现：派生 → 采集（带上限）→ 收尾 */
+  private runCaptured(
+    file: string,
+    args: string[],
+    o: {
+      cwd?: string;
+      timeout?: number;
+      signal?: AbortSignal;
+      maxChars?: number;
+      onChunk?: (text: string, isStdout: boolean) => void;
+      env?: Record<string, string>;
+    },
+  ): Promise<ExecResult> {
+    const MAX_CAPTURE_CHARS = TerminalAdapter.resolveMaxChars(o.maxChars);
+    const timeout = o.timeout ?? 30000;
+    const signal = o.signal;
+    const isWin = process.platform === 'win32';
+    return new Promise((resolve) => {
+      // Python 相关环境变量：缺了 PYTHONUNBUFFERED，管道下的 stdout 是块缓冲，
+      // PROGRESS 进度行要攒满缓冲区才吐出来，前端进度条会长时间不动。
+      const env: Record<string, string> = {
+        PYTHONIOENCODING: 'utf-8',
+        PYTHONUTF8: '1',
+        PYTHONUNBUFFERED: '1',
+        ...(o.env || {}),
+      };
+      const child = spawnSafe(file, args, { cwd: o.cwd, windowsHide: true, env });
 
       let stdout = '';
       let stderr = '';
+      let truncated = false;
+      let droppedChars = 0;
       let timer: NodeJS.Timeout | null = null;
       let settled = false;
 
-      child.stdout?.on('data', (data: Buffer) => { stdout += decodeOutput(data); });
-      child.stderr?.on('data', (data: Buffer) => { stderr += decodeOutput(data); });
+      /**
+       * 累积子进程输出（带上限）。
+       * 超限后连 decodeOutput 都不做 —— 它是逐字节 UTF-8 合法性校验，几十 MB 数据光校验
+       * 就能把主进程 CPU 打满；这里只保留前 MAX_CAPTURE_CHARS 字符，其余边读边丢。
+       */
+      const appendOutput = (isStdout: boolean, data: Buffer): void => {
+        if (settled) return;
+        const current = isStdout ? stdout : stderr;
+        const room = MAX_CAPTURE_CHARS - current.length;
+        if (room <= 0) {
+          truncated = true;
+          droppedChars += data.length;
+          return;
+        }
+        const text = decodeOutput(data);
+        if (text.length > room) {
+          truncated = true;
+          droppedChars += text.length - room;
+          if (isStdout) stdout = current + text.slice(0, room);
+          else stderr = current + text.slice(0, room);
+          return;
+        }
+        if (isStdout) stdout = current + text;
+        else stderr = current + text;
+        // 实时输出回调：供上层识别 PROGRESS 进度标记；异常由调用方保证不影响采集
+        try {
+          o.onChunk?.(text, isStdout);
+        } catch {
+          /* 回调异常不应中断输出采集 */
+        }
+      };
 
-      const finish = (r: { success: boolean; stdout?: string; stderr?: string; error?: string }) => {
+      child.stdout?.on('data', (data: Buffer) => appendOutput(true, data));
+      child.stderr?.on('data', (data: Buffer) => appendOutput(false, data));
+
+      const finish = (r: {
+        success: boolean;
+        stdout?: string;
+        stderr?: string;
+        error?: string;
+        truncated?: boolean;
+        droppedChars?: number;
+      }) => {
         if (settled) return;
         settled = true;
         if (timer) clearTimeout(timer);
         signal?.removeEventListener('abort', onAbort);
+        // 收尾：把残留监听摘掉，避免子进程树还没死透时继续往局部变量里堆字符串
+        try {
+          child.stdout?.removeAllListeners('data');
+          child.stderr?.removeAllListeners('data');
+        } catch {
+          /* 句柄可能已销毁 */
+        }
+        if (truncated) {
+          r.truncated = true;
+          r.droppedChars = droppedChars;
+        }
         resolve(r);
       };
 

@@ -3,17 +3,45 @@
  * 检测 package.json 的 scripts.test / python pytest / go test / cargo / make test
  */
 
-import { promisify } from 'node:util';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { execFileSafe } from '../util/SafeSpawn';
 
-// promisify 对三回调值 (stdout, stderr) 的函数类型推断不足，必须显式标注返回类型
-const execFileAsync = promisify(execFileSafe) as unknown as (
+interface ShellCapture {
+  code: number;
+  stdout: string;
+  stderr: string;
+  error?: string;
+}
+
+/**
+ * 跑一条 shell 命令并**在非零退出码时也拿到完整输出**。
+ *
+ * 为什么不用 promisify(execFile)：失败时 reject 出来的 err 对象在本环境下
+ * 不带 stdout/stderr（`err.stdout === undefined`），于是"测试失败"这个最重要的场景
+ * 反而拿不到任何失败信息——模型只能看到退出码，无法定位。回调参数才是可靠的。
+ */
+function runShellCaptured(
   file: string,
   args: string[],
-  options?: Record<string, unknown>,
-) => Promise<{ stdout: string; stderr: string }>;
+  options: Record<string, unknown>,
+): Promise<ShellCapture> {
+  return new Promise((resolve) => {
+    try {
+      execFileSafe(file, args, options, (err: any, stdout: string, stderr: string) => {
+        const code = err ? (typeof err.code === 'number' ? err.code : -1) : 0;
+        resolve({
+          code,
+          stdout: stdout ?? '',
+          stderr: stderr ?? '',
+          error: err ? err.message || `退出码 ${code}` : undefined,
+        });
+      });
+    } catch (err: any) {
+      resolve({ code: -1, stdout: '', stderr: '', error: err?.message || String(err) });
+    }
+  });
+}
 
 export type TestFramework = 'npm' | 'yarn' | 'pnpm' | 'pytest' | 'go' | 'cargo' | 'make' | 'unknown';
 
@@ -110,40 +138,25 @@ export async function runTests(
     : ['-c', fullCmd];
 
   const t0 = Date.now();
-  try {
-    const { stdout, stderr } = await execFileAsync(shell, shellArgs, {
-      cwd,
-      maxBuffer: MAX_OUTPUT_BYTES * 2,
-      timeout: options.timeoutMs ?? TIMEOUT_MS,
-      windowsHide: true,
-      env: { ...process.env, CI: '1', NO_COLOR: '1', FORCE_COLOR: '0' },
-    });
-    const outTrunc = stdout.length > MAX_OUTPUT_BYTES;
-    const errTrunc = stderr.length > MAX_OUTPUT_BYTES;
-    return {
-      success: true,
-      framework,
-      command: fullCmd,
-      exitCode: 0,
-      stdout: outTrunc ? stdout.slice(0, MAX_OUTPUT_BYTES) : stdout,
-      stderr: errTrunc ? stderr.slice(0, MAX_OUTPUT_BYTES) : stderr,
-      durationMs: Date.now() - t0,
-      truncated: outTrunc || errTrunc,
-    };
-  } catch (err: any) {
-    const stdout = (err?.stdout || '').toString();
-    const stderr = (err?.stderr || '').toString();
-    const code = typeof err?.code === 'number' ? err.code : -1;
-    return {
-      success: false,
-      framework,
-      command: fullCmd,
-      exitCode: code,
-      stdout: stdout.slice(0, MAX_OUTPUT_BYTES),
-      stderr: stderr.slice(0, MAX_OUTPUT_BYTES),
-      durationMs: Date.now() - t0,
-      error: err?.message || `退出码 ${code}`,
-      truncated: stdout.length > MAX_OUTPUT_BYTES || stderr.length > MAX_OUTPUT_BYTES,
-    };
-  }
+  const captured = await runShellCaptured(shell, shellArgs, {
+    cwd,
+    maxBuffer: MAX_OUTPUT_BYTES * 2,
+    timeout: options.timeoutMs ?? TIMEOUT_MS,
+    windowsHide: true,
+    env: { ...process.env, CI: '1', NO_COLOR: '1', FORCE_COLOR: '0' },
+  });
+
+  const outTrunc = captured.stdout.length > MAX_OUTPUT_BYTES;
+  const errTrunc = captured.stderr.length > MAX_OUTPUT_BYTES;
+  return {
+    success: captured.code === 0,
+    framework,
+    command: fullCmd,
+    exitCode: captured.code,
+    stdout: outTrunc ? captured.stdout.slice(0, MAX_OUTPUT_BYTES) : captured.stdout,
+    stderr: errTrunc ? captured.stderr.slice(0, MAX_OUTPUT_BYTES) : captured.stderr,
+    durationMs: Date.now() - t0,
+    error: captured.error,
+    truncated: outTrunc || errTrunc,
+  };
 }

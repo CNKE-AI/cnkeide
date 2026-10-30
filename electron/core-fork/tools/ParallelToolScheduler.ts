@@ -89,8 +89,17 @@ export const DEFAULT_TOOL_POLICIES: Record<string, ParallelPolicy> = {
   format_code: 'path-serial',
   // 命令 / git commit / 测试：全局互斥
   execute_command: 'global-serial',
+  run_python: 'global-serial',
   git_commit: 'global-serial',
+  // W26：分支/远程操作会改 .git 里的共享状态，必须全局串行
+  git_branch: 'global-serial',
+  git_checkout: 'global-serial',
+  git_fetch: 'global-serial',
+  git_pull: 'global-serial',
+  git_push: 'global-serial',
   run_tests: 'global-serial',
+  // W27：自愈循环内部会跑测试 + 改文件，必须全局串行
+  auto_fix_tests: 'global-serial',
 };
 
 function getPolicy(name: string, policyMap: Record<string, ParallelPolicy>): ParallelPolicy {
