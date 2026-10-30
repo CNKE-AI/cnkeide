@@ -22,7 +22,10 @@ import { detectFormatter, formatCode } from './CodeFormatter';
 import { SemanticRetriever } from '../codebase/SemanticRetriever';
 import { RagManager } from '../rag/RagManager';
 import { PlaywrightAdapter, MockPlaywrightAdapter, createRealPlaywrightAdapter } from './PlaywrightTools';
-import { ImageGenAdapter, MockImageGenAdapter, OpenAIImageGenAdapter } from './ImageGenTools';
+import { ImageGenAdapter, MockImageGenAdapter, OpenAIImageGenAdapter, validateImagePrompt, type ImageGenRequest } from './ImageGenTools';
+
+/** 生图尺寸白名单：与工具参数 schema 枚举一致，执行层再校验一次（防篡改） */
+const IMAGE_SIZES: readonly ImageGenRequest['size'][] = ['1024x1024', '1536x1024', '1024x1536'];
 import { parseProgress, type ToolProgress } from './progress';
 import { resolvePython } from '../python/PythonRuntime';
 import { parsePythonTraceback, type PythonTracebackMeta } from '../python/traceback';
@@ -1325,7 +1328,7 @@ export class ToolManager {
           await this.playwright.close();
           return { success: true, output: '浏览器已关闭' };
         }
-        // ===== W12 图片生成 =====
+        // ===== W12 图片生成（只读接口：白名单参数，防篡改，零信息泄露） =====
         case 'image_generate': {
           // 收费闸门（最后防线）：未授权时直接拒绝，绝不触碰网络与供应商接口。
           // 走到这里通常意味着模型无视工具表凭空调用，或调用方绕过了 getAvailableTools。
@@ -1336,19 +1339,34 @@ export class ToolManager {
             };
           }
           if (!this.imageGen) return { success: false, error: '图片生成未配置，请在设置中启用 GPT Image' };
-          if (!this.imageGenReady) return { success: false, error: '图片生成适配器不可用（当前为未配置状态），未发起生图请求' };
+          if (!this.imageGenReady) return { success: false, error: '图片生成暂不可用，请稍后重试' };
+
+          // 权限边界：本工具是纯生成（只读语义），调用方仅能传 prompt/size 两个白名单参数。
+          // 保存路径、模型、API 渠道、尺寸映射全部由系统侧决定，任何多余参数一律忽略，
+          // 模型无法借此修改已有文件、配置或写任意路径。
+          const promptCheck = validateImagePrompt(args.prompt);
+          if (!promptCheck.ok) return { success: false, error: promptCheck.error };
+          const size = typeof args.size === 'string' && IMAGE_SIZES.includes(args.size as never)
+            ? (args.size as ImageGenRequest['size'])
+            : undefined;
+          if (args.size !== undefined && size === undefined) {
+            return { success: false, error: '尺寸参数无效，可选：1024x1024、1536x1024、1024x1536' };
+          }
+
           const outputDir = path.join(resolveUserDataDir(), 'generated-images');
           const safeSession = String(this.sessionId || 'session').replace(/[^a-zA-Z0-9_-]/g, '_');
           const savePath = path.join(outputDir, `${safeSession}-${Date.now()}.png`);
           const r = await this.imageGen.generate({
-            prompt: args.prompt,
-            size: args.size,
+            prompt: promptCheck.value,
+            size,
             savePath,
           });
           if (!r.success || !r.path || !r.dataUrl) return { success: false, error: r.error || '生成图片未能保存到本地' };
+          // 输出约束：LLM 上下文只收到通用成功文案（不含本地路径/供应商/模型等内部细节）；
+          // 结构化 image 字段仅供 UI 渲染，回传模型前已被 AgentManager 剥离。
           return {
             success: true,
-            output: `已生成并保存本地图片（${r.provider}）：${r.path}`,
+            output: '已生成图片并保存到本地，已显示在聊天窗口。',
             image: { path: r.path, dataUrl: r.dataUrl, mimeType: r.mimeType || 'image/png' },
           };
         }
