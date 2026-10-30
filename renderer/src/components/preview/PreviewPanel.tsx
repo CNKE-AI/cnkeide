@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Monitor, MousePointer2, RefreshCw, X, Sparkles, AlertTriangle } from 'lucide-react';
 import { useLayoutStore } from '../../store/layoutStore';
 import { useChatStore } from '../../store/chatStore';
+import { usePreviewStore } from '../../store/previewStore';
 
 /**
  * 预览即源码（W20）
@@ -16,8 +17,7 @@ import { useChatStore } from '../../store/chatStore';
  * webview 是独立进程，可以注入且不影响主窗口隔离。
  */
 
-const URL_KEY = 'cnke.preview.url';
-const DEFAULT_URL = 'http://localhost:5173';
+// URL 持久化与默认值统一由 previewStore 管理，面板只消费
 /** 注入脚本通过 console.log 前缀回传选中元素，宿主用 console-message 事件接收 */
 const PICK_PREFIX = '__CNKE_PICK__';
 
@@ -125,8 +125,11 @@ const PreviewPanel: React.FC = () => {
   const setPanelVisible = useLayoutStore((s) => s.setPanelVisible);
   const activeWorkspaceId = useChatStore((s) => s.activeWorkspaceId);
 
-  const [url, setUrl] = useState(() => localStorage.getItem(URL_KEY) || DEFAULT_URL);
-  const [draft, setDraft] = useState(() => localStorage.getItem(URL_KEY) || DEFAULT_URL);
+  const url = usePreviewStore((s) => s.url);
+  const draft = usePreviewStore((s) => s.draft);
+  const setUrl = usePreviewStore((s) => s.setUrl);
+  const setDraft = usePreviewStore((s) => s.setDraft);
+  const commitUrl = usePreviewStore((s) => s.commit);
   const [pickMode, setPickMode] = useState(false);
   const [picked, setPicked] = useState<PickedElement | null>(null);
   const [instruction, setInstruction] = useState('');
@@ -171,14 +174,28 @@ const PreviewPanel: React.FC = () => {
   const go = (next?: string) => {
     const target = (next ?? draft).trim();
     if (!target) return;
-    const normalized = /^https?:\/\//.test(target) ? target : `http://${target}`;
-    setUrl(normalized);
-    setDraft(normalized);
-    localStorage.setItem(URL_KEY, normalized);
+    commitUrl(target);
     setFailed(false);
     setPicked(null);
     setPickMode(false);
   };
+
+  // 页面被外部（Agent 的 browser_navigate）导航后同步地址栏，
+  // 否则用户看到一个完全不同的页面但地址栏还停在旧地址。
+  useEffect(() => {
+    const wv = webviewRef.current;
+    if (!wv) return;
+    const onNavigate = (e: Event) => {
+      const target = (e as Event & { url?: string }).url;
+      if (target && /^https?:/.test(target)) setUrl(target);
+    };
+    wv.addEventListener('did-navigate', onNavigate);
+    wv.addEventListener('did-navigate-in-page', onNavigate);
+    return () => {
+      wv.removeEventListener('did-navigate', onNavigate);
+      wv.removeEventListener('did-navigate-in-page', onNavigate);
+    };
+  }, [setUrl]);
 
   const reload = () => {
     setFailed(false);

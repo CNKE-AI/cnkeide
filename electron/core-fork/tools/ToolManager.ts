@@ -29,6 +29,10 @@ import { parsePythonTraceback, type PythonTracebackMeta } from '../python/traceb
 import fs from 'node:fs/promises';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import path, { join } from 'node:path';
+import { resolveUserDataDir } from '../../util/paths';
+
+/** 已知免费生图服务端点（收费生图防绕道名单，命中即拦） */
+const KNOWN_FREE_IMAGE_HOSTS = /(pollinations\.ai|image\.pollinations\.jp|getimg\.ai|stablediffusionapi\.com|deepai\.org|prosper\.engineering|craiyon\.com)/i;
 
 export interface ToolDefinition {
   name: string;
@@ -77,6 +81,8 @@ export interface ToolResult {
   success: boolean;
   output?: string;
   error?: string;
+  /** 本地生成图片：dataUrl 用于聊天展示，path 用于长期本地保存 */
+  image?: { path: string; dataUrl: string; mimeType: string };
   /**
    * 变更审查元数据（W18）：仅写操作工具填充。
    * 供前端渲染 diff 与一键回滚；回填 LLM messages 前会被 AgentManager 剥离，
@@ -141,8 +147,21 @@ export class ToolManager {
    * 「Playwright 未启用」，把它们列在工具表里只会让模型白跑一轮再收到无用报错。
    */
   private browserReady = false;
+  /**
+   * 内置预览浏览器适配器工厂。
+   *
+   * 由 AgentManager 注入，返回 null 表示当前环境没有可用预览面板（如无主窗口），
+   * 此时 enablePlaywright 才回退到独立 chromium。
+   */
+  createPreviewAdapter?: () => PlaywrightAdapter | null;
   /** 图片生成适配器是否真正可用（Mock 的 generate() 固定返回失败，故同样不投递） */
   private imageGenReady = false;
+  /**
+   * 本轮是否授权调用收费生图。
+   * 默认 false（拒绝）：只有 AgentManager 确认用户输入以「生成图片」开头时才置 true。
+   * 这是收费接口的最后一道闸门——即便模型编造调用、或子 Agent 绕过工具表，也会在此拒绝。
+   */
+  private imageGenerationAuthorized = false;
   /** 当前会话上下文（sessionId + 工作区），用于快照归属与回滚 */
   private sessionId: string | null = null;
   private workspaceId: string | null = null;
@@ -210,8 +229,20 @@ export class ToolManager {
     return ret;
   }
 
-  /** W12：启用 Playwright 浏览器自动化（异步检测是否安装） */
+  /**
+   * 启用浏览器自动化。
+   *
+   * 优先级：**内置预览浏览器** > 独立 Playwright chromium。
+   * 内置预览优先的原因：用户能看见 Agent 在做什么，且不依赖 npm install playwright
+   * 与 200MB 的 chromium 下载。只有预览浏览器不可用时才回退到 Playwright。
+   */
   async enablePlaywright(): Promise<boolean> {
+    const builtin = this.createPreviewAdapter?.();
+    if (builtin) {
+      this.playwright = builtin;
+      this.browserReady = true;
+      return true;
+    }
     const a = await createRealPlaywrightAdapter();
     if (a) {
       this.playwright = a;
@@ -224,10 +255,35 @@ export class ToolManager {
     return false;
   }
 
+  /** 显式注入适配器（测试或自定义实现用） */
+  setBrowserAdapter(adapter: PlaywrightAdapter, ready = true): void {
+    this.playwright = adapter;
+    this.browserReady = ready;
+  }
+
+  /** 取最近一次 browser_screenshot 产生的图片，供聊天窗口展示；取后清空 */
+  takeBrowserScreenshot(): { path: string; dataUrl: string; width: number; height: number } | null {
+    const a = this.playwright as unknown as { takeLastScreenshot?: () => { path: string; dataUrl: string; width: number; height: number } | null };
+    return typeof a?.takeLastScreenshot === 'function' ? a.takeLastScreenshot() : null;
+  }
+
   /** W12：设置图片生成适配器（用户提供 apiKey 时调用） */
   setImageGenAdapter(adapter: ImageGenAdapter): void {
     this.imageGen = adapter;
     this.imageGenReady = !(adapter instanceof MockImageGenAdapter);
+  }
+
+  /**
+   * 设置本轮是否授权收费生图。
+   * AgentManager 每轮 run 开始时按用户输入前缀重新判定并写入，绝不复用上一轮结果。
+   */
+  setImageGenerationAuthorized(authorized: boolean): void {
+    this.imageGenerationAuthorized = authorized === true;
+  }
+
+  /** 当前是否授权收费生图（供测试与诊断读取） */
+  isImageGenerationAuthorized(): boolean {
+    return this.imageGenerationAuthorized && this.imageGenReady;
   }
 
   /**
@@ -448,22 +504,22 @@ export class ToolManager {
           required: ['docId'],
         },
       },
-      // ===== W12 Playwright 浏览器自动化 =====
+      // ===== W12 浏览器自动化（内置预览浏览器） =====
       {
         name: 'browser_navigate',
-        description: '用 Playwright 打开 URL。返回页面 title、url、状态码。需先运行 npm install playwright。参数：url（必填）。',
+        description: '在软件内置的预览浏览器中打开 URL（会显示在预览面板，用户可见）。返回页面 title、url、状态码。参数：url（必填）。',
         parameters: {
           type: 'object',
-          properties: { url: { type: 'string', description: '目标 URL' } },
+          properties: { url: { type: 'string', description: '目标 URL，缺协议时自动补 http://' } },
           required: ['url'],
         },
       },
       {
         name: 'browser_screenshot',
-        description: '截取当前页面截图并保存到 path（同时返回 base64）。参数：path（保存路径，可选）。',
+        description: '截取内置预览浏览器当前页面，图片会自动保存到本地并直接显示在聊天窗口。无需参数。',
         parameters: {
           type: 'object',
-          properties: { path: { type: 'string', description: '保存路径（绝对路径）' } },
+          properties: {},
           required: [],
         },
       },
@@ -508,13 +564,12 @@ export class ToolManager {
       // ===== W12 图片生成 =====
       {
         name: 'image_generate',
-        description: '用 AI 生成图片（默认 OpenAI DALL-E 3）。需配置图片生成 API。参数：prompt（必填）、size（256x256/512x512/1024x1024/1792x1024/1024x1792）、savePath（可选）。',
+        description: '用 GPT Image 生成图片。生成结果自动保存到本地，并直接显示在聊天窗口。参数：prompt（必填）、size（1024x1024/1536x1024/1024x1536）。',
         parameters: {
           type: 'object',
           properties: {
             prompt: { type: 'string', description: '图片描述' },
-            size: { type: 'string', enum: ['256x256', '512x512', '1024x1024', '1792x1024', '1024x1792'] },
-            savePath: { type: 'string', description: '保存路径（绝对路径）' },
+            size: { type: 'string', enum: ['1024x1024', '1536x1024', '1024x1536'] },
           },
           required: ['prompt'],
         },
@@ -816,16 +871,24 @@ export class ToolManager {
 
     // 只投递真正可用的工具。无法工作的工具留在表里，模型会照调不误——
     // 白耗一轮，还带回「Playwright 未启用 / 图片生成未配置」这类对用户无意义的报错。
+    // image_generate 额外要求「本轮已授权」：未以「生成图片」开头时工具根本不出现在表中，
+    // 模型无从看到，也就不存在"未获批就先尝试一次"的可能（收费接口 0 次调用）。
     const available = allTools.filter((t) => {
       if (!this.browserReady && BROWSER_TOOL_NAMES.has(t.name)) return false;
-      if (!this.imageGenReady && t.name === 'image_generate') return false;
+      if (t.name === 'image_generate') return this.imageGenReady && this.imageGenerationAuthorized;
       return true;
     });
 
     if (mode === 'ask' || mode === 'architect') {
       const readOnly = ['read_file', 'search_files', 'list_directory', 'get_plan', 'grep', 'web_search', 'web_fetch', 'git_status', 'git_log', 'semantic_search'];
       const planning = ['create_plan', 'update_plan_status', 'add_plan_item', 'get_plan', 'mark_plan_complete'];
-      return available.filter((t) => readOnly.includes(t.name) || (mode === 'architect' && planning.includes(t.name)));
+      return available.filter((t) =>
+        readOnly.includes(t.name) ||
+        (mode === 'architect' && planning.includes(t.name)) ||
+        // image_generate 只写应用自己的 generated-images 目录，不触碰工作区，
+        // 且已过收费闸门（未授权时上面 filter 已剔除），因此只读模式下同样放行
+        t.name === 'image_generate'
+      );
     }
     return available;
   }
@@ -1218,21 +1281,26 @@ export class ToolManager {
           this.ragManager.remove(args.docId);
           return { success: true, output: `已移除文档：${args.docId}` };
         }
-        // ===== W12 Playwright 浏览器工具 =====
+        // ===== W12 浏览器工具（内置预览浏览器优先） =====
         case 'browser_navigate': {
-          if (!this.playwright) return { success: false, error: 'Playwright 未初始化，请调用 enablePlaywright()' };
+          if (!this.playwright) return { success: false, error: '浏览器未初始化，请调用 enablePlaywright()' };
           try {
             const r = await this.playwright.navigate(args.url);
-            return { success: true, output: `已打开：${r.title}\nURL: ${r.url}\n状态: ${r.status}` };
+            return { success: true, output: `已在内置预览浏览器中打开：${r.title}\nURL: ${r.url}\n状态: ${r.status}` };
           } catch (err: any) {
             return { success: false, error: err.message || String(err) };
           }
         }
         case 'browser_screenshot': {
-          if (!this.playwright) return { success: false, error: 'Playwright 未初始化' };
+          if (!this.playwright) return { success: false, error: '浏览器未初始化' };
           try {
             const r = await this.playwright.screenshot(args.path);
-            return { success: true, output: `已截图：${r.path || '(内存)'}\n尺寸：${r.width}x${r.height}\nbase64 长度：${r.base64?.length || 0}` };
+            const shot = this.takeBrowserScreenshot();
+            return {
+              success: true,
+              output: `已截图：${r.path || '(内存)'}\n尺寸：${r.width}x${r.height}`,
+              ...(shot ? { image: { path: shot.path, dataUrl: shot.dataUrl, mimeType: 'image/png' } } : {}),
+            };
           } catch (err: any) {
             return { success: false, error: err.message || String(err) };
           }
@@ -1259,14 +1327,30 @@ export class ToolManager {
         }
         // ===== W12 图片生成 =====
         case 'image_generate': {
-          if (!this.imageGen) return { success: false, error: '图片生成未配置，请在设置中启用 DALL-E 或通义万相' };
+          // 收费闸门（最后防线）：未授权时直接拒绝，绝不触碰网络与供应商接口。
+          // 走到这里通常意味着模型无视工具表凭空调用，或调用方绕过了 getAvailableTools。
+          if (!this.imageGenerationAuthorized) {
+            return {
+              success: false,
+              error: '已拦截：收费生图仅在用户输入以「生成图片」开头时允许调用，本次未发起任何生图请求。',
+            };
+          }
+          if (!this.imageGen) return { success: false, error: '图片生成未配置，请在设置中启用 GPT Image' };
+          if (!this.imageGenReady) return { success: false, error: '图片生成适配器不可用（当前为未配置状态），未发起生图请求' };
+          const outputDir = path.join(resolveUserDataDir(), 'generated-images');
+          const safeSession = String(this.sessionId || 'session').replace(/[^a-zA-Z0-9_-]/g, '_');
+          const savePath = path.join(outputDir, `${safeSession}-${Date.now()}.png`);
           const r = await this.imageGen.generate({
             prompt: args.prompt,
             size: args.size,
-            savePath: args.savePath,
+            savePath,
           });
-          if (!r.success) return { success: false, error: r.error };
-          return { success: true, output: `已生成图片（${r.provider}）\n${r.path ? `已保存：${r.path}` : `base64 长度：${r.base64?.length || 0}`}${r.url ? `\nURL: ${r.url}` : ''}` };
+          if (!r.success || !r.path || !r.dataUrl) return { success: false, error: r.error || '生成图片未能保存到本地' };
+          return {
+            success: true,
+            output: `已生成并保存本地图片（${r.provider}）：${r.path}`,
+            image: { path: r.path, dataUrl: r.dataUrl, mimeType: r.mimeType || 'image/png' },
+          };
         }
         // ===== W3 Plan 工具 =====
         case 'create_plan': {
@@ -1318,6 +1402,12 @@ export class ToolManager {
           return { success: true, output: list };
         }
         case 'web_fetch': {
+          // 收费生图防绕道（硬拦截）：已授权生图的本轮内，禁止经 web_fetch 访问
+          // 已知免费生图端点。模型曾用 Pollinations 绕开 image_generate，导致
+          // 图片不走用户配置的付费渠道也不显示在聊天窗口。
+          if (this.imageGenerationAuthorized && KNOWN_FREE_IMAGE_HOSTS.test(String(args.url || ''))) {
+            return { success: false, error: '已拦截：本轮已授权使用 image_generate（用户付费渠道），不允许经 web_fetch 调用免费生图接口。请直接调用 image_generate。' };
+          }
           const r = await webFetch(args.url);
           if (!r.success) return { success: false, error: r.error };
           const text = r.result!.text;

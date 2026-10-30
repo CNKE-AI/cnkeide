@@ -239,6 +239,9 @@ function subscribeRunEvents(opts: {
       const d = event.data || {};
       patchLast((last) => ({
         ...last,
+        images: d.result?.success && d.result?.image?.dataUrl
+          ? [...(last.images || []), d.result.image.dataUrl]
+          : last.images,
         toolCalls: (last.toolCalls || []).map((tc: any) =>
           tc && tc.id === d.toolCallId ? { ...tc, result: d.result } : tc
         ),

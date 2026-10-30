@@ -77,32 +77,42 @@ async function test6_mockImageGenReturnsError() {
 
 function test7_openaiAdapterStructure() {
   console.log('\n[7] OpenAIImageGenAdapter 结构');
-  const a = new OpenAIImageGenAdapter('sk-test', 'https://api.openai.com');
+  const a = new OpenAIImageGenAdapter('sk-test', 'https://api.openai.com/v1');
   log(a.available === true, 'available=true', '');
-  log(a.provider === 'openai-dall-e-3', 'provider=openai-dall-e-3', `p=${a.provider}`);
+  log(a.provider === 'openai-gpt-image', 'provider=openai-gpt-image', `p=${a.provider}`);
 }
 
 async function test8_openaiGenerateMock() {
   console.log('\n[8] OpenAI generate mock fetch（无 key → 真实网络失败但返回结构）');
   // 替换 fetch 模拟 DALL-E 响应
   const originalFetch = globalThis.fetch;
+  let requestedUrl = '';
   globalThis.fetch = async (url, opts) => {
-    const body = JSON.parse(opts.body);
+    requestedUrl = String(url);
+    JSON.parse(opts.body);
     return {
       ok: true,
       status: 200,
       json: async () => ({
-        data: [{ b64_json: Buffer.from('PNG-DATA').toString('base64'), url: 'https://...' }],
+        data: [{ b64_json: Buffer.from('PNG-DATA').toString('base64') }],
       }),
     };
   };
-  const a = new OpenAIImageGenAdapter('sk-test');
-  const r = await a.generate({ prompt: 'a cat', size: '512x512' });
+  const fs = await import('node:fs/promises');
+  const path = await import('node:path');
+  const os = await import('node:os');
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'w12-'));
+  const savePath = path.join(dir, 'mock.png');
+  const a = new OpenAIImageGenAdapter('sk-test', 'https://image.example/v1');
+  const r = await a.generate({ prompt: 'a cat', size: '1024x1024', savePath });
   globalThis.fetch = originalFetch;
   log(r.success === true, '成功', `s=${r.success}`);
+  log(requestedUrl === 'https://image.example/v1/images/generations', '/v1 不重复拼接', requestedUrl);
   log(r.base64 && r.base64.length > 0, 'base64 已回', `len=${r.base64?.length}`);
-  log(r.provider === 'openai-dall-e-3', 'provider 标识', '');
-  log(r.url === 'https://...', 'URL 已回', `u=${r.url}`);
+  log(r.dataUrl?.startsWith('data:image/png;base64,') === true, 'data URL 可直接展示', '');
+  log(r.provider === 'openai-gpt-image', 'provider 标识', '');
+  log(r.path === savePath, '始终保存本地', `p=${r.path}`);
+  await fs.rm(dir, { recursive: true, force: true });
 }
 
 async function test9_openaiGenerateSaveToFile() {
@@ -137,7 +147,7 @@ async function test10_openaiGenerateError() {
     text: async () => 'Unauthorized',
   });
   const a = new OpenAIImageGenAdapter('sk-bad');
-  const r = await a.generate({ prompt: 'x' });
+  const r = await a.generate({ prompt: 'x', savePath: 'mock-error.png' });
   globalThis.fetch = originalFetch;
   log(r.success === false, '失败', `s=${r.success}`);
   log(/401/.test(r.error || ''), '错误含状态码', `err=${r.error}`);
@@ -158,7 +168,7 @@ async function test11_openaiGenerateTimeout() {
   };
   const a = new OpenAIImageGenAdapter('sk-test');
   try {
-    const r = await a.generate({ prompt: 'x' });
+    const r = await a.generate({ prompt: 'x', savePath: 'mock-error.png' });
     // 真实情况会被 AbortSignal 60s 中断，但 60s 太长我们没法测
     log(true, '跳过（60s 超时太慢）', '');
   } catch (e) {

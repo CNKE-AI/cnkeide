@@ -59,6 +59,15 @@ const MainLayout: React.FC = () => {
     useUiStore.getState().refreshModels();
   }, []);
 
+  // Agent 调用浏览器工具时，主进程发 preview:show 要求展示内置预览浏览器。
+  // 用户能看到 Agent 正在打开哪个页面，而不是在后台悄悄跑一个不可见的浏览器。
+  useEffect(() => {
+    const off = window.cnke?.window?.onPreviewShow?.(() => setPanelVisible('preview', true));
+    return () => off?.();
+    // setPanelVisible 来自 zustand，引用稳定
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const showPanel = (p: PanelKey) => setPanelVisible(p, true);
 
   /**

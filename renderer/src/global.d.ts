@@ -323,6 +323,8 @@ export interface CnkeAPI {
     setAgentBusy: (busy: boolean) => void;
     /** 订阅窗口保护提示（任务执行中误最小化 / 误关闭被拦截） */
     onGuardNotice: (cb: (payload: { reason: string }) => void) => () => void;
+    /** 订阅「显示内置预览浏览器」请求（Agent 浏览器工具调用时触发） */
+    onPreviewShow: (cb: () => void) => () => void;
   };
   fs: {
     openFolder: () => Promise<string | null>;
@@ -419,6 +421,8 @@ export interface CnkeAPI {
     showOpenDialog: (opts?: unknown) => Promise<string | null>;
     showSaveDialog: (opts?: unknown) => Promise<string | null>;
     showMessageBox: (opts: unknown) => Promise<unknown>;
+    /** 保存聊天里的生成图片（data URL → 保存对话框 → 写盘） */
+    saveImage: (dataUrl: string, suggestedName?: string) => Promise<{ success: boolean; canceled?: boolean; filePath?: string; error?: string }>;
   };
   shell: {
     openExternal: (url: string) => Promise<void>;

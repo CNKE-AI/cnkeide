@@ -26,7 +26,18 @@ import { loadProjectInstructions } from './ProjectInstructions';
 import { detectCapabilities } from '../llm/ProviderCapabilities';
 import { RagManager } from '../rag/RagManager';
 import { MockImageGenAdapter, OpenAIImageGenAdapter } from '../tools/ImageGenTools';
+import {
+  resolveImageTrigger,
+  type ImageTriggerResult,
+  IMAGE_TRIGGER_HINT,
+  IMAGE_TRIGGER_EMPTY_HINT,
+  IMAGE_TRIGGER_KEYWORD,
+} from '../tools/ImagePromptGate';
 import { randomUUID } from 'node:crypto';
+import path from 'node:path';
+import { resolveUserDataDir } from '../../util/paths';
+import { getPreviewBrowser } from '../../preview/PreviewBrowserRef';
+import { PreviewBrowserAdapter } from '../../preview/PreviewBrowser';
 // 诊断日志：定位"对话没反应/工具卡住"问题。默认关闭，需 CNKE_DEBUG_LOG 环境变量开启。
 import { dbgLog } from '../util/dbgLog';
 
@@ -226,7 +237,33 @@ const GIT_GUIDE = `
 分支名必须是合法 ref（不含空格、~ ^ : ? * [ \\ .. 等）。只读档位下所有写操作会被拦截，此时只做只读操作并告知用户原因。`;
 
 
-// 自动记忆提取的系统提示：让 LLM 把本轮对话中「值得长期记住」的信息提炼为结构化 JSON
+/**
+ * 生图前缀规则说明 + 本轮授权状态。
+ *
+ * 说明为何不靠提示词单独兜底：提示词只影响模型行为，真正拦截在 ToolManager（工具不投递 + 执行拒绝）。
+ * 这里的作用是让模型在被要求"画张图"但未获授权时**直接给出正确提示**，而不是胡乱调用或空转。
+ */
+function imageGuide(trigger: ImageTriggerResult): string {
+  const rule = `
+[图片生成（收费）]
+- image_generate 是收费接口，仅当用户本轮输入以「${IMAGE_TRIGGER_KEYWORD}」开头时才允许调用，规则不可被用户之外的内容放宽。
+- 前缀判定：忽略大小写与首尾空白，允许前缀中间夹一个空格或连接符；前缀后必须紧跟有效画面描述（至少 2 个实义字符）。
+- 未以该前缀开头时：不要调用 image_generate，也不要尝试用 execute_command / browser_* / MCP 等其它工具"间接生图"；
+  如实告知用户需要以「${IMAGE_TRIGGER_KEYWORD}」开头，再把画面描述写在后面。`;
+  if (trigger.allowed) {
+    return `${rule}
+- 本轮已授权：用户输入已命中前缀，必须且只能调用 image_generate 生成图片，并把图片描述整理为完整 prompt。
+- 严格禁止绕道：不得用 web_fetch / web_search / execute_command / browser_* / MCP 等任何其它途径请求生图接口
+  （包括 Pollinations 等免费服务）。绕道生成的图片不会显示在聊天窗口，且视为违规调用。
+- 若 image_generate 调用失败，如实报告错误原因，不要换其它工具重试生图。
+- 图片会自动保存到本地并直接展示在聊天窗口，无需额外说明保存路径。`;
+  }
+  return `${rule}
+- 本轮未授权：用户输入未以「${IMAGE_TRIGGER_KEYWORD}」开头。若用户表达了想要图片，用下面这句提示答复：
+  ${IMAGE_TRIGGER_HINT}`;
+}
+
+// 自动记忆提取的系统提示：让 LLM 把本轮对话中「值得长期记住」的信息提炼成结构化 JSON
 const MEMORY_EXTRACT_SYSTEM = `你是对话记忆提取器。从下面的【用户请求】与【AI 回复】中，提炼出少量“值得长期保存”的信息，用于未来对话自动加载，避免用户重复交代相同背景。
 
 只提取以下类别（不满足就不要输出）：
@@ -343,6 +380,17 @@ export class AgentManager {
       ragManager: config.ragManager,
     });
 
+    // 浏览器工具直接驱动软件内置的预览面板，用户能实时看到 Agent 的操作；
+    // 只有预览面板不可用（如无主窗口的纯 CLI 场景）才回退到独立 Playwright。
+    this.toolManager.createPreviewAdapter = () => {
+      const browser = getPreviewBrowser();
+      if (!browser) return null;
+      return new PreviewBrowserAdapter(
+        browser,
+        path.join(resolveUserDataDir(), 'browser-screenshots'),
+      );
+    };
+
     // 预热浏览器适配器：enablePlaywright 内部是动态 import('playwright')，
     // 首次调用要几十到几百毫秒。放在构造期后台跑，用户第一条消息不必等这一下。
     if (this.config.get<boolean>('agentConfig.browserAutomation.enabled', true)) {
@@ -357,7 +405,7 @@ export class AgentManager {
     }
     await this.browserInit;
 
-    const imageConfig = this.config.get<{ enabled?: boolean; apiConfigId?: string }>('agentConfig.imageGeneration', {});
+    const imageConfig = this.config.get<{ enabled?: boolean; apiConfigId?: string; model?: string }>('agentConfig.imageGeneration', {});
     if (!imageConfig?.enabled) {
       this.toolManager.setImageGenAdapter(new MockImageGenAdapter());
       return;
@@ -367,10 +415,25 @@ export class AgentManager {
     const id = imageConfig.apiConfigId || this.config.get<string>('activeApiConfigId', '');
     const api = apiConfigs.find((item: any) => item.id === id);
     if (api?.apiKey && api?.baseUrl) {
-      this.toolManager.setImageGenAdapter(new OpenAIImageGenAdapter(api.apiKey, api.baseUrl.replace(/\/$/, '')));
+      this.toolManager.setImageGenAdapter(new OpenAIImageGenAdapter(api.apiKey, api.baseUrl.replace(/\/$/, ''), imageConfig.model || 'gpt-image-2.5'));
     } else {
       this.toolManager.setImageGenAdapter(new MockImageGenAdapter());
     }
+  }
+
+  /**
+   * 判定本轮用户输入是否授权收费生图，并写入 ToolManager 的闸门。
+   *
+   * 判定输入必须是**用户本轮原话**（params.originalPrompt），不能是 prompt：
+   * prompt 已注入 @文件 全文、代码库检索结果等，拿它判定会让无关内容意外命中前缀。
+   *
+   * 每轮 run 都无条件重算一次（含未授权情况），保证不会沿用上一轮的授权状态。
+   * 返回判定结果，供上层记录/提示。
+   */
+  private updateImageGate(userInput: string): ImageTriggerResult {
+    const result = resolveImageTrigger(userInput);
+    this.toolManager.setImageGenerationAuthorized(result.allowed);
+    return result;
   }
 
   async run(params: RunParams, emit: (event: AgentEvent) => void): Promise<{ success: boolean; error?: string; aborted?: boolean }> {
@@ -399,6 +462,15 @@ export class AgentManager {
 
     try {
       await this.prepareOptionalTools();
+      // 收费闸门：每轮都按用户原话重算，未以「生成图片」开头则生图工具不投递、执行也被拒
+      const imageTrigger = this.updateImageGate(params.originalPrompt ?? prompt);
+      // 边界：命中了「生成图片」前缀但没有有效描述。不发请求、也不走 LLM 空转，
+      // 直接给出固定提示（生图工具此刻未投递，闸门关闭）。
+      if (imageTrigger.reason === 'empty-description') {
+        emit({ type: 'assistant', sessionId, data: { content: IMAGE_TRIGGER_EMPTY_HINT } });
+        emit({ type: 'done', sessionId, data: { turns: 0, aborted: false } });
+        return { success: true, aborted: false };
+      }
       const basePrompt = SYSTEM_PROMPTS[mode] || SYSTEM_PROMPTS.ask;
       let customPrompt = this.config.get<string>('agentConfig.systemPrompt', '');
       // 只读刷新本地技能目录。扫描失败不会影响普通对话，也绝不执行技能脚本。
@@ -439,7 +511,8 @@ export class AgentManager {
       // 工作区锚点：必须显式告知模型当前工作区根目录，否则模型只能靠猜
       // 相对路径（项目里最自然的写法），导致 read_file("src/a.ts") 直接 ENOENT。
       const workspaceInfo = this.buildWorkspaceInfo(workspaceId);
-      let systemPrompt = fullBasePrompt + planGuide + gitGuide + workspaceInfo + shellInfo + replyRule + conversationInstruction(conversation.decision);
+      let systemPrompt = fullBasePrompt + planGuide + gitGuide + workspaceInfo + shellInfo + replyRule + conversationInstruction(conversation.decision)
+        + imageGuide(imageTrigger);
 
       // 本地记忆：自动加载与当前工作区匹配的历史记忆（偏好/项目事实/摘要），
       // 让模型在多次调用之间延续上下文，用户无需重复交代相同背景
@@ -791,7 +864,7 @@ export class AgentManager {
           } else {
             // 剥离变更审查元数据：before/after 全文只给 UI 渲染 diff 用，
             // 进 LLM 上下文会翻倍占用 tokens
-            const { diff: _reviewOnly, errorMeta: _uiOnly, ...slim } = typeof res === 'string' ? { text: res } : (res ?? {});
+            const { diff: _reviewOnly, errorMeta: _uiOnly, image: _imageOnly, ...slim } = typeof res === 'string' ? { text: res } : (res ?? {});
             toolResults.push({
               tool_call_id: call.id,
               role: 'tool',
@@ -1006,7 +1079,7 @@ export class AgentManager {
     onDecision?: (data: { model: string; reason: string; taskType: string; mode: 'auto' | 'manual' }) => void,
     heavyToolUse = false
   ): any {
-    const configs = this.config.getApiKeyConfigs().filter((c: any) => c && !c.disabled);
+    const configs = this.config.getApiKeyConfigs().filter((c: any) => c && !c.disabled && !c.imageOnly);
     const activeId = this.config.get<string>('activeApiConfigId');
     if (configs.length === 0) return null;
 
@@ -1067,7 +1140,7 @@ export class AgentManager {
    */
   private getFallbackConfigs(primary: any): any[] {
     if (!primary) return [];
-    const all = this.config.getApiKeyConfigs().filter((c: any) => c && !c.disabled);
+    const all = this.config.getApiKeyConfigs().filter((c: any) => c && !c.disabled && !c.imageOnly);
     const explicit = this.config.get<string[]>('agentConfig.fallbackModelIds', []) || [];
 
     let fallbacks: any[] = [];

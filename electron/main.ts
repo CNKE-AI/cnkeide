@@ -5,6 +5,8 @@ import { registerIpcHandlers } from './ipc/handlers';
 import { initPptMaster } from './core-fork/pptmaster';
 import { ConfigAdapter } from './adapter/ConfigAdapter';
 import { createMenu } from './menu';
+import { PreviewBrowser } from './preview/PreviewBrowser';
+import { setPreviewBrowser } from './preview/PreviewBrowserRef';
 import { stripElectronEnvFromProcess } from './core-fork/util/SafeSpawn';
 
 // ===== 硬约束：应用运行期间不得产生 electron.exe 子进程 =====
@@ -293,8 +295,20 @@ async function createWindow() {
     webPreferences.contextIsolation = true;
     webPreferences.webSecurity = true;
   });
+
+  // 内置预览浏览器：Agent 操作的就是这个面板里的 webview
+  const previewBrowser = new PreviewBrowser();
+  previewBrowser.setWindow(mainWindow);
+  setPreviewBrowser(previewBrowser);
+  mainWindow.on('closed', () => {
+    setPreviewBrowser(null);
+    previewBrowser.setWindow(null);
+  });
   mainWindow.webContents.on('did-attach-webview', (_e, guest) => {
-    guest.setWindowOpenHandler(() => ({ action: 'deny' }));
+    // 内置预览浏览器：Agent 的 browser_* 工具直接操作这个 webview，
+    // 用户能实时看到点击/输入/截图发生在哪个页面上。
+    previewBrowser.attachGuest(guest);
+    guest.once('destroyed', () => previewBrowser.detachGuest(guest));
   });
 
   const isDev = process.env.NODE_ENV === 'development' || !!process.env.VITE_DEV_SERVER_URL;

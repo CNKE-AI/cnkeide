@@ -948,6 +948,31 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
     return { success: true };
   });
 
+  // ===== 生成图片保存 IPC =====
+  // 聊天里的生成图片是 data URL，浏览器协议下 <a download> 对大 data URL 不可靠，
+  // 统一走主进程：弹出保存对话框 + 解码写盘。
+  ipcMain.handle(
+    'image:save',
+    async (_e, payload: { dataUrl: string; suggestedName?: string }) => {
+      try {
+        const m = /^data:(image\/(png|jpeg|webp));base64,([A-Za-z0-9+/=]+)$/.exec(String(payload?.dataUrl || ''));
+        if (!m) return { success: false, error: '无效的图片数据' };
+        const ext = m[2] === 'jpeg' ? 'jpg' : m[2];
+        const name = (payload.suggestedName || 'generated-image').replace(/[\\/:*?"<>|]/g, '_').slice(0, 80);
+        const { canceled, filePath } = await dialog.showSaveDialog({
+          title: '保存生成图片',
+          defaultPath: path.join(app.getPath('downloads'), `${name}.${ext}`),
+          filters: [{ name: '图片', extensions: [ext] }],
+        });
+        if (canceled || !filePath) return { success: true, canceled: true };
+        await fsp.writeFile(filePath, Buffer.from(m[3], 'base64'));
+        return { success: true, canceled: false, filePath };
+      } catch (err: any) {
+        return { success: false, error: err?.message || String(err) };
+      }
+    },
+  );
+
   // ===== 对话框 IPC =====
   ipcMain.handle('dialog:open', () => windowAdapter.showOpenFolder());
 

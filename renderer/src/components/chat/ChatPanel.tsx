@@ -514,6 +514,29 @@ const MessageBubble = React.memo(({ msg, streaming, onRegenerate, onRemember, on
         </div>
       )}
 
+      {msg.images && msg.images.length > 0 && (
+        <div className="mb-3 grid gap-2">
+          {msg.images.map((img, i) => (
+            <div key={`generated-${i}`} className="group relative overflow-hidden rounded-xl border border-border bg-secondary/20">
+              <a href={img} target="_blank" rel="noreferrer" className="block">
+                <img src={img} alt={`AI 生成图片 ${i + 1}`} className="max-h-[520px] w-full object-contain" />
+              </a>
+              {/* 直接保存到本机任意位置：data URL 过大时浏览器 download 属性不可靠，走主进程写盘 */}
+              <button
+                type="button"
+                onClick={async () => {
+                  const r = await window.cnke.dialog.saveImage(img, `生成图片-${i + 1}`);
+                  if (r && r.success === false && r.error) console.error('[image:save]', r.error);
+                }}
+                className="absolute right-2 top-2 rounded-md bg-background/80 px-2.5 py-1 text-xs text-foreground opacity-0 shadow transition group-hover:opacity-100 hover:bg-background"
+              >
+                保存
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       {msg.toolCalls && msg.toolCalls.length > 0 && (
         <div className="mb-4 space-y-2.5">
           {msg.toolCalls.map((tc, i) => (

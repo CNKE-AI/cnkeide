@@ -512,6 +512,9 @@ const SettingsSheet: React.FC = () => {
       imageGeneration: {
         enabled: !!agentCfg.imageGeneration?.enabled,
         apiConfigId: typeof agentCfg.imageGeneration?.apiConfigId === 'string' ? agentCfg.imageGeneration.apiConfigId : '',
+        // 保留模型字段：设置页不提供模型编辑，丢掉它会让保存后回落到代码默认模型，
+        // 导致「配置里改了 gpt-image-2、实际请求还是 gpt-image-1」的漂移
+        model: typeof agentCfg.imageGeneration?.model === 'string' ? agentCfg.imageGeneration.model : '',
       },
       useProjectInstructions: agentCfg.useProjectInstructions !== false,
       projectInstructionsBudget: clamp(agentCfg.projectInstructionsBudget, 2000, 60000, 24000),

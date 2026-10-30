@@ -131,7 +131,7 @@ export class ConfigAdapter {
         domainAllowlist: [],
         // 可选运行时工具：浏览器默认尝试启用，图片生成必须由用户显式启用并绑定 API 配置。
         browserAutomation: { enabled: true },
-        imageGeneration: { enabled: false, apiConfigId: '' },
+        imageGeneration: { enabled: true, apiConfigId: 'local-gpt-image', model: 'gpt-image-2.5' },
       },
       workspace: {
         lastWorkspace: null,

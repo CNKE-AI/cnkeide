@@ -31,6 +31,15 @@ const windowApi = {
     ipcRenderer.on('window:guard-notice', handler);
     return () => ipcRenderer.removeListener('window:guard-notice', handler);
   },
+  /**
+   * 订阅「显示内置预览浏览器」请求。
+   * Agent 的 browser_* 工具驱动的是这个预览面板，因此调用前主进程会要求面板可见。
+   */
+  onPreviewShow: (cb: () => void) => {
+    const handler = () => cb();
+    ipcRenderer.on('preview:show', handler);
+    return () => ipcRenderer.removeListener('preview:show', handler);
+  },
 };
 
 // ===== 文件系统 API =====
@@ -212,6 +221,9 @@ const dialogApi = {
   showOpenDialog: () => ipcRenderer.invoke('dialog:open'),
   showSaveDialog: () => ipcRenderer.invoke('dialog:save'),
   showMessageBox: (opts: Electron.MessageBoxOptions) => ipcRenderer.invoke('dialog:message', opts),
+  /** 保存聊天里的生成图片（data URL → 保存对话框 → 写盘） */
+  saveImage: (dataUrl: string, suggestedName?: string) =>
+    ipcRenderer.invoke('image:save', { dataUrl, suggestedName }),
 };
 
 // ===== Shell API =====

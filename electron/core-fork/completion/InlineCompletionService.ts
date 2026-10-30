@@ -126,7 +126,7 @@ export class InlineCompletionService {
 
   /** 取当前激活 apiConfig + fallback 链（与 Agent 同源） */
   private async resolveConfigs(): Promise<{ active: any; fallbacks: any[] }> {
-    const configs = (await this.config.getApiKeyConfigs()) || [];
+    const configs = ((await this.config.getApiKeyConfigs()) || []).filter((c: any) => c && !c.imageOnly);
     const activeId = await this.config.get('activeApiConfigId');
     const active = configs.find((c: any) => c && c.id === activeId) || configs[0] || null;
     const fallbacks = configs.filter((c: any) => c && c !== active && c.enabled !== false);
