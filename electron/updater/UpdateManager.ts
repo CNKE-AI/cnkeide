@@ -153,6 +153,27 @@ export class UpdateManager {
     return this.config.get<number>('update.autoCheckDelayMs', 8000);
   }
 
+  private autoCheckTimer: NodeJS.Timeout | null = null;
+
+  /**
+   * 启动静默暗更循环：启动延迟检测一次 + 之后按固定间隔复检。
+   *
+   * 之前只有启动后的一次性检测：用户长期不关应用就永远收不到更新。
+   * 循环补齐后，配合 autoDownload/autoInstall 即为完整软补丁暗更链路：
+   * 周期检测 → 后台下载（blockmap 增量）→ 静默安装 → 自动重启新版本。
+   */
+  startAutoCheckLoop(): void {
+    if (this.autoCheckTimer) return;
+    const intervalMs = this.config.get<number>('update.autoCheckIntervalMs', 4 * 60 * 60 * 1000);
+    const run = () => {
+      if (!this.isAutoCheckEnabled()) return;
+      if (this.downloading || this.pendingInstall) return; // 已在更新流程中，不叠加
+      void this.checkForUpdates('auto').catch(() => {});
+    };
+    setTimeout(run, this.getAutoCheckDelay());
+    this.autoCheckTimer = setInterval(run, Math.max(10 * 60 * 1000, intervalMs));
+  }
+
   setMainWindow(win: BrowserWindow | null): void {
     this.win = win;
   }
@@ -447,6 +468,15 @@ export class UpdateManager {
       // 强制更新：远程配置了 minimumRunVersion 且当前版本低于它，弹出不可跳过的更新提示
       if (hasUpdate && minimumRunVersion && this.isNewerVersion(minimumRunVersion, app.getVersion())) {
         this.promptForcedUpdate(info.version, minimumRunVersion);
+      }
+
+      // 暗更（软补丁静默更新）：自动模式下发现新版本即后台下载，
+      // 下载完成后由 update-downloaded → autoInstall 逻辑（默认开启）静默安装重启。
+      // 手动模式不受影响：仍由用户在设置页点击下载。
+      if (hasUpdate && mode === 'auto' && this.config.get<boolean>('update.autoDownload', true)) {
+        this.log('download', 'auto', info.version, 'success', '暗更：后台自动下载开始');
+        // 不 await：下载在后台进行，进度经 update:status 推送（设置页若开着可见）
+        void this.downloadAndInstall('auto').catch(() => {});
       }
 
       return {
@@ -760,6 +790,10 @@ export class UpdateManager {
     this.flushProgressTimer();
     await this.flushLog();
     this.cancel();
+    if (this.autoCheckTimer) {
+      clearInterval(this.autoCheckTimer);
+      this.autoCheckTimer = null;
+    }
     try {
       autoUpdater.removeAllListeners();
     } catch {

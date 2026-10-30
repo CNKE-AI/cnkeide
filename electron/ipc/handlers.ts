@@ -133,12 +133,10 @@ export function registerIpcHandlers(config: ConfigAdapter): { dispose: () => voi
   const updateManager = new UpdateManager(config);
   updateManager.setMainWindow(mainWindow ?? null);
 
-  // 静默后台自动检测更新（启动后延迟执行，避免影响启动性能；开发环境跳过）
+  // 静默暗更循环（启动后延迟首检 + 每 4h 周期复检；开发环境跳过）
   const isDev = process.env.NODE_ENV === 'development' || !!process.env.VITE_DEV_SERVER_URL;
-  if (!isDev && updateManager.isAutoCheckEnabled()) {
-    setTimeout(() => {
-      void updateManager.checkForUpdates('auto').catch(() => {});
-    }, updateManager.getAutoCheckDelay());
+  if (!isDev) {
+    updateManager.startAutoCheckLoop();
   }
 
   // 终端输出转发到渲染进程
